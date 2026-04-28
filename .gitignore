@@ -1,0 +1,38 @@
+# Environment files containing secrets
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env.local
+frontend/.env.*.local
+!frontend/.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Node / React
+node_modules/
+frontend/dist/
+frontend/.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Claude Code per-project local config (contains personal allow rules)
+.claude/settings.local.json
+.claude/scheduled_tasks.lock
+
+# Run logs (dev-team, backend, frontend)
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

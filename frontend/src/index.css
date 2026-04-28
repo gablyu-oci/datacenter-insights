@@ -1,0 +1,6 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #0f172a; color: white; overflow-x: hidden; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0f172a; }
+::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+select { outline: none; cursor: pointer; }

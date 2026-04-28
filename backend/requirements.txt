@@ -1,0 +1,19 @@
+# Pinned dependencies for strategic-insights-backend
+# Use this file as a fallback when uv is not available:
+#   pip install -r requirements.txt
+
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+sqlmodel==0.0.24
+asyncpg==0.30.0
+alembic==1.15.2
+polars==1.30.0
+openpyxl==3.1.5
+rapidfuzz==3.12.2
+httpx==0.28.1
+stamina==24.3.0
+apscheduler==3.11.0
+python-dotenv==1.1.0
+pydantic-settings==2.8.1
+openai==1.78.0
+edgartools==3.5.1
