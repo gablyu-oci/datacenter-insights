@@ -79,13 +79,28 @@ const PROVIDER_COLORS: Record<string, string> = {
   "NTT": "#3b82f6",
 };
 
+// Stage palette — covers every distinct stage seen in the Aterio dataset.
+// Greens = operational, ambers = building, blues = announced/planning,
+// greys = on-hold, reds = killed.
 const STAGE_COLOR: Record<string, string> = {
-  "Operational": "#22c55e",
-  "Under Construction": "#f59e0b",
-  "Expanding": "#3b82f6",
-  "Planned": "#94a3b8",
-  "Active": "#22c55e",
+  "Active":                 "#22c55e", // green — operational
+  "Operational":            "#22c55e",
+  "Expanding":              "#10b981", // teal-green — operational with expansion
+  "Construction":           "#f59e0b", // amber — building
+  "Active Construction":    "#f59e0b",
+  "Under Construction":     "#f59e0b",
+  "Announcement":           "#3b82f6", // blue — announced
+  "Announced":              "#3b82f6",
+  "Planned":                "#3b82f6",
+  "Land Bank":              "#06b6d4", // cyan — site secured but pre-announce
+  "Land Acquisition":       "#06b6d4",
+  "Delayed":                "#a78bfa", // violet — schedule slip
+  "Cancelled":              "#ef4444", // red — killed
+  "Not Approved/Withdrawn": "#64748b", // slate — never approved
+  "Withdrawn":              "#64748b",
+  "Project Withdrawn":      "#64748b",
 };
+const _DEFAULT_STAGE_COLOR = "#94a3b8"; // any unknown stage
 
 function getProviderColor(name: string | null): string {
   if (!name) return "#6366f1";
@@ -135,34 +150,14 @@ const TOOLTIP_STYLES = {
 
 // ── Map component using Leaflet (no API key required) ─────────────────────
 
-// ESRI World Imagery Wayback releases — historical satellite snapshots, free, no key.
-// IDs from https://wayback.maptiles.arcgis.com config (also used in the legacy
-// SatelliteTab before its consolidation into this view).
-const WAYBACK_RELEASES: { year: string; releaseId: number }[] = [
-  { year: "2019", releaseId: 10 },
-  { year: "2020", releaseId: 20 },
-  { year: "2021", releaseId: 30 },
-  { year: "2022", releaseId: 40 },
-  { year: "2023", releaseId: 54 },
-  { year: "2024", releaseId: 62 },
-];
-
 function SiteMap({
   sites,
   selectedSite,
   onSelectSite,
-  imageryOn,
-  imageryReleaseId,
-  imageryOpacity,
-  googleSatOn,
 }: {
   sites: SiteRecord[];
   selectedSite: SiteRecord | null;
   onSelectSite: (s: SiteRecord | null) => void;
-  imageryOn: boolean;
-  imageryReleaseId: number;
-  imageryOpacity: number;
-  googleSatOn: boolean;
 }) {
   // Filter sites with valid coordinates
   const mappable = sites.filter(s => s.latitude != null && s.longitude != null);
@@ -174,20 +169,13 @@ function SiteMap({
       style={{ width: "100%", height: "100%", borderRadius: 8 }}
       scrollWheelZoom={true}
     >
-      <TileLayer
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      />
-      {googleSatOn && GMAPS_KEY && (
+      {/* Basemap: Google Satellite when API key works; CARTO dark fallback. */}
+      {GMAPS_KEY ? (
         <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
-      )}
-      {imageryOn && (
+      ) : (
         <TileLayer
-          key={imageryReleaseId}
-          attribution='Imagery &copy; <a href="https://livingatlas.arcgis.com/wayback/">ESRI Wayback</a>'
-          url={`https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/${imageryReleaseId}/{z}/{y}/{x}`}
-          opacity={imageryOpacity}
-          zIndex={500}
+          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
         />
       )}
       <MarkerClusterGroup
@@ -198,7 +186,10 @@ function SiteMap({
         showCoverageOnHover={false}
       >
         {mappable.map((site) => {
-          const color = getProviderColor(site.provider_name);
+          // Color the dot by lifecycle stage (Active = green, Construction
+          // = amber, Announced = blue, Cancelled/Withdrawn = red/slate, etc.)
+          // so the map reads as a buildout-progress heatmap at a glance.
+          const color = STAGE_COLOR[site.stage ?? ""] ?? _DEFAULT_STAGE_COLOR;
           const isSelected = selectedSite?.aterio_dc_uid === site.aterio_dc_uid;
           const mw = site.total_mw ?? 0;
           const radius = Math.max(4, Math.min(16, 4 + Math.sqrt(mw) * 0.5));
@@ -274,10 +265,9 @@ export default function DataCentersTab() {
   const [selected, setSelected] = useState<SiteRecord | null>(null);
   const [expandedSiteUid, setExpandedSiteUid] = useState<string | null>(null);
   const [detailUid, setDetailUid] = useState<string | null>(null);
-  const [imageryOn, setImageryOn] = useState(false);
-  const [imageryYearIdx, setImageryYearIdx] = useState(WAYBACK_RELEASES.length - 1);
-  const [imageryOpacity, setImageryOpacity] = useState(0.85);
-  const [googleSatOn, setGoogleSatOn] = useState(false);
+  // Map basemap is now Google Satellite (when key works) or CARTO dark
+  // fallback — no in-tab imagery toggle. Removed the old ESRI Wayback
+  // historical-imagery overlay per UX simplification.
   const [providerChartType, setProviderChartType] = useState<"bar" | "pie">("bar");
   const [stateChartType, setStateChartType] = useState<"bar" | "pie">("bar");
   const [yearStageMetric, setYearStageMetric] = useState<"count" | "mw">("count");
@@ -637,69 +627,27 @@ export default function DataCentersTab() {
             </div>
           )}
         </div>
-        {/* Satellite imagery controls (ESRI Wayback historical layer) */}
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "8px 12px", background: "#0f172a", border: "1px solid #334155", borderRadius: 6, marginBottom: 8 }}>
-          <label style={{ display: "flex", alignItems: "center", gap: 6, color: "#e2e8f0", fontSize: 12, cursor: "pointer" }}>
-            <input type="checkbox" checked={imageryOn} onChange={e => setImageryOn(e.target.checked)} />
-            ESRI Wayback (historical)
-          </label>
-          <label
-            style={{
-              display: "flex", alignItems: "center", gap: 6, fontSize: 12,
-              color: GMAPS_KEY ? "#e2e8f0" : "#475569",
-              cursor: GMAPS_KEY ? "pointer" : "not-allowed",
-            }}
-            title={GMAPS_KEY ? "" : "Set VITE_GOOGLE_MAPS_API_KEY in frontend/.env.local"}
-          >
-            <input
-              type="checkbox"
-              checked={googleSatOn}
-              disabled={!GMAPS_KEY}
-              onChange={e => setGoogleSatOn(e.target.checked)}
-            />
-            Google Satellite (current)
-          </label>
-          {imageryOn && (
-            <>
-              <span style={{ color: "#94a3b8", fontSize: 11 }}>Year:</span>
-              {WAYBACK_RELEASES.map((r, i) => (
-                <button
-                  key={r.year}
-                  onClick={() => setImageryYearIdx(i)}
-                  style={{
-                    background: i === imageryYearIdx ? "#3b82f6" : "transparent",
-                    color: i === imageryYearIdx ? "white" : "#cbd5e1",
-                    border: "1px solid #334155",
-                    borderRadius: 4,
-                    padding: "3px 8px",
-                    fontSize: 11,
-                    cursor: "pointer",
-                  }}
-                >
-                  {r.year}
-                </button>
-              ))}
-              <span style={{ color: "#94a3b8", fontSize: 11, marginLeft: 8 }}>
-                Opacity: {Math.round(imageryOpacity * 100)}%
-              </span>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={imageryOpacity}
-                onChange={e => setImageryOpacity(parseFloat(e.target.value))}
-                style={{ width: 120 }}
-              />
-              <a
-                href="https://livingatlas.arcgis.com/wayback/"
-                target="_blank"
-                rel="noreferrer"
-                style={{ color: "#64748b", fontSize: 10, marginLeft: "auto" }}
-              >
-                Imagery via ESRI World Imagery Wayback
-              </a>
-            </>
+        {/* Stage legend — dot color reflects each site's lifecycle stage. */}
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", padding: "8px 12px", background: "#0f172a", border: "1px solid #334155", borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
+          <span style={{ color: "#94a3b8" }}>Color = stage:</span>
+          {[
+            ["Active",       STAGE_COLOR.Active],
+            ["Construction", STAGE_COLOR.Construction],
+            ["Announcement", STAGE_COLOR.Announcement],
+            ["Land Bank",    STAGE_COLOR["Land Bank"]],
+            ["Delayed",      STAGE_COLOR.Delayed],
+            ["Cancelled",    STAGE_COLOR.Cancelled],
+            ["Withdrawn",    STAGE_COLOR.Withdrawn],
+          ].map(([label, color]) => (
+            <span key={label} style={{ display: "flex", alignItems: "center", gap: 4, color: "#cbd5e1" }}>
+              <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "inline-block" }} />
+              {label}
+            </span>
+          ))}
+          {!GMAPS_KEY && (
+            <span style={{ color: "#f59e0b", marginLeft: "auto", fontSize: 10 }}>
+              Google Satellite key not set — using CARTO basemap fallback
+            </span>
           )}
         </div>
         <div style={{ height: 440 }}>
@@ -707,10 +655,6 @@ export default function DataCentersTab() {
             sites={filtered}
             selectedSite={selected}
             onSelectSite={setSelected}
-            imageryOn={imageryOn}
-            imageryReleaseId={WAYBACK_RELEASES[imageryYearIdx].releaseId}
-            imageryOpacity={imageryOpacity}
-            googleSatOn={googleSatOn && !!GMAPS_KEY}
           />
         </div>
       </div>
