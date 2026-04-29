@@ -239,13 +239,28 @@ async def fetch_real_8k_deals_async(since: str = "2023-06-01") -> list[dict]:
             # the recent slice. Older filings are still naturally bounded by
             # the `since` parameter.
             for filing in filings[:15]:
+                items_str = str(filing.get("items") or "")
+                # Material agreements (1.01) and asset acquisitions (2.01) are
+                # almost always business-relevant — keep them even when our
+                # keyword scrape misses inline language. 7.01 (Reg FD) and
+                # 8.01 (Other Events) cover everything from CFO appointments
+                # to dividend declarations to stock buybacks; only keep those
+                # if the body actually mentions power language.
+                strong_signal_item = "1.01" in items_str or "2.01" in items_str
+
                 context = await _extract_power_context(filing["url"])
                 await asyncio.sleep(0.12)
-                # Don't drop empty-context filings — the downstream LLM
-                # extractor can still try, and at minimum we record the
-                # filing so it's visible in the dashboard. Use a short
-                # placeholder excerpt when the keyword scraper found nothing.
-                excerpt = context or f"[8-K filed {filing['date']} by {company}; no inline power-keyword context — review filing for details]"
+
+                if not context and not strong_signal_item:
+                    # Pure 7.01/8.01 filing with no inline power language —
+                    # most likely an unrelated press release (officer change,
+                    # earnings, share-repurchase, etc.). Skip silently.
+                    continue
+
+                excerpt = context or (
+                    f"[8-K filed {filing['date']} by {company} (Items {items_str or 'n/a'}); "
+                    f"keyword scrape found no inline power language — open the filing for details]"
+                )
                 is_tech_related = any(kw in (context or "").lower() for kw in [
                     "microsoft", "amazon", "google", "meta", "oracle",
                     "artificial intelligence", "data center", "hyperscale",
@@ -256,6 +271,7 @@ async def fetch_real_8k_deals_async(since: str = "2023-06-01") -> list[dict]:
                     "source_company": company,
                     "date": filing["date"],
                     "form": "8-K",
+                    "items": items_str,
                     "edgar_url": filing["url"],
                     "capacity_mw": mw,
                     "excerpt": excerpt[:600],
