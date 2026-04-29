@@ -61,12 +61,15 @@ const CARD_STYLE = {
   padding: "20px",
 };
 
+// Five visually distinct hues — brand-leaning where possible, but no two
+// in the blue family (Microsoft / Google / Meta were all blues before, so
+// the trend lines were indistinguishable).
 const COMPANY_COLORS: Record<string, string> = {
-  Microsoft: "#0078D4",
-  Amazon: "#FF9900",
-  Google: "#4285F4",
-  Meta: "#1877F2",
-  Oracle: "#C74634",
+  Microsoft: "#38BDF8", // sky blue
+  Amazon:    "#F97316", // amazon orange
+  Google:    "#22C55E", // google green (secondary brand)
+  Meta:      "#A78BFA", // violet (clearly not blue)
+  Oracle:    "#EF4444", // oracle red
 };
 
 const ENERGY_ICONS: Record<string, typeof Atom> = {
@@ -388,6 +391,33 @@ export default function PowerTab() {
   const [showCharts, setShowCharts] = useState(true);
   const [drillCompany, setDrillCompany] = useState<string | null>(null);
 
+  // Per-column sort + filter state for the announcements table.
+  type DealSortField = "buyer" | "capacity_mw" | "energy_source" | "announced_date" | "status" | "source_type";
+  type CapOp = ">=" | "<=" | ">" | "<" | "=" | "between";
+  const [dealSortField, setDealSortField] = useState<DealSortField>("announced_date");
+  const [dealSortAsc, setDealSortAsc] = useState(false);
+  const [dealColFilters, setDealColFilters] = useState<{
+    buyer: string;
+    headline: string;
+    energy: string;
+    status: string;
+    source: string;
+    capacity: { op: CapOp; value: string; value2: string };
+  }>({
+    buyer: "", headline: "", energy: "", status: "", source: "",
+    capacity: { op: ">=", value: "", value2: "" },
+  });
+  const _CAP_OP_LABELS: Record<CapOp, string> = { ">=": "≥", "<=": "≤", ">": ">", "<": "<", "=": "=", "between": "between" };
+  const clearDealColFilters = () =>
+    setDealColFilters({
+      buyer: "", headline: "", energy: "", status: "", source: "",
+      capacity: { op: ">=", value: "", value2: "" },
+    });
+  const toggleDealSort = (f: DealSortField) => {
+    if (dealSortField === f) setDealSortAsc(v => !v);
+    else { setDealSortField(f); setDealSortAsc(false); }
+  };
+
   if (capLoading || annLoading) return <LoadingSpinner />;
 
   if (capError) {
@@ -404,7 +434,11 @@ export default function PowerTab() {
   }
 
   const companies = ["Microsoft", "Amazon", "Google", "Meta", "Oracle"];
-  const colors = capData?.colors ?? COMPANY_COLORS;
+  // Merge so the local palette is the floor, server-provided colors override
+  // per-company. The previous `?? COMPANY_COLORS` fell through only when the
+  // server sent null/undefined; the live endpoint sends `{}` which is truthy
+  // and shadowed the local palette → every line rendered as the #ccc fallback.
+  const colors = { ...COMPANY_COLORS, ...(capData?.colors ?? {}) };
   const gwSummary = annData?.gw_summary ?? {};
   const deals = annData?.curated ?? [];
 
@@ -420,6 +454,59 @@ export default function PowerTab() {
     const typeMatch = filterType === "All" || d.energy_source.includes(filterType);
     return buyerMatch && typeMatch;
   });
+
+  // Distinct values per filterable column — populates datalist suggestions
+  // for typeahead-on-text inputs.
+  const dealOpts = (() => {
+    const buyer = new Set<string>(), energy = new Set<string>(),
+      status = new Set<string>(), source = new Set<string>();
+    for (const d of deals) {
+      if (d.buyer) buyer.add(d.buyer.split(" / ")[0].trim());
+      if (d.energy_source) energy.add(d.energy_source);
+      if (d.status) status.add(d.status);
+      if (d.source_type) source.add(d.source_type);
+    }
+    const sorted = (s: Set<string>) => [...s].sort((a, b) => a.localeCompare(b));
+    return { buyer: sorted(buyer), energy: sorted(energy), status: sorted(status), source: sorted(source) };
+  })();
+
+  // Apply per-column filters + sort to filteredDeals.
+  const displayedDeals = (() => {
+    const m = (s: string | null | undefined, q: string) =>
+      q === "" || (s ?? "").toLowerCase().includes(q.toLowerCase());
+    const cap = dealColFilters.capacity;
+    const capV = cap.value === "" ? null : Number(cap.value);
+    const capV2 = cap.value2 === "" ? null : Number(cap.value2);
+    const capMatches = (mw: number | null | undefined): boolean => {
+      if (capV === null || Number.isNaN(capV)) return true;
+      const v = mw ?? 0;
+      switch (cap.op) {
+        case ">=": return v >= capV;
+        case "<=": return v <= capV;
+        case ">":  return v >  capV;
+        case "<":  return v <  capV;
+        case "=":  return v === capV;
+        case "between":
+          return capV2 !== null && !Number.isNaN(capV2) ? v >= capV && v <= capV2 : v >= capV;
+      }
+    };
+    const filtered = filteredDeals.filter(d =>
+      m(d.buyer, dealColFilters.buyer) &&
+      m(d.headline, dealColFilters.headline) &&
+      m(d.energy_source, dealColFilters.energy) &&
+      m(d.status, dealColFilters.status) &&
+      m(d.source_type, dealColFilters.source) &&
+      capMatches(d.capacity_mw)
+    );
+    const dir = dealSortAsc ? 1 : -1;
+    return [...filtered].sort((a, b) => {
+      const f = dealSortField;
+      if (f === "capacity_mw") return ((a.capacity_mw ?? 0) - (b.capacity_mw ?? 0)) * dir;
+      const av = (a[f] ?? "") as string;
+      const bv = (b[f] ?? "") as string;
+      return av.localeCompare(bv) * dir;
+    });
+  })();
 
   // Cumulative power-procurement trend, derived from the live announcements
   // (curated_deals + edgar_extractions). For each (quarter × buyer) we take
@@ -597,7 +684,9 @@ export default function PowerTab() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Power Contract Announcements -- Live Data</h3>
-            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>{filteredDeals.length} verified deals -- Click row for source excerpt</p>
+            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
+              {displayedDeals.length} of {filteredDeals.length} matching · click column headers to sort · type or pick from each filter dropdown to narrow
+            </p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)}
@@ -629,17 +718,171 @@ export default function PowerTab() {
               <thead>
                 <tr style={{ borderBottom: "1px solid #334155" }}>
                   <th style={{ width: 20, padding: "8px 12px" }} />
-                  {["Buyer","Headline","Capacity","Energy Type","Announced","Status","Source"].map(h => (
-                    <th key={h} style={{ color: "#64748b", textAlign: "left", padding: "8px 12px", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
+                  {([
+                    { label: "Buyer",       field: "buyer" as const },
+                    { label: "Headline",    field: null },
+                    { label: "Capacity",    field: "capacity_mw" as const },
+                    { label: "Energy Type", field: "energy_source" as const },
+                    { label: "Announced",   field: "announced_date" as const },
+                    { label: "Status",      field: "status" as const },
+                    { label: "Source",      field: "source_type" as const },
+                  ]).map(({ label, field }) => (
+                    <th key={label}
+                      onClick={field ? () => toggleDealSort(field) : undefined}
+                      style={{
+                        color: "#64748b", textAlign: "left", padding: "8px 12px",
+                        fontWeight: 500, whiteSpace: "nowrap",
+                        cursor: field ? "pointer" : "default", userSelect: "none",
+                      }}>
+                      {label}
+                      {field && dealSortField === field && (
+                        dealSortAsc
+                          ? <ChevronUp size={10} style={{ display: "inline", marginLeft: 3 }} />
+                          : <ChevronDown size={10} style={{ display: "inline", marginLeft: 3 }} />
+                      )}
+                    </th>
+                  ))}
+                </tr>
+                {/* Per-column filter row */}
+                <tr style={{ borderBottom: "1px solid #334155", background: "#0b1220" }}>
+                  <th style={{ padding: "4px 8px" }} />
+                  {([
+                    ["buyer", "Buyer", dealOpts.buyer],
+                    ["headline", "Headline", null],
+                  ] as const).map(([key, ph, opts]) => (
+                    <th key={key} style={{ padding: "4px 8px" }}>
+                      <input
+                        type="text"
+                        list={opts ? `dl-deal-${key}` : undefined}
+                        value={dealColFilters[key]}
+                        onChange={e => setDealColFilters(f => ({ ...f, [key]: e.target.value }))}
+                        placeholder={ph}
+                        style={{
+                          width: "100%", boxSizing: "border-box",
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 6px", fontSize: 11,
+                        }}
+                      />
+                      {opts && (
+                        <datalist id={`dl-deal-${key}`}>
+                          {opts.map(o => <option key={o} value={o} />)}
+                        </datalist>
+                      )}
+                    </th>
+                  ))}
+                  {/* Capacity (numeric, comparator) */}
+                  <th style={{ padding: "4px 8px" }}>
+                    <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                      <select
+                        value={dealColFilters.capacity.op}
+                        onChange={e => setDealColFilters(f => ({ ...f, capacity: { ...f.capacity, op: e.target.value as CapOp } }))}
+                        style={{
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 4px", fontSize: 11, cursor: "pointer",
+                        }}
+                      >
+                        {(Object.entries(_CAP_OP_LABELS) as [CapOp, string][]).map(([op, lbl]) => (
+                          <option key={op} value={op}>{lbl}</option>
+                        ))}
+                      </select>
+                      <input
+                        type="number"
+                        value={dealColFilters.capacity.value}
+                        onChange={e => setDealColFilters(f => ({ ...f, capacity: { ...f.capacity, value: e.target.value } }))}
+                        placeholder="MW"
+                        style={{
+                          flex: 1, minWidth: 50, boxSizing: "border-box",
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 6px", fontSize: 11,
+                        }}
+                      />
+                      {dealColFilters.capacity.op === "between" && (
+                        <input
+                          type="number"
+                          value={dealColFilters.capacity.value2}
+                          onChange={e => setDealColFilters(f => ({ ...f, capacity: { ...f.capacity, value2: e.target.value } }))}
+                          placeholder="max"
+                          style={{
+                            flex: 1, minWidth: 50, boxSizing: "border-box",
+                            background: "#0f172a", border: "1px solid #1e293b",
+                            borderRadius: 4, color: "#e2e8f0",
+                            padding: "4px 6px", fontSize: 11,
+                          }}
+                        />
+                      )}
+                    </div>
+                  </th>
+                  {([
+                    ["energy", "Energy", dealOpts.energy],
+                  ] as const).map(([key, ph, opts]) => (
+                    <th key={key} style={{ padding: "4px 8px" }}>
+                      <input
+                        type="text"
+                        list={`dl-deal-${key}`}
+                        value={dealColFilters[key]}
+                        onChange={e => setDealColFilters(f => ({ ...f, [key]: e.target.value }))}
+                        placeholder={ph}
+                        style={{
+                          width: "100%", boxSizing: "border-box",
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 6px", fontSize: 11,
+                        }}
+                      />
+                      <datalist id={`dl-deal-${key}`}>
+                        {opts.map(o => <option key={o} value={o} />)}
+                      </datalist>
+                    </th>
+                  ))}
+                  {/* Announced date — left blank; sort via header click */}
+                  <th style={{ padding: "4px 8px" }} />
+                  {([
+                    ["status", "Status", dealOpts.status],
+                    ["source", "Source", dealOpts.source],
+                  ] as const).map(([key, ph, opts]) => (
+                    <th key={key} style={{ padding: "4px 8px" }}>
+                      <input
+                        type="text"
+                        list={`dl-deal-${key}`}
+                        value={dealColFilters[key]}
+                        onChange={e => setDealColFilters(f => ({ ...f, [key]: e.target.value }))}
+                        placeholder={ph}
+                        style={{
+                          width: "100%", boxSizing: "border-box",
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 6px", fontSize: 11,
+                        }}
+                      />
+                      <datalist id={`dl-deal-${key}`}>
+                        {opts.map(o => <option key={o} value={o} />)}
+                      </datalist>
+                    </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {[...filteredDeals]
-                  .sort((a, b) => b.announced_date.localeCompare(a.announced_date))
-                  .map(deal => (
-                    <DealRow key={deal.id} deal={deal} expanded={expandedId === deal.id} onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)} />
-                  ))}
+                {displayedDeals.length === 0 && (
+                  <tr>
+                    <td colSpan={8} style={{ padding: "20px", textAlign: "center", color: "#64748b" }}>
+                      No deals match the column filters.
+                      {(dealColFilters.buyer || dealColFilters.headline || dealColFilters.energy ||
+                        dealColFilters.status || dealColFilters.source ||
+                        dealColFilters.capacity.value !== "") && (
+                        <button
+                          onClick={clearDealColFilters}
+                          style={{ marginLeft: 12, background: "transparent", border: "1px solid #334155", color: "#94a3b8", borderRadius: 4, padding: "3px 10px", cursor: "pointer", fontSize: 11 }}
+                        >Clear filters</button>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                {displayedDeals.map(deal => (
+                  <DealRow key={deal.id} deal={deal} expanded={expandedId === deal.id} onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)} />
+                ))}
               </tbody>
             </table>
           </div>
