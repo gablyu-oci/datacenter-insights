@@ -31,6 +31,7 @@ from routers.events import router as events_router
 from routers.energy_projects import router as energy_projects_router
 from routers.coverage import router as coverage_router
 from routers.agent import router as agent_router
+from routers.qa import router as qa_router
 from routers.brief import router as brief_router
 from routers.edgar_frames import router as edgar_frames_router
 # oci_share has a wildcard {tab} path -- register last to avoid shadowing
@@ -129,6 +130,7 @@ app.include_router(events_router)
 app.include_router(energy_projects_router)
 app.include_router(coverage_router)
 app.include_router(agent_router)
+app.include_router(qa_router)
 app.include_router(brief_router)
 app.include_router(edgar_frames_router)
 # oci_share must be last -- its /api/{tab}/oci-share pattern is broad

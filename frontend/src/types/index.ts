@@ -173,3 +173,58 @@ export interface AgentStatus {
   last_run: string;
   records_processed: number;
 }
+
+// ---------------------------------------------------------------------------
+// Q&A streaming events / message shapes
+// ---------------------------------------------------------------------------
+export type QAEvent =
+  | { type: "text_chunk"; content: string }
+  | { type: "tool_call"; tool_name: string; args: Record<string, unknown> }
+  | { type: "tool_result"; tool_name: string; summary: string; row_count: number }
+  | {
+      type: "chart_spec";
+      chart_type: "bar" | "pie" | "line" | "table";
+      x: string;
+      y: string;
+      series: Array<Record<string, unknown>>;
+      title: string;
+      source_table: string;
+    }
+  | {
+      type: "citation";
+      table: string;
+      row_id: string | null;
+      source_url: string | null;
+      label: string;
+    }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+export interface ChartSpec {
+  chart_type: "bar" | "pie" | "line" | "table";
+  x: string;
+  y: string;
+  series: Array<Record<string, unknown>>;
+  title: string;
+  source_table: string;
+}
+
+export interface Citation {
+  table: string;
+  row_id: string | null;
+  source_url: string | null;
+  label: string;
+}
+
+export interface QAMessage {
+  role: "user" | "assistant";
+  content: string;
+  charts?: ChartSpec[];
+  citations?: Citation[];
+  toolCalls?: Array<{
+    tool_name: string;
+    args: Record<string, unknown>;
+    row_count?: number;
+  }>;
+  error?: string | null;
+}
