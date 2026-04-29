@@ -10,8 +10,38 @@ import {
   MessageSquare, Send, Square, Trash2, ExternalLink, ChevronDown, ChevronUp,
   X, Maximize2, Minimize2,
 } from "lucide-react";
+import ReactMarkdown from "react-markdown";
 import { useQA } from "../hooks/useQA";
 import type { ChartSpec, Citation, QAMessage } from "../types";
+
+// react-markdown component overrides — keep markdown looking like prose,
+// not a stylesheet, while parsing **bold**, *italic*, `code`, lists, links.
+const MD_COMPONENTS = {
+  p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p {...props} style={{ margin: "0 0 8px", lineHeight: 1.55 }} />
+  ),
+  strong: (props: React.HTMLAttributes<HTMLElement>) => (
+    <strong {...props} style={{ color: "white", fontWeight: 600 }} />
+  ),
+  em: (props: React.HTMLAttributes<HTMLElement>) => (
+    <em {...props} style={{ color: "#cbd5e1", fontStyle: "italic" }} />
+  ),
+  code: (props: React.HTMLAttributes<HTMLElement>) => (
+    <code {...props} style={{ background: "#0f172a", padding: "1px 5px", borderRadius: 3, fontSize: "0.92em" }} />
+  ),
+  a: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a {...props} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "underline" }} />
+  ),
+  ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul {...props} style={{ margin: "4px 0 8px", paddingLeft: 20 }} />
+  ),
+  ol: (props: React.OlHTMLAttributes<HTMLOListElement>) => (
+    <ol {...props} style={{ margin: "4px 0 8px", paddingLeft: 20 }} />
+  ),
+  li: (props: React.LiHTMLAttributes<HTMLLIElement>) => (
+    <li {...props} style={{ margin: "2px 0" }} />
+  ),
+};
 
 // ── Inline chart renderer for streamed chart_spec events ────────────────────
 
@@ -348,8 +378,10 @@ export default function ChatPanel() {
                     <div style={{ color: "#475569", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 6 }}>
                       Analyst
                     </div>
-                    <div style={{ color: "#e2e8f0", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
-                      {m.content || (streaming && i === messages.length - 1 ? <span style={{ color: "#64748b" }}>...</span> : null)}
+                    <div style={{ color: "#e2e8f0", fontSize: 13, lineHeight: 1.55 }}>
+                      {m.content
+                        ? <ReactMarkdown components={MD_COMPONENTS}>{m.content}</ReactMarkdown>
+                        : streaming && i === messages.length - 1 ? <span style={{ color: "#64748b" }}>...</span> : null}
                     </div>
                     {m.charts?.map((c, j) => (
                       <div key={j} style={{ marginTop: 12, padding: "10px 0", borderTop: "1px solid #334155" }}>
