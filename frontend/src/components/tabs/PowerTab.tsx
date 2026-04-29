@@ -196,16 +196,18 @@ function DealRow({ deal, expanded, onToggle }: {
 
 function ModalDealCard({ deal }: { deal: CuratedDeal }) {
   const [open, setOpen] = useState(false);
-  const EIcon = ENERGY_ICONS[deal.energy_source] ?? Zap;
-  const statusColor = STATUS_COLOR[deal.status] ?? "#94a3b8";
-  const isEdgar = deal.source_url.includes("sec.gov");
+  const EIcon = ENERGY_ICONS[deal.energy_source ?? ""] ?? Zap;
+  const statusColor = STATUS_COLOR[deal.status ?? ""] ?? "#94a3b8";
+  const sourceUrl = deal.source_url ?? "";
+  const isEdgar = sourceUrl.includes("sec.gov") || (deal.source_type ?? "").startsWith("8-K") || (deal.source_type ?? "").startsWith("10-");
+  const announcedYM = (deal.announced_date ?? "").slice(0, 7);
 
   return (
     <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: "10px", overflow: "hidden" }}>
       <div onClick={() => setOpen(v => !v)} style={{ padding: "14px 16px", cursor: "pointer", display: "flex", gap: "12px", alignItems: "flex-start" }}>
         {/* Date + source badge */}
         <div style={{ minWidth: 72, flexShrink: 0 }}>
-          <div style={{ color: "#64748b", fontSize: "10px", marginBottom: "4px" }}>{deal.announced_date.slice(0, 7)}</div>
+          <div style={{ color: "#64748b", fontSize: "10px", marginBottom: "4px" }}>{announcedYM || "—"}</div>
           <div style={{
             padding: "2px 6px", borderRadius: "4px", fontSize: "9px", fontWeight: 700, textAlign: "center",
             background: isEdgar ? "#0f1e38" : "#1a2e1a",
@@ -218,12 +220,20 @@ function ModalDealCard({ deal }: { deal: CuratedDeal }) {
 
         {/* Content */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ color: "white", fontWeight: 600, fontSize: "13px", lineHeight: 1.4, marginBottom: 6 }}>{deal.headline}</div>
+          <div style={{ color: "white", fontWeight: 600, fontSize: "13px", lineHeight: 1.4, marginBottom: 6 }}>{deal.headline ?? "(untitled)"}</div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#94a3b8", fontSize: "11px" }}><EIcon size={11} />{deal.energy_source}</span>
-            <span style={{ color: "white", fontWeight: 700, fontSize: "12px" }}>{fmtMW(deal.capacity_mw)}</span>
-            <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status}</span>
-            <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#64748b", fontSize: "11px" }}><MapPin size={10} />{deal.location}</span>
+            {deal.energy_source && (
+              <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#94a3b8", fontSize: "11px" }}><EIcon size={11} />{deal.energy_source}</span>
+            )}
+            {deal.capacity_mw != null && (
+              <span style={{ color: "white", fontWeight: 700, fontSize: "12px" }}>{fmtMW(deal.capacity_mw)}</span>
+            )}
+            {deal.status && (
+              <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status}</span>
+            )}
+            {deal.location && (
+              <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#64748b", fontSize: "11px" }}><MapPin size={10} />{deal.location}</span>
+            )}
           </div>
         </div>
 
@@ -234,16 +244,26 @@ function ModalDealCard({ deal }: { deal: CuratedDeal }) {
         <div style={{ padding: "0 16px 16px", borderTop: "1px solid #1e293b" }}>
           {/* Meta grid */}
           <div style={{ display: "flex", gap: 20, flexWrap: "wrap", padding: "12px 0 14px" }}>
-            <div><div style={{ color: "#64748b", fontSize: "10px" }}>Seller</div><div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2 }}>{deal.seller}</div></div>
+            {deal.seller && (
+              <div><div style={{ color: "#64748b", fontSize: "10px" }}>Seller</div>
+                <div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2 }}>{deal.seller}</div>
+              </div>
+            )}
             {deal.duration_years && (
               <div><div style={{ color: "#64748b", fontSize: "10px" }}>Duration</div>
                 <div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}><Clock size={10} />{deal.duration_years} years</div>
               </div>
             )}
-            <div><div style={{ color: "#64748b", fontSize: "10px" }}>Deal Type</div><div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2 }}>{deal.deal_type}</div></div>
-            <div><div style={{ color: "#64748b", fontSize: "10px" }}>Announced</div>
-              <div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}><Calendar size={10} />{deal.announced_date}</div>
-            </div>
+            {deal.deal_type && (
+              <div><div style={{ color: "#64748b", fontSize: "10px" }}>Deal Type</div>
+                <div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2 }}>{deal.deal_type}</div>
+              </div>
+            )}
+            {deal.announced_date && (
+              <div><div style={{ color: "#64748b", fontSize: "10px" }}>Announced</div>
+                <div style={{ color: "#e2e8f0", fontSize: "12px", marginTop: 2, display: "flex", alignItems: "center", gap: 3 }}><Calendar size={10} />{deal.announced_date}</div>
+              </div>
+            )}
           </div>
 
           {/* Excerpt */}
@@ -560,7 +580,24 @@ export default function PowerTab() {
   const totalAnnGW = Object.values(gwSummary).reduce((s, v) => s + v.gw_total, 0).toFixed(1);
   const totalNuclearGW = Object.values(gwSummary).reduce((s, v) => s + v.nuclear_gw, 0).toFixed(1);
 
-  const drillDeals = drillCompany ? deals.filter(d => d.buyer.includes(drillCompany)) : [];
+  // Drill-down union: curated (historical hand-verified) + edgar (live LLM
+  // extractions). Both arrays come from /api/power/announcements which already
+  // canonicalises buyer names; we additionally accept seller-side matches so a
+  // utility-side filing (e.g. Talen 8-K naming Meta as the buyer) shows up
+  // when the user drills on "Meta". Sorted newest-first by announced_date.
+  const drillDeals = (() => {
+    if (!drillCompany) return [];
+    const matches = (s: string | null | undefined) =>
+      !!s && s.toLowerCase().includes(drillCompany.toLowerCase());
+    type RawDeal = { announced_date?: string | null; buyer?: string | null; seller?: string | null };
+    const all: RawDeal[] = [
+      ...((annData?.curated ?? []) as RawDeal[]),
+      ...((annData?.edgar ?? []) as RawDeal[]),
+    ];
+    return all
+      .filter(d => matches(d.buyer) || matches(d.seller))
+      .sort((a, b) => (b.announced_date ?? "").localeCompare(a.announced_date ?? ""));
+  })();
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
