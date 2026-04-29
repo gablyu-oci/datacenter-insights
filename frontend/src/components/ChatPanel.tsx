@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import type { KeyboardEvent } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
-  PieChart, Pie, Cell,
+  PieChart, Pie, Cell, LabelList,
   LineChart, Line,
   ScatterChart, Scatter, ZAxis,
 } from "recharts";
@@ -53,23 +53,36 @@ const TOOLTIP_STYLES = {
 
 const PIE_COLORS = ["#3b82f6","#22c55e","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#a855f7"];
 
+// Round to nearest 0.1 for small values, integers (with comma sep) above 100.
+function fmt(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "";
+  if (Math.abs(v) >= 100) return Math.round(v).toLocaleString();
+  return (Math.round(v * 10) / 10).toString();
+}
+
 function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: number }) {
-  const data = (spec.series || []).map((s) => ({ x: String(s.x), y: Number(s.y) }));
+  const data = (spec.series || []).map((s) => ({
+    x: String(s.x),
+    y: Number(((Number(s.y) ?? 0) * 10).toFixed(0)) / 10, // round to 0.1
+  }));
+  const ySeriesLabel = (spec.y as string) || "value";
+  const xLabel = spec.x || "Category";
+
   if (spec.chart_type === "table") {
     return (
       <div style={{ overflowX: "auto", marginTop: 8 }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid #334155" }}>
-              <th style={{ color: "#94a3b8", textAlign: "left", padding: "6px 8px" }}>{spec.x}</th>
-              <th style={{ color: "#94a3b8", textAlign: "right", padding: "6px 8px" }}>{spec.y}</th>
+              <th style={{ color: "#94a3b8", textAlign: "left", padding: "6px 8px" }}>{xLabel}</th>
+              <th style={{ color: "#94a3b8", textAlign: "right", padding: "6px 8px" }}>{ySeriesLabel}</th>
             </tr>
           </thead>
           <tbody>
             {data.map((r, i) => (
               <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
                 <td style={{ color: "white", padding: "6px 8px" }}>{r.x}</td>
-                <td style={{ color: "white", padding: "6px 8px", textAlign: "right" }}>{r.y.toLocaleString()}</td>
+                <td style={{ color: "white", padding: "6px 8px", textAlign: "right" }}>{fmt(r.y)}</td>
               </tr>
             ))}
           </tbody>
@@ -78,13 +91,61 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
     );
   }
   if (spec.chart_type === "pie") {
+    // Pie label: "<name> NN%". Hide labels for tiny slices (<3%) to avoid
+    // overlap. Recharts passes (cx, cy, midAngle, outerRadius, name, value,
+    // percent, payload, index) to the label renderer.
+    const total = data.reduce((s, d) => s + d.y, 0) || 1;
+    interface PieLabelProps {
+      cx: number; cy: number; midAngle: number; outerRadius: number;
+      payload: { x: string; y: number };
+    }
+    const renderLabel = (props: unknown) => {
+      const p = props as PieLabelProps;
+      const pct = (p.payload.y / total) * 100;
+      if (pct < 3) return null;
+      const RAD = Math.PI / 180;
+      const r = p.outerRadius + 16;
+      const x = p.cx + r * Math.cos(-p.midAngle * RAD);
+      const y = p.cy + r * Math.sin(-p.midAngle * RAD);
+      return (
+        <text
+          x={x} y={y}
+          fill="#cbd5e1" fontSize={11}
+          textAnchor={x > p.cx ? "start" : "end"}
+          dominantBaseline="central"
+        >
+          {p.payload.x} {pct.toFixed(0)}%
+        </text>
+      );
+    };
     return (
       <ResponsiveContainer width="100%" height={height}>
         <PieChart>
-          <Pie data={data} dataKey="y" nameKey="x" outerRadius={Math.min(height * 0.35, 90)} label={({ x }) => x}>
+          <Pie
+            data={data}
+            dataKey="y"
+            nameKey="x"
+            outerRadius={Math.min(height * 0.32, 86)}
+            label={renderLabel}
+            labelLine={false}
+          >
             {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
           </Pie>
-          <Tooltip {...TOOLTIP_STYLES} />
+          <Tooltip
+            {...TOOLTIP_STYLES}
+            formatter={(v: number, _n, props) => {
+              const x = (props as { payload?: { x?: string } })?.payload?.x ?? "";
+              return [`${fmt(v)} ${ySeriesLabel}`, x];
+            }}
+          />
+          <Legend
+            verticalAlign="bottom" align="center"
+            wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }}
+            formatter={(value: string) => {
+              const row = data.find(d => d.x === value);
+              return row ? `${value} — ${fmt(row.y)}` : value;
+            }}
+          />
         </PieChart>
       </ResponsiveContainer>
     );
@@ -92,12 +153,15 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
   if (spec.chart_type === "line") {
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <LineChart data={data}>
+        <LineChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <Tooltip {...TOOLTIP_STYLES} />
-          <Line type="monotone" dataKey="y" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+          <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
+          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
+          <Tooltip {...TOOLTIP_STYLES} formatter={(v: number) => [fmt(v), ySeriesLabel]} />
+          <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
+          <Line type="monotone" dataKey="y" name={ySeriesLabel} stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }}>
+            <LabelList dataKey="y" position="top" formatter={fmt} fill="#cbd5e1" fontSize={10} />
+          </Line>
         </LineChart>
       </ResponsiveContainer>
     );
@@ -106,26 +170,29 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
     const sd = (spec.series || []).map((s) => ({ x: Number(s.x), y: Number(s.y) }));
     return (
       <ResponsiveContainer width="100%" height={height}>
-        <ScatterChart>
+        <ScatterChart margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-          <XAxis type="number" dataKey="x" name={spec.x} tick={{ fill: "#94a3b8", fontSize: 11 }} />
-          <YAxis type="number" dataKey="y" name={String(spec.y)} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <XAxis type="number" dataKey="x" name={xLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
+          <YAxis type="number" dataKey="y" name={ySeriesLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
           <ZAxis range={[60, 60]} />
-          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} />
-          <Scatter data={sd} fill="#3b82f6" />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} formatter={(v: number) => fmt(v)} />
+          <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
+          <Scatter data={sd} name={ySeriesLabel} fill="#3b82f6" />
         </ScatterChart>
       </ResponsiveContainer>
     );
   }
   return (
     <ResponsiveContainer width="100%" height={height}>
-      <BarChart data={data}>
+      <BarChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
-        <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-        <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
-        <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} />
+        <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} interval={0} angle={data.length > 6 ? -25 : 0} textAnchor={data.length > 6 ? "end" : "middle"} height={data.length > 6 ? 50 : 30} label={data.length > 6 ? undefined : { value: xLabel, position: "insideBottom", offset: -2, fill: "#64748b", fontSize: 10 }} />
+        <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
+        <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} formatter={(v: number) => [fmt(v), ySeriesLabel]} />
         <Legend wrapperStyle={{ color: "#94a3b8", fontSize: 12 }} />
-        <Bar dataKey="y" fill="#3b82f6" name={spec.y} radius={[4,4,0,0]} />
+        <Bar dataKey="y" fill="#3b82f6" name={ySeriesLabel} radius={[4,4,0,0]}>
+          <LabelList dataKey="y" position="top" formatter={fmt} fill="#cbd5e1" fontSize={10} />
+        </Bar>
       </BarChart>
     </ResponsiveContainer>
   );
