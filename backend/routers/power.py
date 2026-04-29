@@ -235,10 +235,16 @@ async def power_announcements(
     curated_rows = (await db.execute(cd_stmt)).scalars().all()
     curated = [_curated_row_to_dict(d) for d in curated_rows]
 
-    # Live EDGAR extractions
+    # Live EDGAR extractions — drop rows with no extractable content (the
+    # extractor sometimes parses a filing but can't pull buyer/seller/MW; those
+    # rows are visual noise in the dashboard).
     edgar_deals: list[dict] = []
     if include_edgar:
-        ee_stmt = select(EdgarExtraction)
+        ee_stmt = select(EdgarExtraction).where(
+            (EdgarExtraction.capacity_mw.isnot(None))
+            | (EdgarExtraction.buyer_raw.isnot(None))
+            | (EdgarExtraction.seller_raw.isnot(None))
+        )
         if company and company != "All":
             ee_stmt = ee_stmt.where(
                 (EdgarExtraction.buyer_raw.ilike(f"%{company}%"))

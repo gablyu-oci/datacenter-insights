@@ -110,8 +110,22 @@ async def _get_submissions(cik: str) -> dict:
     return data
 
 
+_RELEVANT_8K_ITEMS = (
+    "1.01",  # Entry into a Material Definitive Agreement
+    "2.01",  # Completion of Acquisition or Disposition of Assets
+    "7.01",  # Reg FD Disclosure (often used for power-deal announcements)
+    "8.01",  # Other Events (commonly used for PPAs / capacity disclosures)
+)
+
+
 async def _get_material_8ks(cik: str, company_name: str, since: str = "2023-01-01") -> list:
-    """Return 8-K filings with material agreement items (1.01) since `since`."""
+    """Return 8-K filings with power-deal-relevant items since `since`.
+
+    Originally filtered to Item 1.01 only (Material Agreements); broadened to
+    cover the four 8-K item codes that hyperscalers + utilities most commonly
+    use for power-deal disclosures. Item 8.01 (Other Events) and 7.01 (Reg FD)
+    are the dominant patterns for PPA / capacity announcements.
+    """
     try:
         data = await _get_submissions(cik)
     except httpx.HTTPStatusError as e:
@@ -138,7 +152,7 @@ async def _get_material_8ks(cik: str, company_name: str, since: str = "2023-01-0
     items   = f.get("items", [""] * len(forms))
     results = []
     for form, date, acc, doc, item in zip(forms, dates, accs, docs, items):
-        if form == "8-K" and date >= since and "1.01" in str(item):
+        if form == "8-K" and date >= since and any(it in str(item) for it in _RELEVANT_8K_ITEMS):
             acc_path = acc.replace("-", "")
             cik_num = cik.lstrip("0")
             url = f"https://www.sec.gov/Archives/edgar/data/{cik_num}/{acc_path}/{doc}"
@@ -211,30 +225,40 @@ async def fetch_real_8k_deals_async(since: str = "2023-06-01") -> list[dict]:
         return cached
 
     deals = []
-    for company, cik in ENERGY_COMPANIES.items():
+    # Iterate BOTH energy companies (sellers / utilities / IPPs) AND
+    # hyperscalers (buyers). The previous version skipped hyperscalers
+    # entirely, missing every Amazon / Microsoft / Oracle / Meta 8-K.
+    all_filers = {**ENERGY_COMPANIES, **HYPERSCALERS}
+    for company, cik in all_filers.items():
         if cik is None:
             continue
         try:
             filings = await _get_material_8ks(cik, company, since)
             await asyncio.sleep(0.12)  # respect EDGAR rate limit
-            for filing in filings[:6]:
+            # Increased from 6 → 15: hyperscalers file frequently and we want
+            # the recent slice. Older filings are still naturally bounded by
+            # the `since` parameter.
+            for filing in filings[:15]:
                 context = await _extract_power_context(filing["url"])
                 await asyncio.sleep(0.12)
-                if not context:
-                    continue
-                is_tech_related = any(kw in context.lower() for kw in [
+                # Don't drop empty-context filings — the downstream LLM
+                # extractor can still try, and at minimum we record the
+                # filing so it's visible in the dashboard. Use a short
+                # placeholder excerpt when the keyword scraper found nothing.
+                excerpt = context or f"[8-K filed {filing['date']} by {company}; no inline power-keyword context — review filing for details]"
+                is_tech_related = any(kw in (context or "").lower() for kw in [
                     "microsoft", "amazon", "google", "meta", "oracle",
                     "artificial intelligence", "data center", "hyperscale",
                     "tech", "nuclear", "restart", "clean energy"
                 ])
-                mw = _parse_mw_from_text(context)
+                mw = _parse_mw_from_text(context) if context else None
                 deals.append({
                     "source_company": company,
                     "date": filing["date"],
                     "form": "8-K",
                     "edgar_url": filing["url"],
                     "capacity_mw": mw,
-                    "excerpt": context[:600],
+                    "excerpt": excerpt[:600],
                     "is_tech_related": is_tech_related,
                     "data_source": "SEC EDGAR 8-K",
                     "confidence": 0.90,
