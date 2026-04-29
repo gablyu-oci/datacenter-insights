@@ -123,6 +123,7 @@ _SCHEMA_WHITELIST: dict[str, dict[str, str]] = {
         "frs_id": "EPA FRS facility id.",
         "naics_code": "NAICS industry code.",
         "confidence": "Resolver confidence (0-1).",
+        "parent_company": "Resolved parent company name (joins through companies via resolved_company_id; null when unresolved). Use this for parent-level rollups across permittee aliases (e.g. FirstEnergy → APS+JCPL+PENELEC+ATSI).",
     },
     "energy_projects": {
         "id": "Primary key.",
@@ -436,6 +437,30 @@ def _build_system_prompt() -> str:
         "Microsoft moves up because a higher share of its sites are already "
         "active.\n\n"
 
+        "Q: \"Which big-tech companies have generator permits?\"\n"
+        "  Loop: query group_by=[parent_company], metric=count, where "
+        "parent_company is_not_null, order desc, limit 20 → "
+        "propose_chart bar, x=\"Parent\", y=\"Permits\".\n"
+        "  IMPORTANT: use the virtual column `parent_company` on "
+        "generator_permits — never `resolved_company_id` (returns integer "
+        "IDs), never `permittee_raw_name` (raw LLC names like 'AEP' / "
+        "'APS' that don't roll up). `parent_company` JOINs through to "
+        "the canonical company name set by the parent-resolver.\n"
+        "  Output:\n"
+        "    Five hyperscalers have direct generator permits in the "
+        "dataset, filed under well-known shell LLCs:\n"
+        "    | Parent | Permits | Filed as |\n"
+        "    | --- | ---: | --- |\n"
+        "    | Amazon | 1 | Vadata, Inc. |\n"
+        "    | Google | 1 | Raiden LLC |\n"
+        "    | Meta | 1 | MFNW LLC |\n"
+        "    | Microsoft | 1 | Microsoft Azure FXS LLC |\n"
+        "    | Oracle | 1 | Oracle America, Inc. |\n"
+        "    The total is small because most hyperscalers don't file "
+        "generator permits in their own name — they procure power from "
+        "utilities (AEP, Dominion, FirstEnergy subsidiaries, etc.) which "
+        "dominate the unresolved permit volume.\n\n"
+
         "Q: \"Which sites have PUE under 1.3?\"\n"
         "  Loop: query yearly_pue<1.3, return building, operator, PUE, "
         "state, datasheet, sorted asc → propose_chart table.\n"
@@ -491,9 +516,37 @@ _COLUMN_ALIASES: dict[str, str] = {
 
 
 def _resolve_column(model: Any, name: str) -> tuple[Any, str]:
-    """Return (column_attr or None, canonical_name) — accepts known aliases."""
+    """Return (column_attr or None, canonical_name) — accepts known aliases.
+
+    Special case: `parent_company` on generator_permits is a virtual column
+    that resolves to companies.canonical_name via a JOIN. Callers detect
+    this by `canonical == "parent_company"` and arrange the JOIN.
+    """
     canonical = _COLUMN_ALIASES.get(name, name)
+    if model is GeneratorPermit and canonical in ("parent_company", "parent", "parent_company_name"):
+        return Company.canonical_name, "parent_company"
     return getattr(model, canonical, None), canonical
+
+
+def _query_needs_company_join(table: str, *col_lists: Any) -> bool:
+    """Returns True when any of the provided column lists references the
+    `parent_company` virtual column on generator_permits — meaning the
+    caller must outerjoin Company before executing the statement."""
+    if table != "generator_permits":
+        return False
+    flat: list[str] = []
+    for cl in col_lists:
+        if not cl:
+            continue
+        for item in cl:
+            if isinstance(item, str):
+                flat.append(item)
+            elif isinstance(item, dict):
+                v = item.get("column")
+                if isinstance(v, str):
+                    flat.append(v)
+    aliases = {"parent_company", "parent", "parent_company_name"}
+    return any(c in aliases for c in flat)
 
 
 # ---------------------------------------------------------------------------
@@ -740,6 +793,9 @@ async def _tool_query(
         return [{"error": f"unknown table: {table}"}]
     model = _TABLE_MODELS[table]
     allowed_cols = set(_SCHEMA_WHITELIST.get(table, {}).keys())
+    # Detect upfront whether any of the column references requires the
+    # generator_permits → companies join for the parent_company virtual column.
+    needs_join = _query_needs_company_join(table, where, select, group_by, order_by)
 
     try:
         limit = int(limit) if limit is not None else 100
@@ -764,7 +820,11 @@ async def _tool_query(
         if err:
             return [{"error": err}]
 
-        stmt = sa_select(*group_cols, agg_expr)
+        stmt = sa_select(*group_cols, agg_expr).select_from(model)
+        if needs_join:
+            stmt = stmt.outerjoin(
+                Company, GeneratorPermit.resolved_company_id == Company.id
+            )
         stmt, err = _apply_where(stmt, model, where or [], table)
         if err:
             return [{"error": err}]
@@ -833,7 +893,11 @@ async def _tool_query(
         if getattr(model, "id", None) is not None and "id" not in select_cols:
             select_cols.insert(0, "id")
 
-    stmt = sa_select(model)
+    stmt = sa_select(model).select_from(model)
+    if needs_join:
+        stmt = stmt.outerjoin(
+            Company, GeneratorPermit.resolved_company_id == Company.id
+        )
     stmt, err = _apply_where(stmt, model, where or [], table)
     if err:
         return [{"error": err}]
@@ -846,7 +910,7 @@ async def _tool_query(
         ob_col = ob.get("column")
         direction = (ob.get("direction") or "desc").lower()
         col, canonical = _resolve_column(model, ob_col or "")
-        if col is None or canonical not in allowed_cols:
+        if col is None or (canonical not in allowed_cols and canonical != "parent_company"):
             return [{"error": f"unknown order_by column: {ob_col}"}]
         stmt = stmt.order_by(col.desc().nullslast() if direction == "desc" else col.asc().nullsfirst())
         ordered = True
@@ -858,6 +922,10 @@ async def _tool_query(
 
     # total_count over the SAME where clause (no limit).
     count_stmt = sa_select(func.count()).select_from(model)
+    if needs_join:
+        count_stmt = count_stmt.outerjoin(
+            Company, GeneratorPermit.resolved_company_id == Company.id
+        )
     count_stmt, err = _apply_where(count_stmt, model, where or [], table)
     if err:
         return [{"error": err}]
