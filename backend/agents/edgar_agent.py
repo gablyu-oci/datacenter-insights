@@ -167,7 +167,18 @@ async def _get_material_8ks(cik: str, company_name: str, since: str = "2023-01-0
 
 
 async def _extract_power_context(url: str, max_chars: int = 6000) -> str:
-    """Fetch 8-K HTML and extract paragraphs mentioning power/energy deals."""
+    """Fetch 8-K HTML and extract paragraphs mentioning power/energy deals.
+
+    Two-tier behavior:
+    1. Keyword-match sentences are preferred (cheap pre-filter that gives the
+       downstream LLM concentrated context).
+    2. When no keywords match, fall back to the first `fallback_chars` of the
+       cleaned filing body so the LLM classifier has actual content to judge
+       relevance from. Without this, a placeholder excerpt would always
+       classify as "not power-related" by default — producing systematic
+       false negatives on filings whose power language doesn't match our
+       narrow keyword list.
+    """
     try:
         html = await _async_fetch(url, is_json=False)
         text = _html_to_text(html)
@@ -182,7 +193,13 @@ async def _extract_power_context(url: str, max_chars: int = 6000) -> str:
             s = s.strip()
             if len(s) > 60 and any(k in s.lower() for k in keywords):
                 relevant.append(s)
-        return " ".join(relevant)[:max_chars]
+        if relevant:
+            return " ".join(relevant)[:max_chars]
+        # Keyword-miss fallback: hand the LLM a leading slice of the body.
+        # 4000 chars is enough to cover the cover page + Item descriptions
+        # on a typical 8-K, which is what the classifier needs.
+        fallback_chars = 4000
+        return text[:fallback_chars] if text else ""
     except httpx.HTTPStatusError as e:
         logger.warning(
             "edgar.filing_fetch_http_error",
@@ -240,26 +257,19 @@ async def fetch_real_8k_deals_async(since: str = "2023-06-01") -> list[dict]:
             # the `since` parameter.
             for filing in filings[:15]:
                 items_str = str(filing.get("items") or "")
-                # Material agreements (1.01) and asset acquisitions (2.01) are
-                # almost always business-relevant — keep them even when our
-                # keyword scrape misses inline language. 7.01 (Reg FD) and
-                # 8.01 (Other Events) cover everything from CFO appointments
-                # to dividend declarations to stock buybacks; only keep those
-                # if the body actually mentions power language.
-                strong_signal_item = "1.01" in items_str or "2.01" in items_str
-
+                # We previously gated 7.01/8.01 filings on a keyword-scrape
+                # match. That produced false negatives (real PPAs filed under
+                # 7.01 with non-standard language got dropped). Now the LLM
+                # classifier in edgar_extractor.py handles relevance — the
+                # fetcher pulls the candidate slate; the classifier decides.
+                # We still scrape inline keywords so we can pre-fill an excerpt
+                # and a parsed MW where possible (cheap and useful when it works).
                 context = await _extract_power_context(filing["url"])
                 await asyncio.sleep(0.12)
 
-                if not context and not strong_signal_item:
-                    # Pure 7.01/8.01 filing with no inline power language —
-                    # most likely an unrelated press release (officer change,
-                    # earnings, share-repurchase, etc.). Skip silently.
-                    continue
-
                 excerpt = context or (
                     f"[8-K filed {filing['date']} by {company} (Items {items_str or 'n/a'}); "
-                    f"keyword scrape found no inline power language — open the filing for details]"
+                    f"keyword scrape found no inline power language — LLM classifier will decide relevance]"
                 )
                 is_tech_related = any(kw in (context or "").lower() for kw in [
                     "microsoft", "amazon", "google", "meta", "oracle",
