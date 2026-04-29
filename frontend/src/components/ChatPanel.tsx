@@ -11,11 +11,13 @@ import {
   X, Maximize2, Minimize2,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { useQA } from "../hooks/useQA";
 import type { ChartSpec, Citation, QAMessage } from "../types";
 
 // react-markdown component overrides — keep markdown looking like prose,
-// not a stylesheet, while parsing **bold**, *italic*, `code`, lists, links.
+// not a stylesheet, while parsing **bold**, *italic*, `code`, lists, links,
+// and (via remark-gfm) tables.
 const MD_COMPONENTS = {
   p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
     <p {...props} style={{ margin: "0 0 8px", lineHeight: 1.55 }} />
@@ -41,6 +43,45 @@ const MD_COMPONENTS = {
   li: (props: React.LiHTMLAttributes<HTMLLIElement>) => (
     <li {...props} style={{ margin: "2px 0" }} />
   ),
+  // GFM tables — dark theme, right-aligned numbers
+  table: (props: React.HTMLAttributes<HTMLTableElement>) => (
+    <table
+      {...props}
+      style={{
+        borderCollapse: "collapse",
+        margin: "10px 0",
+        fontSize: 12,
+        width: "100%",
+      }}
+    />
+  ),
+  thead: (props: React.HTMLAttributes<HTMLTableSectionElement>) => (
+    <thead {...props} style={{ background: "#0f172a" }} />
+  ),
+  th: (props: React.ThHTMLAttributes<HTMLTableCellElement>) => (
+    <th
+      {...props}
+      style={{
+        textAlign: props.style?.textAlign ?? "left",
+        padding: "6px 10px",
+        color: "#94a3b8",
+        fontWeight: 600,
+        borderBottom: "1px solid #334155",
+        whiteSpace: "nowrap",
+      }}
+    />
+  ),
+  td: (props: React.TdHTMLAttributes<HTMLTableCellElement>) => (
+    <td
+      {...props}
+      style={{
+        padding: "5px 10px",
+        color: "#e2e8f0",
+        borderBottom: "1px solid #1e293b",
+        textAlign: props.style?.textAlign ?? "left",
+      }}
+    />
+  ),
 };
 
 // ── Inline chart renderer for streamed chart_spec events ────────────────────
@@ -61,10 +102,18 @@ function fmt(v: number | null | undefined): string {
 }
 
 function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: number }) {
-  const data = (spec.series || []).map((s) => ({
+  const allRows = (spec.series || []).map((s) => ({
     x: String(s.x),
     y: Number(((Number(s.y) ?? 0) * 10).toFixed(0)) / 10, // round to 0.1
   }));
+  // Cap series at 20 for bar/pie/line so the chart stays legible when the
+  // LLM forgets to limit a top-N query. Sort numerically so we get the most
+  // significant rows. The note below the chart tells the user it's truncated.
+  const TRUNCATE_AT = spec.chart_type === "pie" ? 8 : 20;
+  const data = allRows.length > TRUNCATE_AT
+    ? [...allRows].sort((a, b) => b.y - a.y).slice(0, TRUNCATE_AT)
+    : allRows;
+  const truncatedFrom = allRows.length > TRUNCATE_AT ? allRows.length : null;
   const ySeriesLabel = (spec.y as string) || "value";
   const xLabel = spec.x || "Category";
 
@@ -447,16 +496,21 @@ export default function ChatPanel() {
                     </div>
                     <div style={{ color: "#e2e8f0", fontSize: 13, lineHeight: 1.55 }}>
                       {m.content
-                        ? <ReactMarkdown components={MD_COMPONENTS}>{m.content}</ReactMarkdown>
+                        ? <ReactMarkdown components={MD_COMPONENTS} remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
                         : streaming && i === messages.length - 1 ? <span style={{ color: "#64748b" }}>...</span> : null}
                     </div>
-                    {m.charts?.map((c, j) => (
+                    {m.charts?.map((c, j) => {
+                      const total = c.series?.length ?? 0;
+                      const cap = c.chart_type === "pie" ? 8 : 20;
+                      const truncated = total > cap;
+                      return (
                       <div key={j} style={{ marginTop: 12, padding: "10px 0", borderTop: "1px solid #334155" }}>
                         <div style={{ color: "white", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
                         <ChartRenderer spec={c} height={isExpanded ? 280 : 200} />
                         <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>
                           Source table: {c.source_table}
                           {c.breakdown_by ? ` · breakdown by ${c.breakdown_by}` : null}
+                          {truncated ? ` · showing top ${cap} of ${total.toLocaleString()}` : null}
                         </div>
                         {c.reasoning ? (
                           <div style={{ color: "#64748b", fontSize: 11, marginTop: 4, fontStyle: "italic" }}>
@@ -464,7 +518,8 @@ export default function ChatPanel() {
                           </div>
                         ) : null}
                       </div>
-                    ))}
+                      );
+                    })}
                     {m.toolCalls && <ToolTrace calls={m.toolCalls} />}
                     {m.citations && <CitationList items={m.citations} />}
                     {m.error && (

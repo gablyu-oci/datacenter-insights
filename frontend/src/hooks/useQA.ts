@@ -126,6 +126,14 @@ export function useQA() {
       const question = q.trim();
       if (!question) return;
 
+      // Snapshot prior turns for the request body — the agent uses history
+      // to resolve follow-up questions like "show me the company distribution"
+      // that depend on the previous turn's scope.
+      const historySnapshot = messages
+        .filter((m) => m.content && m.content.trim().length > 0)
+        .slice(-8)  // cap to last 8 turns to keep payload reasonable
+        .map((m) => ({ role: m.role, content: m.content }));
+
       // Push user message + empty assistant stub.
       setMessages((prev) => [
         ...prev,
@@ -147,7 +155,7 @@ export function useQA() {
         const resp = await fetch(`${API_BASE}/api/qa/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question }),
+          body: JSON.stringify({ question, history: historySnapshot }),
           signal: ctrl.signal,
         });
 
@@ -201,7 +209,7 @@ export function useQA() {
         abortRef.current = null;
       }
     },
-    [dispatch, updateLastAssistant],
+    [dispatch, updateLastAssistant, messages],
   );
 
   const stop = useCallback(() => {
