@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useApi } from "../../hooks/useApi";
-import { Building2, ChevronDown, ChevronUp, X, MapPin } from "lucide-react";
+import { Building2, ChevronDown, ChevronUp, X, MapPin, FileText, ExternalLink, Zap } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import ErrorPanel from "../shared/ErrorPanel";
 import CitationFooter from "../shared/CitationFooter";
@@ -74,22 +74,56 @@ interface CompanySitesResponse {
 
 // ── Company Detail Panel ──────────────────────────────────────────────────
 
+interface FilingRow {
+  id: number;
+  filing_date: string | null;
+  form_type: string;
+  buyer_raw: string | null;
+  seller_raw: string | null;
+  capacity_mw: number | null;
+  energy_source: string | null;
+  excerpt: string | null;
+  edgar_url: string | null;
+}
+interface FilingsResponse {
+  data: FilingRow[];
+  total: number;
+}
+
 function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: number; onClose: () => void; onOpenSite: (uid: string) => void }) {
   const { data: detail, loading: detLoading, error: detError } = useApi<CompanyDetail>(`/api/companies/${companyId}`);
   const { data: roleData, loading: roleLoading } = useApi<RoleSummary>(`/api/companies/${companyId}/role-summary`);
-  const { data: sitesData, loading: sitesLoading } = useApi<CompanySitesResponse>(`/api/companies/${companyId}/sites?page_size=20`);
+  // Pull all sites (cap 1000) so we can do client-side aggregations like
+  // sites-by-state and total-MW.
+  const { data: sitesData, loading: sitesLoading } = useApi<CompanySitesResponse>(`/api/companies/${companyId}/sites?page_size=1000`);
+  const { data: filingsData, loading: filingsLoading } = useApi<FilingsResponse>(`/api/companies/${companyId}/filings?limit=20`);
 
   const loading = detLoading || roleLoading || sitesLoading;
-
-  // Build pie/bar chart data from role summary
-  const roleChartData = roleData
-    ? Object.entries(roleData).map(([role, stats]) => ({
-        role: role.replace(/_/g, " "),
-        site_count: stats.site_count,
-        mw_total: stats.mw_total,
-      }))
-    : [];
   const ROLE_COLOR_PALETTE = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899", "#f97316", "#10b981", "#a855f7", "#14b8a6"];
+
+  // ── Aggregations driven by sitesData ─────────────────────────────────────
+  type SiteRow = { state_code?: string | null; power_capacity_mw?: number | null };
+  const sitesAll: SiteRow[] = (sitesData?.data ?? []) as SiteRow[];
+  const totalMW = sitesAll.reduce((s, r) => s + (r.power_capacity_mw ?? 0), 0);
+  const siteCount = sitesAll.length;
+  const sitesWithMW = sitesAll.filter(r => (r.power_capacity_mw ?? 0) > 0).length;
+  const avgMW = sitesWithMW > 0 ? totalMW / sitesWithMW : 0;
+  const maxMW = sitesAll.reduce((m, r) => Math.max(m, r.power_capacity_mw ?? 0), 0);
+
+  // Sites by state — top 10 states by site count, with MW total per state.
+  const sitesByState = (() => {
+    const m: Record<string, { sites: number; mw: number }> = {};
+    for (const s of sitesAll) {
+      const k = s.state_code ?? "?";
+      m[k] ??= { sites: 0, mw: 0 };
+      m[k].sites += 1;
+      m[k].mw += s.power_capacity_mw ?? 0;
+    }
+    return Object.entries(m)
+      .map(([state, v]) => ({ state, sites: v.sites, mw: Math.round(v.mw) }))
+      .sort((a, b) => b.sites - a.sites)
+      .slice(0, 10);
+  })();
 
   return (
     <div
@@ -168,13 +202,45 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
             </div>
           ) : (
             <>
-              {/* Role Summary */}
+              {/* MW Summary */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+                  Capacity Summary
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  {[
+                    { label: "Total MW", value: totalMW.toLocaleString(undefined, { maximumFractionDigits: 0 }), accent: "#f59e0b", icon: Zap },
+                    { label: "Sites", value: siteCount.toLocaleString(), accent: "#3b82f6", icon: Building2 },
+                    { label: "Avg MW / site", value: avgMW > 0 ? avgMW.toFixed(0) : "--", accent: "#22c55e", icon: Zap },
+                    { label: "Largest", value: maxMW > 0 ? maxMW.toFixed(0) + " MW" : "--", accent: "#a855f7", icon: Zap },
+                  ].map(({ label, value, accent, icon: Icon }) => (
+                    <div key={label} style={{
+                      background: "#1e293b",
+                      border: "1px solid #334155",
+                      borderRadius: 8,
+                      padding: "10px 14px",
+                      minWidth: 130,
+                      flex: 1,
+                      borderLeft: `3px solid ${accent}`,
+                    }}>
+                      <div style={{ color: accent, fontSize: "10px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", display: "flex", alignItems: "center", gap: 4 }}>
+                        <Icon size={11} /> {label}
+                      </div>
+                      <div style={{ color: "white", fontSize: 18, fontWeight: 700, marginTop: 2 }}>{value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Role Distribution — keep the per-role tiles (end_user / provider /
+                  operator / etc.) but no chart; the chart was visually redundant
+                  with the tiles. */}
               {roleData && Object.keys(roleData).length > 0 && (
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
                     Role Distribution
                   </div>
-                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                     {Object.entries(roleData).map(([role, stats], i) => (
                       <div key={role} style={{
                         background: "#1e293b",
@@ -191,30 +257,95 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
                       </div>
                     ))}
                   </div>
-
-                  {roleChartData.length > 0 && (
-                    <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: 12 }}>
-                      <div style={{ color: "#94a3b8", fontSize: "10px", marginBottom: 6 }}>Sites by role</div>
-                      <ResponsiveContainer width="100%" height={Math.max(120, roleChartData.length * 28)}>
-                        <BarChart data={roleChartData} layout="vertical" margin={{ left: 4, right: 16, top: 4, bottom: 4 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" horizontal={false} />
-                          <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
-                          <YAxis type="category" dataKey="role" tick={{ fill: "#94a3b8", fontSize: 10 }} width={110} />
-                          <Tooltip
-                            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-                            formatter={(v) => [`${v} sites`, "Count"]}
-                          />
-                          <Bar dataKey="site_count" radius={[0, 4, 4, 0]}>
-                            {roleChartData.map((_, i) => (
-                              <Cell key={i} fill={ROLE_COLOR_PALETTE[i % ROLE_COLOR_PALETTE.length]} />
-                            ))}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                  )}
                 </div>
               )}
+
+              {/* Sites by state */}
+              {sitesByState.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+                    Sites by State (top 10)
+                  </div>
+                  <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: 12 }}>
+                    <ResponsiveContainer width="100%" height={Math.max(140, sitesByState.length * 28)}>
+                      <BarChart data={sitesByState} layout="vertical" margin={{ left: 4, right: 50, top: 4, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
+                        <YAxis type="category" dataKey="state" tick={{ fill: "#94a3b8", fontSize: 11 }} width={36} />
+                        <Tooltip
+                          contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                          itemStyle={{ color: "#e2e8f0" }}
+                          labelStyle={{ color: "white" }}
+                          formatter={(v, _n, props) => [
+                            `${v} sites · ${(props as { payload?: { mw?: number } })?.payload?.mw?.toLocaleString() ?? 0} MW`,
+                            "By state",
+                          ]}
+                        />
+                        <Bar dataKey="sites" radius={[0, 4, 4, 0]}>
+                          {sitesByState.map((_, i) => (
+                            <Cell key={i} fill={`hsl(${210 + i * 14}, 70%, ${60 - i * 2}%)`} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+
+              {/* Recent filings — EDGAR 8-K / 10-K extractions naming this company */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                  <FileText size={11} /> Recent Filings ({filingsData?.total ?? 0})
+                </div>
+                {filingsLoading ? (
+                  <div style={{ color: "#3b82f6", textAlign: "center", padding: "20px 0", fontSize: 12 }}>Loading filings...</div>
+                ) : (filingsData?.data ?? []).length === 0 ? (
+                  <div style={{ color: "#64748b", fontSize: 12, padding: "12px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}>
+                    No EDGAR filings extracted for this company yet. The cron-fed extractor adds new disclosures daily.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {(filingsData?.data ?? []).map(f => (
+                      <a
+                        key={f.id}
+                        href={f.edgar_url ?? "#"}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{
+                          background: "#1e293b",
+                          border: "1px solid #334155",
+                          borderRadius: 8,
+                          padding: "10px 14px",
+                          color: "inherit",
+                          textDecoration: "none",
+                          display: "flex",
+                          gap: 12,
+                          alignItems: "flex-start",
+                        }}
+                        onMouseOver={e => (e.currentTarget.style.background = "#22304a")}
+                        onMouseOut={e => (e.currentTarget.style.background = "#1e293b")}
+                      >
+                        <div style={{ flexShrink: 0, fontSize: 11, color: "#94a3b8", minWidth: 84 }}>
+                          <div style={{ color: "#cbd5e1", fontWeight: 600 }}>{f.filing_date ?? "?"}</div>
+                          <div style={{ color: "#64748b", fontSize: 10, marginTop: 1 }}>{f.form_type}</div>
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 3 }}>
+                            {f.buyer_raw && <span style={{ color: "#60a5fa", fontSize: 11, fontWeight: 600 }}>buyer: {f.buyer_raw}</span>}
+                            {f.seller_raw && <span style={{ color: "#fbbf24", fontSize: 11, fontWeight: 600 }}>seller: {f.seller_raw}</span>}
+                            {f.capacity_mw != null && <span style={{ color: "#22c55e", fontSize: 11, fontWeight: 600 }}>{f.capacity_mw.toFixed(0)} MW</span>}
+                            {f.energy_source && <span style={{ color: "#a78bfa", fontSize: 10, padding: "1px 6px", background: "#0f172a", borderRadius: 4 }}>{f.energy_source}</span>}
+                          </div>
+                          <div style={{ color: "#94a3b8", fontSize: 11, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>
+                            {f.excerpt || "(no extracted excerpt — open the filing to read)"}
+                          </div>
+                        </div>
+                        <ExternalLink size={11} color="#64748b" style={{ flexShrink: 0, marginTop: 2 }} />
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               {/* Sites list */}
               <div>

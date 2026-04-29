@@ -8,11 +8,11 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, and_, case, literal_column
+from sqlalchemy import select, func, and_, case, literal_column, or_ as sql_or
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import get_db
-from db.models import Company, CompanyAlias, SiteCompanyAssociation, Site
+from db.models import Company, CompanyAlias, SiteCompanyAssociation, Site, EdgarExtraction
 from schemas.common import CoverageEnvelope, LineageMeta
 
 router = APIRouter(prefix="/api/companies", tags=["companies"])
@@ -230,3 +230,69 @@ def _site_to_dict(site: Site) -> dict:
             val = val.isoformat()
         d[col.name] = val
     return d
+
+
+@router.get("/{id}/filings")
+async def company_filings(
+    id: int,
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recent EDGAR 8-K / 10-K filings where this company appears as buyer
+    or seller. Matches against the company's canonical_name + every alias
+    in company_aliases via case-insensitive substring (ILIKE %name%)."""
+
+    company = await db.get(Company, id)
+    if company is None:
+        raise HTTPException(status_code=404, detail="Company not found")
+
+    # Build the set of names to match against. Drop very short names
+    # (e.g. 2-letter tickers) to avoid spurious substring hits.
+    name_candidates: set[str] = set()
+    if company.canonical_name:
+        name_candidates.add(company.canonical_name)
+    if company.short_name:
+        name_candidates.add(company.short_name)
+    alias_rows = (
+        await db.execute(select(CompanyAlias.raw_name).where(CompanyAlias.company_id == id))
+    ).scalars().all()
+    name_candidates.update(a for a in alias_rows if a)
+    names = [n for n in name_candidates if n and len(n) >= 4]
+
+    if not names:
+        return CoverageEnvelope(data={"data": [], "total": 0}, lineage=_LINEAGE)
+
+    # OR-of-ILIKEs on buyer_raw and seller_raw.
+    buyer_clauses = [EdgarExtraction.buyer_raw.ilike(f"%{n}%") for n in names]
+    seller_clauses = [EdgarExtraction.seller_raw.ilike(f"%{n}%") for n in names]
+    name_clause = sql_or(*buyer_clauses, *seller_clauses)
+
+    stmt = (
+        select(EdgarExtraction)
+        .where(name_clause)
+        .order_by(EdgarExtraction.filing_date.desc().nullslast())
+        .limit(limit)
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+
+    data = [
+        {
+            "id": e.id,
+            "cik": e.cik,
+            "accession_number": e.accession_number,
+            "form_type": e.form_type,
+            "filing_date": e.filing_date.isoformat() if e.filing_date else None,
+            "edgar_url": e.edgar_url,
+            "capacity_mw": float(e.capacity_mw) if e.capacity_mw is not None else None,
+            "energy_source": e.energy_source,
+            "buyer_raw": e.buyer_raw,
+            "seller_raw": e.seller_raw,
+            "excerpt": e.excerpt,
+            "confidence": float(e.confidence) if e.confidence is not None else None,
+        }
+        for e in rows
+    ]
+    return CoverageEnvelope(
+        data={"data": data, "total": len(data)},
+        lineage=_LINEAGE,
+    )
