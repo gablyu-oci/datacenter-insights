@@ -5,6 +5,9 @@ import {
 import { useApi } from "../../hooks/useApi";
 import type { GPUSupplyResponse } from "../../types";
 import { ExternalLink, TrendingUp } from "lucide-react";
+import ErrorPanel from "../shared/ErrorPanel";
+import NoDataPanel from "../shared/NoDataPanel";
+import CitationFooter from "../shared/CitationFooter";
 
 const CARD_STYLE = {
   background: "#1e293b",
@@ -14,14 +17,33 @@ const CARD_STYLE = {
 };
 
 export default function GPUSupplyTab() {
-  const { data, loading } = useApi<GPUSupplyResponse>("/api/gpu/supply");
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<GPUSupplyResponse>("/api/gpu/supply");
 
   if (loading) return <Loader />;
+
+  if (error) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+      </div>
+    );
+  }
 
   const shipped = data?.shipped ?? [];
   const deployed = data?.deployed ?? [];
   const inventory = data?.inventory ?? [];
   const revenue = data?.revenue_estimates ?? [];
+
+  // Check if there is actually any data
+  const hasData = shipped.length > 0 || deployed.length > 0 || revenue.length > 0;
+
+  if (!hasData) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <NoDataPanel pillar="GPU Supply" reason="GPU supply chain data will be integrated in Phase 2. This will include NVIDIA earnings-derived shipment estimates and deployment proxies." />
+      </div>
+    );
+  }
 
   // Merge shipped/deployed/inventory for area chart
   const combined = shipped.map((s, i) => ({
@@ -43,7 +65,7 @@ export default function GPUSupplyTab() {
         {[
           { label: "GPUs Shipped (cumulative)", value: latestShipped, sub: "Q4 2024 estimate" },
           { label: "GPUs Deployed (active)", value: latestDeployed, sub: "Via NIC/optics proxy" },
-          { label: "Inventory Gap", value: latestGap, sub: "Shipped − deployed" },
+          { label: "Inventory Gap", value: latestGap, sub: "Shipped - deployed" },
           { label: "NVIDIA AI Revenue", value: `$${latestRev}B`, sub: "Latest quarter" },
         ].map(({ label, value, sub }) => (
           <div key={label} style={{ ...CARD_STYLE, flex: 1, minWidth: 150 }}>
@@ -60,7 +82,7 @@ export default function GPUSupplyTab() {
           GPU Shipments vs Deployments
         </h3>
         <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          Cumulative units — inventory gap represents shipped but not yet active GPUs
+          Cumulative units -- inventory gap represents shipped but not yet active GPUs
         </p>
         <ResponsiveContainer width="100%" height={280}>
           <AreaChart data={combined}>
@@ -69,7 +91,7 @@ export default function GPUSupplyTab() {
             <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v: number) => v.toLocaleString()}
+              formatter={(v) => Number(v).toLocaleString()}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
             <Area type="monotone" dataKey="Shipped" stroke="#3b82f6" fill="#3b82f620" strokeWidth={2} />
@@ -77,6 +99,12 @@ export default function GPUSupplyTab() {
             <Area type="monotone" dataKey="Inventory" stroke="#f59e0b" fill="#f59e0b20" strokeWidth={2} strokeDasharray="5 5" />
           </AreaChart>
         </ResponsiveContainer>
+        <CitationFooter
+          sources={["NVIDIA Earnings Transcripts"]}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+          sourceUrl={lineage?.source_url}
+        />
       </div>
 
       {/* Revenue to unit inference */}
@@ -84,10 +112,10 @@ export default function GPUSupplyTab() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
-              Revenue → Unit Inference (NVIDIA AI Data Center)
+              Revenue to Unit Inference (NVIDIA AI Data Center)
             </h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              Implied GPU units derived from revenue ÷ estimated ASP — Earnings Parsing Agent
+              Implied GPU units derived from revenue / estimated ASP -- Earnings Parsing Agent
             </p>
           </div>
           <TrendingUp size={18} color="#f59e0b" />
@@ -106,6 +134,12 @@ export default function GPUSupplyTab() {
             <Bar yAxisId="right" dataKey="units_implied" name="Implied Units" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+        <CitationFooter
+          sources={["NVIDIA Financial Filings"]}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+          sourceUrl={lineage?.source_url}
+        />
       </div>
 
       <div style={{ ...CARD_STYLE, padding: "12px 20px", display: "flex", alignItems: "center", gap: "8px" }}>
@@ -119,5 +153,5 @@ export default function GPUSupplyTab() {
 }
 
 function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading…</div>;
+  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
 }

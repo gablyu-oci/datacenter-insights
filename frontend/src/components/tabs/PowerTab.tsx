@@ -5,6 +5,8 @@ import {
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
 import type { PowerCapacityResponse, PowerTimeseriesResponse } from "../../types";
+import ErrorPanel from "../shared/ErrorPanel";
+import CitationFooter from "../shared/CitationFooter";
 import {
   ExternalLink, TrendingUp, Zap, Atom, Sun,
   ChevronDown, ChevronUp,
@@ -88,7 +90,7 @@ const STATUS_COLOR: Record<string, string> = {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function fmtMW(mw: number | null) {
-  if (!mw) return "—";
+  if (!mw) return "\u2014";
   return mw >= 1000 ? `${(mw / 1000).toFixed(1)} GW` : `${mw} MW`;
 }
 
@@ -155,7 +157,7 @@ function DealRow({ deal, expanded, onToggle }: {
         <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px" }}>{deal.energy_source}</td>
         <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px", whiteSpace: "nowrap" }}>{deal.announced_date}</td>
         <td style={{ padding: "10px 12px" }}>
-          <span style={{ color: statusColor, fontSize: "11px" }}>● {deal.status}</span>
+          <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status}</span>
         </td>
         <td style={{ padding: "10px 12px" }}>
           <SourceBadge type={deal.source_type} url={deal.source_url} />
@@ -217,7 +219,7 @@ function ModalDealCard({ deal }: { deal: CuratedDeal }) {
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
             <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#94a3b8", fontSize: "11px" }}><EIcon size={11} />{deal.energy_source}</span>
             <span style={{ color: "white", fontWeight: 700, fontSize: "12px" }}>{fmtMW(deal.capacity_mw)}</span>
-            <span style={{ color: statusColor, fontSize: "11px" }}>● {deal.status}</span>
+            <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status}</span>
             <span style={{ display: "flex", alignItems: "center", gap: 3, color: "#64748b", fontSize: "11px" }}><MapPin size={10} />{deal.location}</span>
           </div>
         </div>
@@ -328,7 +330,7 @@ function DealsModal({
               <div style={{ width: 4, height: 40, borderRadius: 2, background: color, flexShrink: 0 }} />
               <div>
                 <div style={{ color: "white", fontSize: 22, fontWeight: 700 }}>{company}</div>
-                <div style={{ color: "#64748b", fontSize: 12 }}>Power Contract Intelligence — All Verified Deals</div>
+                <div style={{ color: "#64748b", fontSize: 12 }}>Power Contract Intelligence -- All Verified Deals</div>
               </div>
             </div>
             <button onClick={onClose} style={{
@@ -361,7 +363,7 @@ function DealsModal({
         {/* Scrollable deal list */}
         <div style={{ overflowY: "auto", padding: "16px 24px 24px", display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ color: "#475569", fontSize: "11px", marginBottom: 4 }}>
-            {sorted.length} deals · newest first · click any deal to expand source
+            {sorted.length} deals -- newest first -- click any deal to expand source
           </div>
           {sorted.length === 0
             ? <div style={{ color: "#64748b", textAlign: "center", padding: 40 }}>No verified deals on record.</div>
@@ -376,9 +378,9 @@ function DealsModal({
 // ── Main Component ─────────────────────────────────────────────────────────
 
 export default function PowerTab() {
-  const { data: capData, loading: capLoading } = useApi<PowerCapacityResponse>("/api/power/capacity");
-  const { data: tsData, loading: tsLoading } = useApi<PowerTimeseriesResponse>("/api/power/timeseries");
-  const { data: annData, loading: annLoading } = useApi<AnnouncementsResponse>("/api/power/announcements");
+  const { data: capData, loading: capLoading, error: capError, errorInfo: capErrorInfo, retry: capRetry, lastFetchedAt: capLastFetched, lineage: capLineage } = useApi<PowerCapacityResponse>("/api/power/capacity");
+  const { data: tsData, loading: tsLoading, lineage: tsLineage } = useApi<PowerTimeseriesResponse>("/api/power/timeseries");
+  const { data: annData, loading: annLoading, error: annError, errorInfo: annErrorInfo, retry: annRetry, lineage: annLineage } = useApi<AnnouncementsResponse>("/api/power/announcements");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [filterCompany, setFilterCompany] = useState("All");
@@ -388,8 +390,21 @@ export default function PowerTab() {
 
   if (capLoading || tsLoading) return <LoadingSpinner />;
 
+  if (capError) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <ErrorPanel
+          title={capErrorInfo?.title}
+          message={capErrorInfo?.message}
+          onRetry={capRetry}
+          lastAttempt={capLastFetched}
+        />
+      </div>
+    );
+  }
+
   const companies = ["Microsoft", "Amazon", "Google", "Meta", "Oracle"];
-  const colors = capData?.colors ?? {};
+  const colors = capData?.colors ?? COMPANY_COLORS;
   const gwSummary = annData?.gw_summary ?? {};
   const deals = annData?.curated ?? [];
 
@@ -406,11 +421,18 @@ export default function PowerTab() {
     return buyerMatch && typeMatch;
   });
 
-  const tsQuarters = tsData?.data["Microsoft"]?.map(d => d.quarter) ?? [];
+  // Backend may return either the legacy quarterly-array shape (Phase-0 mock)
+  // or the new stage-keyed dict (Phase-1B real DB aggregation). Only the
+  // array shape feeds the quarterly line chart; the dict shape is empty here.
+  const seriesByCompany: Record<string, { quarter: string; gw: number }[]> = {};
+  for (const [c, v] of Object.entries(tsData?.data ?? {})) {
+    if (Array.isArray(v)) seriesByCompany[c] = v as { quarter: string; gw: number }[];
+  }
+  const tsQuarters = seriesByCompany["Microsoft"]?.map(d => d.quarter) ?? [];
   const lineData = tsQuarters.map(q => {
     const row: Record<string, string | number> = { quarter: q };
     companies.forEach(c => {
-      const match = tsData?.data[c]?.find(d => d.quarter === q);
+      const match = seriesByCompany[c]?.find(d => d.quarter === q);
       if (match) row[c] = match.gw;
     });
     return row;
@@ -439,7 +461,7 @@ export default function PowerTab() {
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <MetricCard label="Total Announced GW" value={totalAnnGW} unit="GW" sub={`${deals.length} verified deals across 5 companies`} />
         <MetricCard label="Nuclear GW Announced" value={totalNuclearGW} unit="GW" sub="Nuclear PPA + SMR + co-location" accent="#f59e0b" />
-        <MetricCard label="Amazon Contracted" value="~200M" unit="MWh" sub="FY2025 10-K disclosure · 16-yr avg" accent="#FF9900" />
+        <MetricCard label="Amazon Contracted" value="~200M" unit="MWh" sub="FY2025 10-K disclosure -- 16-yr avg" accent="#FF9900" />
         <MetricCard label="Verified Sources" value={String(annData?.data_sources.length ?? 0)} sub="EDGAR + Press Releases + Reports" accent="#3b82f6" />
       </div>
 
@@ -448,7 +470,7 @@ export default function PowerTab() {
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
-              Contracted Power by Company — Verified Public Announcements (GW)
+              Contracted Power by Company -- Verified Public Announcements (GW)
             </h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
               Click any company column to open deal details
@@ -464,7 +486,6 @@ export default function PowerTab() {
               data={realGWData}
               style={{ cursor: "pointer" }}
               onClick={state => {
-                // activeLabel is populated from the x-position of the click
                 const label = state?.activeLabel as string | undefined;
                 if (label) setDrillCompany(label);
               }}
@@ -476,7 +497,7 @@ export default function PowerTab() {
                 contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8 }}
                 labelStyle={{ color: "white" }}
                 itemStyle={{ color: "#94a3b8" }}
-                formatter={(v: number, name: string) => [`${v.toFixed(2)} GW`, name]}
+                formatter={(v, name) => [`${Number(v).toFixed(2)} GW`, String(name)]}
                 cursor={{ fill: "#ffffff10" }}
               />
               <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
@@ -486,6 +507,12 @@ export default function PowerTab() {
             </BarChart>
           </ResponsiveContainer>
         )}
+        <CitationFooter
+          sources={annData?.data_sources}
+          retrievedAt={annLineage?.retrieved_at}
+          confidence={annLineage?.confidence}
+          sourceUrl={annLineage?.source_url}
+        />
       </div>
 
       {/* Line chart */}
@@ -495,8 +522,8 @@ export default function PowerTab() {
             <div>
               <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Cumulative Power Procurement Trend</h3>
               <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-                Quarterly modeled growth curve — calibrated to disclosed annual totals
-                <span style={{ color: "#f59e0b", marginLeft: 8 }}>⚠ Modeled</span>
+                Quarterly modeled growth curve -- calibrated to disclosed annual totals
+                <span style={{ color: "#f59e0b", marginLeft: 8 }}>Warning: Modeled</span>
               </p>
             </div>
             <TrendingUp size={18} color="#3b82f6" />
@@ -506,7 +533,8 @@ export default function PowerTab() {
               data={lineData}
               style={{ cursor: "pointer" }}
               onClick={state => {
-                const name = state?.activePayload?.[0]?.name as string | undefined;
+                const payload = (state as { activePayload?: Array<{ name?: string }> })?.activePayload;
+                const name = payload?.[0]?.name;
                 if (name) setDrillCompany(name);
               }}
             >
@@ -524,6 +552,12 @@ export default function PowerTab() {
               ))}
             </LineChart>
           </ResponsiveContainer>
+          <CitationFooter
+            sources={["Power Timeseries Model"]}
+            retrievedAt={tsLineage?.retrieved_at}
+            confidence={tsLineage?.confidence}
+            sourceUrl={tsLineage?.source_url}
+          />
         </div>
       )}
 
@@ -531,8 +565,8 @@ export default function PowerTab() {
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div>
-            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Power Contract Announcements — Live Data</h3>
-            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>{filteredDeals.length} verified deals · Click row for source excerpt</p>
+            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Power Contract Announcements -- Live Data</h3>
+            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>{filteredDeals.length} verified deals -- Click row for source excerpt</p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
             <select value={filterCompany} onChange={e => setFilterCompany(e.target.value)}
@@ -545,28 +579,47 @@ export default function PowerTab() {
             </select>
           </div>
         </div>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid #334155" }}>
-                <th style={{ width: 20, padding: "8px 12px" }} />
-                {["Buyer","Headline","Capacity","Energy Type","Announced","Status","Source"].map(h => (
-                  <th key={h} style={{ color: "#64748b", textAlign: "left", padding: "8px 12px", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[...filteredDeals]
-                .sort((a, b) => b.announced_date.localeCompare(a.announced_date))
-                .map(deal => (
-                  <DealRow key={deal.id} deal={deal} expanded={expandedId === deal.id} onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)} />
-                ))}
-            </tbody>
-          </table>
-        </div>
+        {annError ? (
+          <ErrorPanel
+            title={annErrorInfo?.title}
+            message={annErrorInfo?.message}
+            onRetry={annRetry}
+            variant="inline"
+          />
+        ) : annLoading ? (
+          <div style={{ color: "#3b82f6", textAlign: "center", padding: "40px 0" }}>Loading announcements...</div>
+        ) : filteredDeals.length === 0 ? (
+          <div style={{ color: "#64748b", textAlign: "center", padding: "40px 0" }}>
+            No deals match the current filters.
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+              <thead>
+                <tr style={{ borderBottom: "1px solid #334155" }}>
+                  <th style={{ width: 20, padding: "8px 12px" }} />
+                  {["Buyer","Headline","Capacity","Energy Type","Announced","Status","Source"].map(h => (
+                    <th key={h} style={{ color: "#64748b", textAlign: "left", padding: "8px 12px", fontWeight: 500, whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[...filteredDeals]
+                  .sort((a, b) => b.announced_date.localeCompare(a.announced_date))
+                  .map(deal => (
+                    <DealRow key={deal.id} deal={deal} expanded={expandedId === deal.id} onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)} />
+                  ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <CitationFooter
+          sources={annData?.data_sources}
+          retrievedAt={capLineage?.retrieved_at}
+          confidence={capLineage?.confidence}
+          sourceUrl={capLineage?.source_url}
+        />
       </div>
-
-      {annLoading && null}
     </div>
   );
 }
@@ -574,7 +627,7 @@ export default function PowerTab() {
 function LoadingSpinner() {
   return (
     <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px" }}>
-      <div style={{ color: "#3b82f6", fontSize: "14px" }}>Loading intelligence data…</div>
+      <div style={{ color: "#3b82f6", fontSize: "14px" }}>Loading intelligence data...</div>
     </div>
   );
 }

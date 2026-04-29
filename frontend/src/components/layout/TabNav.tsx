@@ -1,15 +1,11 @@
 import { useState, useRef, useEffect } from "react";
-import { Zap, Satellite, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server } from "lucide-react";
+import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server, Building2 } from "lucide-react";
 
-const POWER_TABS = [
-  { id: "power",       label: "Power Contracts",        icon: Zap,    real: true  },
-  { id: "datacenters", label: "Data Centers Overview",  icon: Server, real: false },
-];
-
-const POWER_IDS = new Set(POWER_TABS.map(t => t.id));
-
-const BEFORE_SUPPLIER = [
-  { id: "satellite", label: "Buildout Satellite View", icon: Satellite, real: true  },
+// Top-level tabs rendered before the Supplier Insights dropdown.
+// Data Centers is first (the primary entry point — Aterio site map + table).
+const TOP_TABS = [
+  { id: "datacenters", label: "Data Centers Overview", icon: Server, real: true },
+  { id: "power",       label: "Power Contracts",       icon: Zap,    real: true },
 ];
 
 const SUPPLIER_TABS = [
@@ -19,9 +15,10 @@ const SUPPLIER_TABS = [
 ];
 
 const AFTER_SUPPLIER = [
-  { id: "permits",       label: "Country Permits", icon: FileText,  real: false },
-  { id: "triangulation", label: "Triangulation",   icon: GitBranch, real: false },
-  { id: "sources",       label: "Data Sources",    icon: BookOpen,  real: false },
+  { id: "permits",       label: "Country Permits", icon: FileText,   real: true  },
+  { id: "companies",     label: "Companies",       icon: Building2,  real: true  },
+  { id: "triangulation", label: "Triangulation",   icon: GitBranch,  real: false },
+  { id: "sources",       label: "Data Sources",    icon: BookOpen,   real: true  },
 ];
 
 const SUPPLIER_IDS = new Set(SUPPLIER_TABS.map(t => t.id));
@@ -45,19 +42,13 @@ const BADGE = (real: boolean) => (
 
 export default function TabNav({ active, onChange }: TabNavProps) {
   const [supplierOpen, setSupplierOpen] = useState(false);
-  const [powerOpen, setPowerOpen] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
-  const powerDropdownRef = useRef<HTMLDivElement>(null);
   const supplierActive = SUPPLIER_IDS.has(active);
-  const powerActive = POWER_IDS.has(active);
 
   useEffect(() => {
     function onMouseDown(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setSupplierOpen(false);
-      }
-      if (powerDropdownRef.current && !powerDropdownRef.current.contains(e.target as Node)) {
-        setPowerOpen(false);
       }
     }
     document.addEventListener("mousedown", onMouseDown);
@@ -99,73 +90,7 @@ export default function TabNav({ active, onChange }: TabNavProps) {
       overflow: "visible",
     }}>
 
-      {/* ── Power dropdown ── */}
-      <div ref={powerDropdownRef} style={{ position: "relative", display: "flex", alignItems: "stretch" }}>
-        <button
-          onClick={() => setPowerOpen(v => !v)}
-          style={{
-            display: "flex", alignItems: "center", gap: "6px",
-            padding: "12px 16px",
-            color: powerActive || powerOpen ? "#3b82f6" : "#94a3b8",
-            background: "none", border: "none",
-            borderBottom: powerActive ? "2px solid #3b82f6" : "2px solid transparent",
-            cursor: "pointer", fontSize: "13px",
-            fontWeight: powerActive ? 600 : 400,
-            whiteSpace: "nowrap", transition: "color 0.15s",
-          }}
-        >
-          <Zap size={14} />
-          Power
-          {BADGE(POWER_TABS.some(t => t.real))}
-          <ChevronDown
-            size={12}
-            style={{ marginLeft: 2, transition: "transform 0.15s", transform: powerOpen ? "rotate(180deg)" : "rotate(0deg)" }}
-          />
-        </button>
-
-        {powerOpen && (
-          <div style={{
-            position: "absolute",
-            top: "calc(100% + 1px)",
-            left: 0,
-            zIndex: 9999,
-            background: "#0f172a",
-            border: "1px solid #334155",
-            borderTop: "2px solid #3b82f6",
-            borderRadius: "0 0 10px 10px",
-            boxShadow: "0 16px 40px rgba(0,0,0,0.6)",
-            minWidth: 230,
-            padding: "4px 0 8px",
-          }}>
-            {POWER_TABS.map(({ id, label, icon: Icon, real }) => {
-              const isActive = active === id;
-              return (
-                <button
-                  key={id}
-                  onClick={() => { onChange(id); setPowerOpen(false); }}
-                  style={{
-                    display: "flex", alignItems: "center", gap: "8px",
-                    width: "100%", padding: "10px 18px",
-                    background: isActive ? "#1e293b" : "transparent",
-                    border: "none",
-                    borderLeft: isActive ? "3px solid #3b82f6" : "3px solid transparent",
-                    color: isActive ? "#60a5fa" : "#94a3b8",
-                    cursor: "pointer", fontSize: "13px",
-                    fontWeight: isActive ? 600 : 400,
-                    textAlign: "left", transition: "background 0.1s",
-                  }}
-                >
-                  <Icon size={13} />
-                  {label}
-                  <span style={{ marginLeft: "auto" }}>{BADGE(real)}</span>
-                </button>
-              );
-            })}
-          </div>
-        )}
-      </div>
-
-      {BEFORE_SUPPLIER.map(({ id, label, icon: Icon, real }) => renderTab(id, label, Icon, real))}
+      {TOP_TABS.map(({ id, label, icon: Icon, real }) => renderTab(id, label, Icon, real))}
 
       {/* ── Supplier Insights dropdown ── */}
       <div ref={dropdownRef} style={{ position: "relative", display: "flex", alignItems: "stretch" }}>

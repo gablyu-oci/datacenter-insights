@@ -352,12 +352,12 @@ class GeneratorPermit(SQLModel, table=True):
     longitude: Optional[float] = Field(default=None)
     rated_mw_total: Optional[float] = Field(default=None)
     num_units: Optional[int] = Field(default=None)
-    fuel_type: Optional[str] = Field(default=None, max_length=50)
-    permit_status: Optional[str] = Field(default=None, max_length=50)
+    fuel_type: Optional[str] = Field(default=None, max_length=100)
+    permit_status: Optional[str] = Field(default=None, max_length=100)
     issued_date: Optional[date] = Field(default=None)
     expiry_date: Optional[date] = Field(default=None)
-    frs_id: Optional[str] = Field(default=None, max_length=50, index=True)
-    naics_code: Optional[str] = Field(default=None, max_length=10)
+    frs_id: Optional[str] = Field(default=None, max_length=100, index=True)
+    naics_code: Optional[str] = Field(default=None, max_length=50)
     raw_payload: Optional[dict] = Field(default=None, sa_column=SAColumn(JSONB))
     confidence: Optional[float] = Field(default=None, sa_column=SAColumn(Numeric(3, 2)))
     created_at: datetime = Field(default_factory=_ts_now)
@@ -392,15 +392,15 @@ class IngestionRun(SQLModel, table=True):
 
     id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True))
     adapter_name: str = Field(max_length=100, index=True)
-    adapter_version: Optional[str] = Field(default=None, max_length=20)
+    adapter_version: Optional[str] = Field(default=None, max_length=50)
     started_at: datetime = Field(default_factory=_ts_now)
     completed_at: Optional[datetime] = Field(default=None)
-    status: str = Field(default="running", max_length=20)
+    status: str = Field(default="running", max_length=50)
     records_fetched: int = Field(default=0)
     records_normalized: int = Field(default=0)
     records_stored: int = Field(default=0)
     records_skipped: int = Field(default=0)
-    trigger: Optional[str] = Field(default=None, max_length=20)
+    trigger: Optional[str] = Field(default=None, max_length=50)
     error_log: Optional[dict] = Field(default=None, sa_column=SAColumn(JSONB))
     config_snapshot: Optional[dict] = Field(default=None, sa_column=SAColumn(JSONB))
 
@@ -571,4 +571,33 @@ class EdgarExtraction(SQLModel, table=True):
     # FK lookups (populated by entity resolution after extraction)
     buyer_company_id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger))
     seller_company_id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger))
+    created_at: datetime = Field(default_factory=_ts_now)
+
+
+# ---------------------------------------------------------------------------
+# Brief Runs -- Phase 1C weekly LLM-generated intelligence briefings
+# ---------------------------------------------------------------------------
+
+class BriefRun(SQLModel, table=True):
+    """Persisted weekly briefing produced by the LLM reasoning agent.
+
+    One row per generation run. The frontend reads /api/brief/latest, which
+    returns the most-recent row by generated_at.
+    """
+    __tablename__ = "brief_runs"
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    generated_at: datetime = Field(default_factory=_ts_now)
+    period_start: date = Field(...)
+    period_end: date = Field(...)
+    markdown: str = Field(sa_column=SAColumn(Text, nullable=False))
+    model: Optional[str] = Field(default=None, max_length=100)
+    prompt_version: Optional[str] = Field(default=None, max_length=50)
+    bullet_count: Optional[int] = Field(default=None)
+    tokens_in: Optional[int] = Field(default=None)
+    tokens_out: Optional[int] = Field(default=None)
+    latency_ms: Optional[int] = Field(default=None)
     created_at: datetime = Field(default_factory=_ts_now)

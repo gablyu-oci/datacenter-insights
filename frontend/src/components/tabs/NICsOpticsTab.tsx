@@ -4,6 +4,9 @@ import {
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
 import type { NICsOpticsResponse } from "../../types";
+import ErrorPanel from "../shared/ErrorPanel";
+import NoDataPanel from "../shared/NoDataPanel";
+import CitationFooter from "../shared/CitationFooter";
 
 const CARD_STYLE = {
   background: "#1e293b",
@@ -13,13 +16,31 @@ const CARD_STYLE = {
 };
 
 export default function NICsOpticsTab() {
-  const { data, loading } = useApi<NICsOpticsResponse>("/api/nics");
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<NICsOpticsResponse>("/api/nics");
 
   if (loading) return <Loader />;
+
+  if (error) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+      </div>
+    );
+  }
 
   const nics = data?.nic_shipments ?? [];
   const optics = data?.optics_shipments ?? [];
   const corrScore = data?.correlation_score ?? 0;
+
+  const hasData = nics.length > 0 || optics.length > 0;
+
+  if (!hasData) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <NoDataPanel pillar="NICs & Optics" reason="NIC and optical transceiver shipment data will be integrated in Phase 2. This will include InfiniBand and high-speed Ethernet proxy signals." />
+      </div>
+    );
+  }
 
   const latestNIC = nics[nics.length - 1];
   const latestOptics = optics[optics.length - 1];
@@ -45,10 +66,10 @@ export default function NICsOpticsTab() {
       {/* NIC Shipments */}
       <div style={CARD_STYLE}>
         <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          NIC Shipments — InfiniBand vs High-Speed Ethernet
+          NIC Shipments -- InfiniBand vs High-Speed Ethernet
         </h3>
         <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          AI cluster networking proxy for GPU deployment activity — Industry Analysis sources
+          AI cluster networking proxy for GPU deployment activity -- Industry Analysis sources
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <BarChart data={nics}>
@@ -57,22 +78,28 @@ export default function NICsOpticsTab() {
             <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v: number) => v.toLocaleString()}
+              formatter={(v) => Number(v).toLocaleString()}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
             <Bar dataKey="infiniband" name="InfiniBand" fill="#3b82f6" radius={[4, 4, 0, 0]} />
             <Bar dataKey="ethernet" name="High-Speed Ethernet" fill="#06b6d4" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+        <CitationFooter
+          sources={["Industry Analysis"]}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+          sourceUrl={lineage?.source_url}
+        />
       </div>
 
       {/* Optics Shipments */}
       <div style={CARD_STYLE}>
         <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          Optical Transceiver Shipments — 400G vs 800G
+          Optical Transceiver Shipments -- 400G vs 800G
         </h3>
         <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          800G ramp signals scale-up AI cluster deployments — triangulated against GPU active estimates
+          800G ramp signals scale-up AI cluster deployments -- triangulated against GPU active estimates
         </p>
         <ResponsiveContainer width="100%" height={260}>
           <LineChart data={optics}>
@@ -81,18 +108,24 @@ export default function NICsOpticsTab() {
             <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v: number) => v.toLocaleString()}
+              formatter={(v) => Number(v).toLocaleString()}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
             <Line type="monotone" dataKey="400g" name="400G" stroke="#8b5cf6" strokeWidth={2} dot={{ r: 3 }} />
             <Line type="monotone" dataKey="800g" name="800G" stroke="#ec4899" strokeWidth={2} dot={{ r: 3 }} />
           </LineChart>
         </ResponsiveContainer>
+        <CitationFooter
+          sources={["Industry Analysis"]}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+          sourceUrl={lineage?.source_url}
+        />
       </div>
     </div>
   );
 }
 
 function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading…</div>;
+  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
 }

@@ -1,20 +1,20 @@
 """
-Llama Stack LLM client wrapper — SHELL ONLY for Phase 0.
-No agents are implemented yet; that is Phase 1C.
+Llama Stack LLM client wrapper -- Phase 1C implementation.
 
-Uses the OpenAI Python SDK pointed at the OCI Llama Stack endpoint.
-Rationale: The Llama Stack exposes an OpenAI-compatible surface
-(/v1/chat/completions, /v1/embeddings, etc.) and the openai SDK
-handles streaming, retries, and structured output natively. Using
-the SDK saves us from writing our own streaming parser and retry logic
-vs raw httpx calls.
+Real httpx async calls against the OCI Llama Stack OpenAI-compatible API.
 
-Auth: instance principal from this OCI VM — no API key needed.
+Auth: instance principal from this OCI VM -- no API key needed.
 Endpoint: https://llama-stack.ai-apps-ord.oci-incubations.com
+
+NOTE on token parameter naming:
+    The GPT-5.x family rejects `max_tokens` and requires `max_completion_tokens`.
+    We always use `max_completion_tokens` for chat/completions calls.
+    The /v1/embeddings endpoint is unaffected (no completion-token parameter).
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -24,10 +24,10 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Default Llama Stack endpoint (per 00-DECISIONS-AND-CONSTRAINTS.md §4.2)
+# Default Llama Stack endpoint (per 00-DECISIONS-AND-CONSTRAINTS.md section 4.2)
 DEFAULT_ENDPOINT = "https://llama-stack.ai-apps-ord.oci-incubations.com"
 
-# Model picks per role (per §4.2 locked model table)
+# Model picks per role (per section 4.2 locked model table)
 MODELS = {
     "extraction": "oci/openai.gpt-5.4-mini",
     "extraction_fallback": "oci/google.gemini-2.5-flash",
@@ -74,13 +74,7 @@ class ChatChunk:
 
 
 class LlmClient:
-    """
-    Thin wrapper around the OCI Llama Stack OpenAI-compatible API.
-
-    Phase 0: method signatures only. Actual agent implementations
-    are in Phase 1C. The health check is functional to verify
-    connectivity on startup.
-    """
+    """Thin async wrapper around the OCI Llama Stack OpenAI-compatible API."""
 
     def __init__(self, base_url: str = DEFAULT_ENDPOINT):
         self.base_url = base_url.rstrip("/")
@@ -91,15 +85,12 @@ class LlmClient:
             self._http_client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
-                # No API key — instance principal auth from OCI VM
+                # No API key -- instance principal auth from OCI VM
             )
         return self._http_client
 
     async def health_check(self) -> dict:
-        """
-        Verify Llama Stack is reachable. Called on startup.
-        Returns {"status": "ok"} or {"status": "unreachable", "error": "..."}.
-        """
+        """Verify Llama Stack is reachable. Called on startup."""
         try:
             client = await self._get_client()
             resp = await client.get("/v1/health")
@@ -119,6 +110,9 @@ class LlmClient:
             )
             return {"status": "unreachable", "error": str(exc)}
 
+    # ------------------------------------------------------------------
+    # extract -- single-turn structured JSON extraction
+    # ------------------------------------------------------------------
     async def extract(
         self,
         *,
@@ -127,15 +121,83 @@ class LlmClient:
         input_text: str,
         schema: Optional[dict] = None,
     ) -> ExtractionResult:
-        """
-        Single-turn structured extraction (e.g. EDGAR 8-K extractor).
-        Phase 1C will implement; Phase 0 raises NotImplementedError.
-        """
-        raise NotImplementedError(
-            "LlmClient.extract() is a Phase 1C deliverable. "
-            "See backend/llm/agents/edgar_extractor.py"
+        """Single-turn structured extraction (e.g. EDGAR 8-K extractor)."""
+        client = await self._get_client()
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a precise data extractor. Reply with JSON only "
+                        "matching the provided schema."
+                    ),
+                },
+                {"role": "user", "content": input_text},
+            ],
+            "max_completion_tokens": 2048,
+        }
+        if schema is not None:
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "extraction",
+                    "strict": True,
+                    "schema": schema,
+                },
+            }
+
+        input_hash = self.compute_input_hash(input_text)
+        t0 = time.monotonic()
+        try:
+            resp = await client.post("/v1/chat/completions", json=body)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error(
+                "llm.extract_http_error",
+                extra={"model": model, "prompt_version": prompt_version, "error": str(exc)},
+            )
+            raise
+
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        data = resp.json()
+        content = (
+            data.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content", "") or ""
+        )
+        usage = data.get("usage", {}) or {}
+        tokens = {
+            "prompt": usage.get("prompt_tokens", 0),
+            "completion": usage.get("completion_tokens", 0),
+            "total": usage.get("total_tokens", 0),
+        }
+
+        # Try to parse JSON content
+        result_obj: dict = {}
+        errors: list = []
+        confidence = 0.0
+        try:
+            result_obj = json.loads(content) if content else {}
+            confidence = 0.85
+        except (json.JSONDecodeError, TypeError) as exc:
+            errors.append({"type": "json_decode", "msg": str(exc), "raw": content[:200]})
+            confidence = 0.0
+
+        return ExtractionResult(
+            result=result_obj,
+            model=model,
+            prompt_version=prompt_version,
+            input_hash=input_hash,
+            confidence=confidence,
+            latency_ms=latency_ms,
+            tokens=tokens,
+            errors=errors,
         )
 
+    # ------------------------------------------------------------------
+    # reason -- multi-turn reasoning with optional tool-use
+    # ------------------------------------------------------------------
     async def reason(
         self,
         *,
@@ -144,15 +206,53 @@ class LlmClient:
         messages: list[dict],
         tools: Optional[list[dict]] = None,
     ) -> AgentTurn:
-        """
-        Multi-turn agent reasoning with tool-use (e.g. LLC resolver).
-        Phase 1C will implement; Phase 0 raises NotImplementedError.
-        """
-        raise NotImplementedError(
-            "LlmClient.reason() is a Phase 1C deliverable. "
-            "See backend/llm/agents/llc_resolver.py"
+        """Multi-turn agent reasoning with optional tool-use."""
+        client = await self._get_client()
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_completion_tokens": 4096,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+
+        t0 = time.monotonic()
+        try:
+            resp = await client.post("/v1/chat/completions", json=body)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error(
+                "llm.reason_http_error",
+                extra={"model": model, "prompt_version": prompt_version, "error": str(exc)},
+            )
+            raise
+
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        data = resp.json()
+        msg = data.get("choices", [{}])[0].get("message", {}) or {}
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
+        usage = data.get("usage", {}) or {}
+        tokens = {
+            "prompt": usage.get("prompt_tokens", 0),
+            "completion": usage.get("completion_tokens", 0),
+            "total": usage.get("total_tokens", 0),
+        }
+
+        return AgentTurn(
+            content=content,
+            model=model,
+            prompt_version=prompt_version,
+            tool_calls=tool_calls,
+            confidence=0.0,
+            latency_ms=latency_ms,
+            tokens=tokens,
         )
 
+    # ------------------------------------------------------------------
+    # chat_stream -- async generator over SSE chunks
+    # ------------------------------------------------------------------
     async def chat_stream(
         self,
         *,
@@ -161,36 +261,79 @@ class LlmClient:
         message: str,
         tools: Optional[list[dict]] = None,
     ) -> AsyncIterator[ChatChunk]:
-        """
-        Streaming conversational chat (e.g. Triangulation Q&A agent).
-        Phase 1C will implement; Phase 0 raises NotImplementedError.
-        """
-        raise NotImplementedError(
-            "LlmClient.chat_stream() is a Phase 1C deliverable. "
-            "See backend/llm/agents/qa_agent.py"
-        )
-        # Make this an async generator to satisfy the type signature
-        yield ChatChunk(delta="", done=True)  # pragma: no cover
+        """Streaming conversational chat. Yields ChatChunk per delta."""
+        client = await self._get_client()
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": message}],
+            "stream": True,
+            "max_completion_tokens": 4096,
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
 
+        try:
+            async with client.stream(
+                "POST", "/v1/chat/completions", json=body
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data: "):
+                        continue
+                    payload_str = line[len("data: "):].strip()
+                    if payload_str == "[DONE]":
+                        yield ChatChunk(delta="", done=True)
+                        return
+                    try:
+                        payload = json.loads(payload_str)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = payload.get("choices") or [{}]
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    tool_calls = delta.get("tool_calls") or []
+                    first_tc = tool_calls[0] if tool_calls else None
+                    yield ChatChunk(delta=content or "", tool_call=first_tc)
+        except httpx.HTTPError as exc:
+            logger.error(
+                "llm.chat_stream_http_error",
+                extra={"model": model, "error": str(exc)},
+            )
+            raise
+
+    # ------------------------------------------------------------------
+    # embed -- text embeddings
+    # ------------------------------------------------------------------
     async def embed(
         self,
         *,
         model: str = MODELS["embedding"],
         texts: list[str],
     ) -> list[list[float]]:
-        """
-        Text embedding (e.g. for vector search over permit narratives).
-        Phase 1C will implement; Phase 0 raises NotImplementedError.
-        """
-        raise NotImplementedError(
-            "LlmClient.embed() is a Phase 1C deliverable. "
-            "See backend/llm/tools/vector_search.py"
-        )
+        """Text embedding."""
+        client = await self._get_client()
+        try:
+            resp = await client.post(
+                "/v1/embeddings",
+                json={"model": model, "input": texts},
+            )
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.error(
+                "llm.embed_http_error",
+                extra={"model": model, "error": str(exc)},
+            )
+            raise
+        data = resp.json()
+        return [d["embedding"] for d in data.get("data", [])]
 
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         if self._http_client and not self._http_client.is_closed:
-            await self._http_client.close()
+            await self._http_client.aclose()
 
     @staticmethod
     def compute_input_hash(text: str) -> str:
@@ -198,5 +341,5 @@ class LlmClient:
         return f"sha256:{hashlib.sha256(text.encode()).hexdigest()}"
 
 
-# Module-level singleton — importable by agents in Phase 1C
+# Module-level singleton -- importable by agents
 llm_client = LlmClient()

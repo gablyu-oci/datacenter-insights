@@ -37,6 +37,7 @@ def cli():
         "aterio",
         "edgar",
         "epa_echo",
+        "tceq",
         "va_permits",
         "socrata_ny",
         "pjm",
@@ -126,6 +127,13 @@ async def _run_ingest(source: str, days_back: int):
             await session.commit()
             logger.info("EPA ECHO ingestion complete: %s", result)
 
+        elif source == "tceq":
+            from ingestion.permits_state.tceq import TceqAdapter
+            adapter = TceqAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("TCEQ ingestion complete: %s", result)
+
         elif source == "va_permits":
             from ingestion.permits_state.va_open_data import VaOpenDataAdapter
             adapter = VaOpenDataAdapter()
@@ -135,12 +143,17 @@ async def _run_ingest(source: str, days_back: int):
 
         elif source == "socrata_ny":
             from ingestion.permits_state.socrata import SocrataPermitAdapter, SOCRATA_INSTANCES
-            # Find the NY DEC config
-            ny_cfg = next(c for c in SOCRATA_INSTANCES if c.adapter_id == "ny_dec")
-            adapter = SocrataPermitAdapter(ny_cfg)
-            result = await adapter.run(session)
-            await session.commit()
-            logger.info("NY Socrata ingestion complete: %s", result)
+            # Run every NY dataset configured in STATE_DATASETS (Title V,
+            # State Facility, CATS) sequentially under a shared source label.
+            ny_cfgs = [c for c in SOCRATA_INSTANCES if c.state_code == "NY"]
+            results = []
+            for cfg in ny_cfgs:
+                adapter = SocrataPermitAdapter(cfg)
+                result = await adapter.run(session)
+                await session.commit()
+                results.append(result)
+                logger.info("NY Socrata (%s) complete: %s", cfg.dataset_id, result)
+            logger.info("NY Socrata aggregate: %d datasets run", len(results))
 
         elif source == "pjm":
             from ingestion.iso.pjm import PjmIsoAdapter

@@ -1,0 +1,14 @@
+{
+  "source_company": "Amazon",
+  "buyer": "Amazon / AWS",
+  "date": "2026-02-06",
+  "form": "10-K",
+  "edgar_url": "https://www.sec.gov/Archives/edgar/data/1018724/000101872426000004/amzn-20251231.htm",
+  "capacity_mw": null,
+  "energy_contract_mwh_million": 200.0,
+  "excerpt": "200 million megawatt-hours and the weighted-average remaining duration of these contracts is approximately 16 years, with the majority of these megawatt-hours to be delivered beyond the next nine years . The impact of these fair value measurements on our consolidated statement of operations for the year ended December 31, 2025 was not significant. Changes in fair value measurements will create unrealized gains and losses recorded within operating expenses on our statements of operations with cor",
+  "is_tech_related": true,
+  "data_source": "SEC EDGAR 10-K",
+  "confidence": 0.95,
+  "note": "200M MWh contracted over ~16 years \u2248 1 GW avg"
+}

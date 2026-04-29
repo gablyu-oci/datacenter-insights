@@ -19,6 +19,11 @@ dependencies = [
     "pydantic-settings>=2.8.0",
     "openai>=1.60.0",
     "edgartools>=3.0.0",
+    # Phase 1.5 -- PDF generator-permit parser (pdf_parser.py)
+    "pdfplumber>=0.11.0",
+    "pytesseract>=0.3.13",
+    "pdf2image>=1.17.0",
+    "anthropic>=0.50.0",
 ]
 
 [build-system]

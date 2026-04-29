@@ -82,6 +82,12 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour="*/4", minute=0),           # 0 */4 * * *
         "phase": 1,
     },
+    "weekly_brief": {
+        "adapter": "_weekly_brief",
+        "trigger": CronTrigger(day_of_week="sun", hour=23, minute=0),  # 0 23 * * 0
+        "phase": 1,
+        "enabled": True,
+    },
 }
 
 
@@ -117,6 +123,11 @@ async def run_cache_cleanup_job() -> None:
 async def run_stale_check_job() -> None:
     """Scheduled job: warn on data past its freshness SLA."""
     await _run_adapter_job("_stale_check", _invoke_stale_check)
+
+
+async def run_weekly_brief_job() -> None:
+    """Scheduled job: weekly LLM-generated intelligence brief."""
+    await _run_adapter_job("_weekly_brief", _invoke_weekly_brief)
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +247,13 @@ async def _invoke_stale_check(session) -> dict:
     return {"fetched": len(stale), "stored": 0}
 
 
+async def _invoke_weekly_brief(session) -> dict:
+    """Generate the weekly LLM brief and persist it."""
+    from agents.weekly_brief import generate_weekly_brief
+    await generate_weekly_brief(session)
+    return {"fetched": 1, "stored": 1}
+
+
 # ---------------------------------------------------------------------------
 # Map job IDs to their async functions
 # ---------------------------------------------------------------------------
@@ -247,6 +265,7 @@ _JOB_FUNCTIONS: dict[str, callable] = {
     "coverage_refresh": run_coverage_refresh_job,
     "cache_cleanup": run_cache_cleanup_job,
     "stale_check": run_stale_check_job,
+    "weekly_brief": run_weekly_brief_job,
 }
 
 

@@ -31,7 +31,7 @@ async def _check_llama_stack() -> str:
         async with httpx.AsyncClient(timeout=5.0) as client:
             resp = await client.get(f"{settings.llama_stack_url}/v1/health")
             if resp.status_code < 400:
-                return "ok"
+                return "connected"
             return "unreachable"
     except Exception:
         return "unreachable"

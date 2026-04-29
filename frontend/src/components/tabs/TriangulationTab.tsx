@@ -5,10 +5,14 @@ import {
 import { useApi } from "../../hooks/useApi";
 import type { TriangulationRecord } from "../../types";
 import { AlertTriangle, CheckCircle, TrendingDown, Info } from "lucide-react";
+import ErrorPanel from "../shared/ErrorPanel";
+import NoDataPanel from "../shared/NoDataPanel";
+import CitationFooter from "../shared/CitationFooter";
+import WeeklyBriefCard from "../WeeklyBriefCard";
 
 interface TriangResponse { data: TriangulationRecord[]; }
 
-const STATUS_CONFIG = {
+const STATUS_CONFIG: Record<string, { color: string; icon: React.ReactNode; bg: string }> = {
   Overbuild: { color: "#f59e0b", icon: <AlertTriangle size={14} color="#f59e0b" />, bg: "#f59e0b22" },
   Constrained: { color: "#ef4444", icon: <TrendingDown size={14} color="#ef4444" />, bg: "#ef444422" },
   Balanced: { color: "#22c55e", icon: <CheckCircle size={14} color="#22c55e" />, bg: "#22c55e22" },
@@ -23,17 +27,33 @@ const CARD_STYLE = {
 
 const LAYERS = [
   { layer: "L1", label: "Contracted Power", desc: "GW signed with utilities" },
-  { layer: "L2", label: "GPU Compute Demand", desc: "Power draw × utilization" },
+  { layer: "L2", label: "GPU Compute Demand", desc: "Power draw x utilization" },
   { layer: "L3", label: "NIC/Optics Signals", desc: "Deployment validation" },
   { layer: "L4", label: "Permit Ground Truth", desc: "County construction data" },
 ];
 
 export default function TriangulationTab() {
-  const { data, loading } = useApi<TriangResponse>("/api/triangulation");
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<TriangResponse>("/api/triangulation");
 
   if (loading) return <Loader />;
 
+  if (error) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+      </div>
+    );
+  }
+
   const records = data?.data ?? [];
+
+  if (records.length === 0) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <NoDataPanel pillar="Triangulation" reason="Multi-layer triangulation analysis requires GPU, NIC, and permit data sources. This will be available once all upstream data pillars are integrated in Phase 2." />
+      </div>
+    );
+  }
 
   const powerGapData = records.map((r) => ({
     region: r.region,
@@ -42,21 +62,13 @@ export default function TriangulationTab() {
     "Gap GW": r.power_gap_gw,
   }));
 
-  const radarData = records.map((r) => ({
-    region: r.region,
-    "Power": +(r.contracted_power_gw * 10).toFixed(0),
-    "GPU Density": r.deployed_gpus_k,
-    "NIC Signal": +(r.nic_validation_score * 100).toFixed(0),
-    "Permits": r.permit_signal_count * 5,
-    "Confidence": +(r.confidence * 100).toFixed(0),
-  }));
-
   const overbuildCount = records.filter((r) => r.status === "Overbuild").length;
   const constrainedCount = records.filter((r) => r.status === "Constrained").length;
   const balancedCount = records.filter((r) => r.status === "Balanced").length;
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
+      <WeeklyBriefCard />
       {/* Model layers explanation */}
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
@@ -103,10 +115,10 @@ export default function TriangulationTab() {
       {/* Power gap bar chart */}
       <div style={CARD_STYLE}>
         <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          Power Gap Analysis — Contracted vs GPU Demand (GW)
+          Power Gap Analysis -- Contracted vs GPU Demand (GW)
         </h3>
         <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          Positive gap = excess capacity · Negative gap = compute constrained
+          Positive gap = excess capacity -- Negative gap = compute constrained
         </p>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={powerGapData}>
@@ -115,7 +127,7 @@ export default function TriangulationTab() {
             <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} unit=" GW" />
             <Tooltip
               contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v: number) => `${v} GW`}
+              formatter={(v) => `${v} GW`}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
             <Bar dataKey="Contracted GW" fill="#3b82f6" radius={[4, 4, 0, 0]} />
@@ -123,6 +135,12 @@ export default function TriangulationTab() {
             <Bar dataKey="Gap GW" fill="#22c55e" radius={[4, 4, 0, 0]} />
           </BarChart>
         </ResponsiveContainer>
+        <CitationFooter
+          sources={["Multi-Layer Triangulation Model"]}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+          sourceUrl={lineage?.source_url}
+        />
       </div>
 
       {/* Detail cards per region */}
@@ -175,5 +193,5 @@ export default function TriangulationTab() {
 }
 
 function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading…</div>;
+  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
 }

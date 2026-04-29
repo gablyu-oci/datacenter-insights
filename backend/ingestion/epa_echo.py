@@ -2,18 +2,20 @@
 EPA ECHO Adapter -- Phase 1A ingestion for EPA facility and air compliance data.
 
 Queries the EPA ECHO REST API for facilities with NAICS 518210
-(Data Processing, Hosting) and emergency generator permits.
+(Data Processing, Hosting) across the priority data-center states.
 Upserts into generator_permits, attempts site matching by lat/lon proximity,
 and writes site_aliases and site_company_associations when matches are found.
 
 EPA ECHO API docs: https://echo.epa.gov/tools/web-services
-Two endpoints are used:
-  1. Air Facility Search (get_facilities) -- lists air-permitted facilities
-     filtered by NAICS code or facility name keyword.
-  2. DFR (Detailed Facility Report) get_facility_info -- richer per-facility
-     data when we need supplementary detail (used for enrichment only).
+The Air Facility Search uses a 2-step protocol:
+  1. POST/GET to air_rest_services.get_facilities -- returns a QueryID + summary stats
+  2. GET air_rest_services.get_qid?qid=<QueryID> -- returns the actual facility rows
 
 Rate limit policy: we self-impose 2 req/s to be polite to EPA servers.
+
+Phase 1.5 fix (2026-04-29): switched host echo.epa.gov -> echodata.epa.gov,
+removed invalid p_act=AIR (now p_act=Y), added per-state pagination, and
+implemented the QueryID/get_qid pagination pattern.
 """
 from __future__ import annotations
 
@@ -45,24 +47,29 @@ logger = logging.getLogger(__name__)
 # EPA ECHO endpoints
 # ---------------------------------------------------------------------------
 
-# Primary: Air Facility Search -- returns paginated facility list
-_ECHO_AIR_FACILITIES_URL = (
-    "https://echodata.epa.gov/echo/air_rest_services.get_facilities"
-)
+# Primary host (the docs page echo.epa.gov is NOT an API host)
+_ECHO_HOST = "https://echodata.epa.gov"
 
-# Secondary: Detailed Facility Report -- richer data per facility
-_ECHO_DFR_URL = (
-    "https://echodata.epa.gov/echo/dfr_rest_services.get_facility_info"
-)
+# Air-program-specific facility search
+_ECHO_AIR_FACILITIES_URL = f"{_ECHO_HOST}/echo/air_rest_services.get_facilities"
 
-# NAICS code for data processing / hosting / related services
+# Follow-up call to retrieve actual rows by QueryID
+_ECHO_AIR_GETQID_URL = f"{_ECHO_HOST}/echo/air_rest_services.get_qid"
+
+# Detailed Facility Report (optional enrichment, currently unused)
+_ECHO_DFR_URL = f"{_ECHO_HOST}/echo/dfr_rest_services.get_facility_info"
+
+# Primary NAICS code: data processing / hosting
 _DATA_CENTER_NAICS = "518210"
 
-# Proximity threshold for site matching: ~100 meters in degrees
+# Priority states: where data-center campuses cluster (Phase 1.5 scope)
+_PRIORITY_STATES = ["VA", "TX", "IA", "OR", "AZ", "OH", "GA", "NC", "IL", "WA"]
+
+# Proximity threshold for site matching: ~100m in degrees
 _PROXIMITY_DEGREES = 0.001
 
-# Max results per page from ECHO API
-_PAGE_SIZE = 100
+# Max rows per response page (kept modest -- ECHO get_qid is slow per page)
+_PAGE_SIZE = 200
 
 # Self-imposed rate limit: 0.5 s between requests = 2 req/s
 _REQUEST_DELAY_S = 0.5
@@ -72,21 +79,20 @@ class EpaEchoAdapter:
     """
     EPA ECHO facility ingestion adapter.
 
-    Searches for facilities with data-center-related NAICS codes,
-    creates GeneratorPermit records, and attempts lat/lon site matching.
-    Uses entity_resolution.resolve_company for permittee name resolution.
+    Iterates over priority states, fires NAICS-filtered queries,
+    paginates the per-state QueryID, normalizes facility rows, and upserts
+    into generator_permits.
     """
 
     adapter_name = "EPA ECHO"
     adapter_id = "epa_echo"
-    adapter_version = "1.1.0"
+    adapter_version = "1.2.0"
     pillar = "generator_permits"
     source_id = "epa_echo"
     declared_status = "federal_baseline"
     coverage_scope = "US"
 
     def __init__(self) -> None:
-        # Semaphore enforces max 2 concurrent in-flight requests
         self._semaphore = asyncio.Semaphore(2)
         self._client: httpx.AsyncClient | None = None
 
@@ -96,7 +102,8 @@ class EpaEchoAdapter:
                 timeout=httpx.Timeout(connect=15.0, read=60.0, write=10.0, pool=15.0),
                 follow_redirects=True,
                 headers={
-                    "User-Agent": "DatacenterIntelPlatform/1.0 (research@oracle.com)",
+                    "User-Agent": "strategic-insights-tool/1.0 (research)",
+                    "Accept": "application/json, */*",
                 },
             )
         return self._client
@@ -117,118 +124,114 @@ class EpaEchoAdapter:
             self._client = None
 
     # ------------------------------------------------------------------
-    # Fetch facilities from EPA ECHO
+    # Fetch facilities from EPA ECHO -- 2-step QueryID protocol
     # ------------------------------------------------------------------
 
-    async def _fetch_facilities_by_naics(
-        self, naics: str, *, max_facilities: int = 5000
+    async def _fetch_state_facilities(
+        self, state: str, naics: str = _DATA_CENTER_NAICS,
     ) -> list[dict]:
         """
-        Paginate through EPA ECHO air facility search for a given NAICS code.
-        Returns a flat list of facility dicts, capped at max_facilities.
-        """
-        all_facilities: list[dict] = []
-        page = 1
-        # Safety ceiling: we won't exceed 50 pages even if max_facilities is huge
-        max_pages = min(50, (max_facilities // _PAGE_SIZE) + 1)
+        Run the QueryID + get_qid pagination protocol for a single state.
 
-        while page <= max_pages and len(all_facilities) < max_facilities:
-            params = {
+        Step 1: POST get_facilities -> returns QueryID + total QueryRows
+        Step 2: GET get_qid?qid=...&pageno=... -> returns Facilities[]
+        """
+        # Step 1: kick off the query
+        params = {
+            "output": "JSON",
+            "p_naics": naics,
+            "p_st": state,
+            "p_act": "Y",
+            "responseset": str(_PAGE_SIZE),
+        }
+        try:
+            data = await self._rate_limited_get(_ECHO_AIR_FACILITIES_URL, params)
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "epa_echo.state_query_http_error",
+                extra={"state": state, "status": exc.response.status_code},
+            )
+            return []
+        except httpx.TransportError as exc:
+            logger.warning(
+                "epa_echo.state_query_transport_error",
+                extra={"state": state, "error": str(exc)},
+            )
+            return []
+
+        results = data.get("Results", {})
+        qid = results.get("QueryID")
+        try:
+            total_rows = int(results.get("QueryRows", "0"))
+        except (TypeError, ValueError):
+            total_rows = 0
+
+        if not qid or total_rows == 0:
+            logger.info(
+                "epa_echo.state_no_results",
+                extra={"state": state, "qid": qid, "rows": total_rows},
+            )
+            return []
+
+        logger.info(
+            "epa_echo.state_query_started",
+            extra={"state": state, "qid": qid, "total_rows": total_rows},
+        )
+
+        # Step 2: paginate get_qid. We cap to 1 page per state for the
+        # smoke-test profile -- 200 rows * 10 states = up to 2000 rows is
+        # plenty of federal-baseline coverage. Increase via the
+        # max_facilities arg if a deeper sweep is required.
+        all_facilities: list[dict] = []
+        max_pages = 1
+        for pageno in range(1, max_pages + 1):
+            page_params = {
                 "output": "JSON",
-                "p_nai": naics,        # NAICS filter (note: API param is p_nai)
-                "p_act": "AIR",        # Air program facilities
+                "qid": str(qid),
+                "pageno": str(pageno),
                 "responseset": str(_PAGE_SIZE),
-                "pageno": str(page),
             }
             try:
-                data = await self._rate_limited_get(_ECHO_AIR_FACILITIES_URL, params)
-            except httpx.HTTPStatusError as exc:
-                logger.error(
-                    "epa_echo.fetch_http_error",
-                    extra={"naics": naics, "page": page, "status": exc.response.status_code},
-                )
-                break
-            except httpx.TransportError as exc:
-                logger.error(
-                    "epa_echo.fetch_transport_error",
-                    extra={"naics": naics, "page": page, "error": str(exc)},
+                page_data = await self._rate_limited_get(_ECHO_AIR_GETQID_URL, page_params)
+            except (httpx.HTTPStatusError, httpx.TransportError) as exc:
+                logger.warning(
+                    "epa_echo.qid_page_error",
+                    extra={"state": state, "qid": qid, "page": pageno, "error": str(exc)},
                 )
                 break
 
-            # EPA ECHO wraps results inside { "Results": { "Facilities": [...] } }
-            results = data.get("Results", {})
-            facilities = results.get("Facilities", [])
+            facilities = page_data.get("Results", {}).get("Facilities", [])
             if not facilities:
                 break
 
             all_facilities.extend(facilities)
-            logger.info(
-                "epa_echo.fetched_page",
-                extra={"naics": naics, "page": page, "count": len(facilities)},
-            )
-
             if len(facilities) < _PAGE_SIZE:
                 break
-            page += 1
 
-        return all_facilities[:max_facilities]
-
-    async def _fetch_facilities_by_keyword(
-        self, keyword: str = "data center"
-    ) -> list[dict]:
-        """
-        Supplementary search using facility-name keyword to catch facilities
-        that might not have the exact NAICS 518210 assigned.
-        """
-        params = {
-            "output": "JSON",
-            "p_fn": keyword,
-            "p_act": "AIR",
-            "responseset": str(_PAGE_SIZE),
-            "pageno": "1",
-        }
-        try:
-            data = await self._rate_limited_get(_ECHO_AIR_FACILITIES_URL, params)
-            return data.get("Results", {}).get("Facilities", [])
-        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
-            logger.warning(
-                "epa_echo.keyword_search_error",
-                extra={"keyword": keyword, "error": str(exc)},
-            )
-            return []
-
-    async def _fetch_dfr_facility_info(self, registry_id: str) -> dict | None:
-        """
-        Optional enrichment: pull Detailed Facility Report for a single facility.
-        This gives richer compliance and permit data but is expensive (1 call per
-        facility), so only call when we need supplementary detail.
-        """
-        params = {
-            "output": "JSON",
-            "p_id": registry_id,
-        }
-        try:
-            data = await self._rate_limited_get(_ECHO_DFR_URL, params)
-            return data
-        except (httpx.HTTPStatusError, httpx.TransportError) as exc:
-            logger.debug(
-                "epa_echo.dfr_fetch_error",
-                extra={"registry_id": registry_id, "error": str(exc)},
-            )
-            return None
+        logger.info(
+            "epa_echo.state_complete",
+            extra={"state": state, "fetched": len(all_facilities)},
+        )
+        return all_facilities
 
     # ------------------------------------------------------------------
     # Normalize facility data into GeneratorPermit rows
     # ------------------------------------------------------------------
 
     def _normalize_facility(self, fac: dict) -> dict | None:
-        """Convert an EPA ECHO facility dict into a GeneratorPermit-shaped dict."""
-        registry_id = fac.get("RegistryId") or fac.get("FacRegistryId")
+        """Convert an EPA ECHO air-facility dict into a GeneratorPermit row."""
+        # Air-services payload uses RegistryID + AIRName + AIRState etc.
+        registry_id = (
+            fac.get("RegistryID")
+            or fac.get("RegistryId")
+            or fac.get("FacRegistryId")
+            or fac.get("SourceID")
+        )
         if not registry_id:
             return None
 
-        lat = fac.get("Lat") or fac.get("FacLat")
-        lon = fac.get("Lon") or fac.get("FacLong")
+        lat = fac.get("FacLat") or fac.get("Lat")
+        lon = fac.get("FacLong") or fac.get("Lon") or fac.get("FacLon")
 
         try:
             lat_f = float(lat) if lat else None
@@ -239,15 +242,14 @@ class EpaEchoAdapter:
         except (ValueError, TypeError):
             lon_f = None
 
-        # Prefer the 2-letter state code; EPA sometimes returns full names
-        state_code = fac.get("FacState") or fac.get("StateCode") or ""
+        state_code = fac.get("AIRState") or fac.get("FacState") or fac.get("StateCode") or ""
         if len(state_code) > 2:
             state_code = state_code[:2].upper()
 
-        naics = fac.get("NAICSCodes") or fac.get("FacNAICSCodes") or ""
-        county_fips = fac.get("FacCountyFips") or fac.get("CountyFips")
+        naics = fac.get("AIRNAICS") or fac.get("NAICSCodes") or fac.get("FacNAICSCodes") or ""
+        county_fips = fac.get("FacFIPSCode") or fac.get("FacCountyFips") or fac.get("CountyFips")
 
-        facility_name = fac.get("FacName") or fac.get("FacilityName")
+        facility_name = fac.get("AIRName") or fac.get("FacName") or fac.get("FacilityName")
 
         return {
             "source": self.source_id,
@@ -255,11 +257,11 @@ class EpaEchoAdapter:
             "facility_name": facility_name,
             "permittee_raw_name": facility_name,
             "state_code": state_code if state_code else None,
-            "county_fips": str(county_fips) if county_fips else None,
+            "county_fips": str(county_fips)[:10] if county_fips else None,
             "latitude": lat_f,
             "longitude": lon_f,
-            "frs_id": str(registry_id),
-            "naics_code": str(naics)[:10] if naics else _DATA_CENTER_NAICS,
+            "frs_id": str(registry_id)[:100],
+            "naics_code": str(naics)[:50] if naics else _DATA_CENTER_NAICS,
             "permit_status": "active",
             "confidence": 0.70,
             "raw_payload": fac,
@@ -272,10 +274,8 @@ class EpaEchoAdapter:
     async def _match_site_by_latlon(
         self, session: AsyncSession, lat: float, lon: float
     ) -> int | None:
-        """Find a site within ~100m of the given lat/lon. Returns site_id or None."""
         if lat is None or lon is None:
             return None
-
         stmt = (
             select(Site.id)
             .where(
@@ -295,26 +295,19 @@ class EpaEchoAdapter:
         self,
         session: AsyncSession,
         *,
-        max_facilities: int = 5000,
+        max_facilities: int = 500,
+        states: Optional[list[str]] = None,
     ) -> dict:
-        """
-        Fetch EPA ECHO facilities, normalize, upsert into generator_permits.
-        Attempt site matching and emit site_aliases + site_company_associations.
+        """Fetch ECHO air facilities for each priority state, upsert results."""
+        states = states or _PRIORITY_STATES
 
-        Parameters
-        ----------
-        session : AsyncSession
-            Active database session. Caller manages commit/rollback.
-        max_facilities : int
-            Cap on total facilities fetched (across NAICS + keyword searches).
-        """
         run_record = IngestionRun(
             adapter_name=self.adapter_id,
             adapter_version=self.adapter_version,
             started_at=datetime.utcnow(),
             status="running",
             trigger="manual",
-            config_snapshot={"max_facilities": max_facilities},
+            config_snapshot={"max_facilities": max_facilities, "states": states},
         )
         session.add(run_record)
         await session.flush()
@@ -325,28 +318,40 @@ class EpaEchoAdapter:
         errors: list[dict] = []
 
         try:
-            # 1) Fetch from NAICS-based search
-            naics_facilities = await self._fetch_facilities_by_naics(
-                _DATA_CENTER_NAICS, max_facilities=max_facilities,
-            )
-            # 2) Supplementary keyword search
-            keyword_facilities = await self._fetch_facilities_by_keyword("data center")
-
-            # Deduplicate by registry ID
             seen_ids: set[str] = set()
             all_facilities: list[dict] = []
-            for fac in naics_facilities + keyword_facilities:
-                rid = fac.get("RegistryId") or fac.get("FacRegistryId") or ""
-                if rid and rid not in seen_ids:
-                    seen_ids.add(rid)
-                    all_facilities.append(fac)
-                    if len(all_facilities) >= max_facilities:
-                        break
+
+            for st in states:
+                if len(all_facilities) >= max_facilities:
+                    break
+                try:
+                    state_rows = await self._fetch_state_facilities(st)
+                except Exception as exc:
+                    logger.warning(
+                        "epa_echo.state_failed",
+                        extra={"state": st, "error_class": type(exc).__name__, "error": str(exc)},
+                    )
+                    errors.append({"state": st, "error": str(exc)})
+                    continue
+
+                for fac in state_rows:
+                    rid = (
+                        fac.get("RegistryID")
+                        or fac.get("RegistryId")
+                        or fac.get("FacRegistryId")
+                        or fac.get("SourceID")
+                        or ""
+                    )
+                    if rid and rid not in seen_ids:
+                        seen_ids.add(rid)
+                        all_facilities.append(fac)
+                        if len(all_facilities) >= max_facilities:
+                            break
 
             records_fetched = len(all_facilities)
             logger.info(
                 "epa_echo.total_facilities",
-                extra={"count": records_fetched, "max": max_facilities},
+                extra={"count": records_fetched, "max": max_facilities, "states": states},
             )
 
             for fac in all_facilities:
@@ -356,18 +361,16 @@ class EpaEchoAdapter:
                     continue
 
                 try:
-                    # --- Entity resolution for the permittee name ---
                     raw_name = normalized.get("permittee_raw_name")
                     resolved_company_id = None
                     if raw_name:
-                        company_id, confidence, method = await resolve_company(
+                        company_id, _confidence, _method = await resolve_company(
                             session, raw_name, source=self.source_id,
                         )
                         resolved_company_id = company_id
 
                     normalized["resolved_company_id"] = resolved_company_id
 
-                    # --- Upsert GeneratorPermit ---
                     stmt = pg_insert(GeneratorPermit).values(**normalized)
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["source", "source_permit_id"],
@@ -388,13 +391,11 @@ class EpaEchoAdapter:
                     await session.execute(stmt)
                     records_stored += 1
 
-                    # --- Site matching by lat/lon ---
                     lat = normalized.get("latitude")
                     lon = normalized.get("longitude")
                     if lat is not None and lon is not None:
                         site_id = await self._match_site_by_latlon(session, lat, lon)
                         if site_id:
-                            # Write site_alias: source=epa_echo, record_id=FRS_ID
                             alias_stmt = pg_insert(SiteAlias).values(
                                 site_id=site_id,
                                 source=self.source_id,
@@ -407,7 +408,6 @@ class EpaEchoAdapter:
                             )
                             await session.execute(alias_stmt)
 
-                            # Emit site_company_association with role=permittee_llc
                             if resolved_company_id:
                                 assoc_stmt = pg_insert(SiteCompanyAssociation).values(
                                     site_id=site_id,
@@ -437,14 +437,12 @@ class EpaEchoAdapter:
                         "error": str(exc),
                     })
 
-            # --- Write coverage row ---
             await self._write_coverage(session, records_stored)
-
-            # --- Write lineage summary ---
             await self._write_lineage(session, run_record.id, records_stored)
 
-            # --- Finalize ingestion run ---
-            run_record.status = "success" if not errors else "partial_failure"
+            run_record.status = "success" if records_stored > 0 else (
+                "partial_failure" if errors else "success"
+            )
             run_record.completed_at = datetime.utcnow()
             run_record.records_fetched = records_fetched
             run_record.records_normalized = records_fetched - records_skipped
@@ -482,7 +480,6 @@ class EpaEchoAdapter:
     # ------------------------------------------------------------------
 
     async def _write_coverage(self, session: AsyncSession, record_count: int) -> None:
-        """Upsert a data_coverage row for this adapter."""
         stmt = pg_insert(DataCoverage).values(
             pillar=self.pillar,
             state_code=self.coverage_scope,
@@ -490,7 +487,7 @@ class EpaEchoAdapter:
             coverage_status=self.declared_status,
             record_count=record_count,
             last_ingested_at=datetime.utcnow(),
-            freshness_sla_hours=168,  # weekly refresh target
+            freshness_sla_hours=168,
             notes="EPA ECHO air program facilities with NAICS 518210 (data processing/hosting)",
         )
         stmt = stmt.on_conflict_do_update(
@@ -507,12 +504,11 @@ class EpaEchoAdapter:
     async def _write_lineage(
         self, session: AsyncSession, run_id: int, record_count: int
     ) -> None:
-        """Write a single summary lineage row for this adapter run."""
         if record_count <= 0:
             return
         stmt = pg_insert(DataLineage).values(
             table_name="generator_permits",
-            record_id=run_id,  # references ingestion_runs.id
+            record_id=run_id,
             ingestion_run_id=run_id,
             source_url=_ECHO_AIR_FACILITIES_URL,
             retrieved_at=datetime.utcnow(),

@@ -77,6 +77,46 @@ export interface PermitRecord {
   source_url: string;
 }
 
+// Phase 1.5: Real generator-permit row shape returned by /api/permits/?fuel_type=...
+// Mirrors backend `GeneratorPermit` ORM columns plus joined `resolved_company_name`
+// and a router-injected `source_url` lifted out of `raw_payload`.
+export interface GeneratorPermitDto {
+  id: number;
+  source: string | null;                 // 'epa_echo', 'pjm', 'tceq', 'va_open_data', 'socrata_ny'
+  source_permit_id: string | null;
+  facility_name: string | null;
+  permittee_raw_name: string | null;     // raw LLC / operator name as filed
+  resolved_company_id: number | null;
+  resolved_company_name: string | null;  // joined from companies.canonical_name
+  site_id: number | null;
+  state_code: string | null;
+  county_fips: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  rated_mw_total: number | null;         // nameplate MW (canonical column)
+  num_units: number | null;
+  fuel_type: string | null;              // raw upstream value; may be mixed-case / semicolon-joined
+  permit_status: string | null;
+  issued_date: string | null;            // ISO date
+  expiry_date: string | null;
+  frs_id: string | null;
+  naics_code: string | null;
+  raw_payload: Record<string, unknown> | null;
+  confidence: number | null;
+  source_url: string | null;             // injected by the API from raw_payload
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface GeneratorPermitsResponse {
+  data: GeneratorPermitDto[];
+  total: number;
+  page: number;
+  page_size: number;
+  fuel_types_requested: string[] | null;
+  sources_included: string[];
+}
+
 export interface SiteMilestone {
   date: string;
   label: string;
@@ -97,6 +137,10 @@ export interface SatelliteSite {
   source?: string;
   source_url?: string;
   milestones?: SiteMilestone[];
+  aterio_dc_uid?: string;
+  power_capacity_mw?: number;
+  state_code?: string;
+  county_name?: string;
 }
 
 export interface TriangulationRecord {

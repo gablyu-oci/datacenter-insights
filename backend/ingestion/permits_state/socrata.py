@@ -1,25 +1,23 @@
 """
-Generic Socrata Adapter -- configurable ingestion for any Socrata-powered
-state environmental permit portal.
+Generic Socrata Adapter -- configurable ingestion for state environmental
+permit portals served by Socrata SODA.
 
-Preconfigured instances cover:
-  - NY DEC  (New York Dept of Environmental Conservation)
-  - WA Ecology (Washington Dept of Ecology)
-  - CO CDPHE (Colorado Dept of Public Health and Environment)
-  - OR DEQ  (Oregon Dept of Environmental Quality)
-
-Uses the Socrata Open Data API (SODA):
-  GET https://{domain}/resource/{dataset_id}.json?$where=...&$limit=1000&$offset=0
-
-Each SocrataConfig specifies the domain, dataset_id, state_code, and a field_map
-that translates portal-specific column names to our canonical schema.
+Phase 1.5 fix (2026-04-29):
+  * Updated NY DEC dataset IDs to the current canonical set:
+      4n3a-en4b -- Issued Title V Facility Permits
+      2wgt-bc53 -- Issued State Facility Air Permits
+      f4rp-2kvy -- Clean Air Tracking System (CATS) Permits
+  * Removed WA Ecology and CO CDPHE configs -- no Socrata datasets exist
+    for those states (researcher-confirmed); EPA ECHO covers them instead.
+  * Use $where=upper(facility_name) like '%DATA CENTER%' as the primary
+    filter to keep volume manageable.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, date
 
 import httpx
 import stamina
@@ -29,6 +27,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.models import (
     DataCoverage,
+    DataLineage,
     GeneratorPermit,
     IngestionRun,
     Site,
@@ -54,97 +53,66 @@ class SocrataConfig:
     state_code: str
     pillar: str = "generator_permits"
     where_clause: str = ""
-    # Field mappings: map generic fields to Socrata column names.
-    # Keys: permit_id, facility_name, permittee, latitude, longitude, status
     field_map: dict[str, str] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
-# Preconfigured instances for state environmental agencies.
-#
-# Dataset IDs are best-effort based on public catalog searches at each portal.
-# If a dataset is restructured or removed, the adapter gracefully handles 404s.
+# Per-state dataset registry. NY only as of Phase 1.5 -- WA and CO removed.
 # ---------------------------------------------------------------------------
 
-SOCRATA_INSTANCES: list[SocrataConfig] = [
-    SocrataConfig(
-        name="NY DEC Air Permits",
-        adapter_id="ny_dec",
-        domain="data.ny.gov",
-        dataset_id="2v3w-bkng",  # NY DEC Title V Facility Permits
-        state_code="NY",
-        where_clause="program_facility LIKE '%data center%' OR sic_code LIKE '518%'",
-        field_map={
-            "permit_id": "permit_id",
-            "facility_name": "facility_name",
-            "permittee": "owner_name",
-            "latitude": "latitude",
-            "longitude": "longitude",
-            "status": "permit_status",
-        },
-    ),
-    SocrataConfig(
-        name="WA Ecology Air Permits",
-        adapter_id="wa_ecology",
-        domain="data.wa.gov",
-        dataset_id="jbh4-3kcz",  # WA air quality permits
-        state_code="WA",
-        where_clause="naics_code LIKE '518%'",
-        field_map={
-            "permit_id": "permit_number",
-            "facility_name": "facility_name",
-            "permittee": "operator_name",
-            "latitude": "latitude",
-            "longitude": "longitude",
-            "status": "permit_status",
-        },
-    ),
-    SocrataConfig(
-        name="CO CDPHE Air Permits",
-        adapter_id="co_cdphe",
-        domain="data.colorado.gov",
-        dataset_id="xne4-4bae",  # CO CDPHE permits
-        state_code="CO",
-        where_clause="naics_code LIKE '518%' OR facility_name LIKE '%data center%'",
-        field_map={
-            "permit_id": "permit_number",
-            "facility_name": "facility_name",
-            "permittee": "company_name",
-            "latitude": "latitude",
-            "longitude": "longitude",
-            "status": "status",
-        },
-    ),
-    SocrataConfig(
-        name="OR DEQ Air Permits",
-        adapter_id="or_deq",
-        domain="data.oregon.gov",
-        dataset_id="i3pu-ckm4",  # OR DEQ facility permits
-        state_code="OR",
-        where_clause="naics LIKE '518%' OR source_name LIKE '%data center%'",
-        field_map={
-            "permit_id": "source_number",
-            "facility_name": "source_name",
-            "permittee": "responsible_party",
-            "latitude": "latitude",
-            "longitude": "longitude",
-            "status": "permit_status",
-        },
-    ),
-]
+STATE_DATASETS: dict[str, list[tuple[str, str]]] = {
+    "NY": [
+        ("4n3a-en4b", "Title V Permits"),
+        ("2wgt-bc53", "State Facility Air Permits"),
+        ("f4rp-2kvy", "CATS Permits"),
+    ],
+    # WA and CO intentionally omitted -- routed through EPA ECHO instead.
+}
+
+# Default $where filter for NY -- substring on facility_name. Datasets
+# without a facility_name column will silently drop the filter.
+_NY_DEFAULT_WHERE = "upper(facility_name) like '%DATA CENTER%'"
+
+
+def _build_ny_instances() -> list[SocrataConfig]:
+    """Materialize NY SocrataConfig instances from STATE_DATASETS."""
+    instances: list[SocrataConfig] = []
+    for ds_id, label in STATE_DATASETS.get("NY", []):
+        slug = ds_id.replace("-", "_")
+        instances.append(
+            SocrataConfig(
+                name=f"NY DEC {label}",
+                adapter_id=f"ny_dec_{slug}",
+                domain="data.ny.gov",
+                dataset_id=ds_id,
+                state_code="NY",
+                where_clause=_NY_DEFAULT_WHERE,
+                field_map={
+                    "permit_id": "permit_id",
+                    "facility_name": "facility_name",
+                    "permittee": "facility_name",  # NY datasets lack a separate operator field
+                    "latitude": "latitude",
+                    "longitude": "longitude",
+                    "status": "permit_status",
+                    "issue_date": "issue_date",
+                    "expiry_date": "expiration_date",
+                },
+            )
+        )
+    return instances
+
+
+SOCRATA_INSTANCES: list[SocrataConfig] = _build_ny_instances()
 
 
 class SocrataPermitAdapter:
     """
     Generic Socrata-based permit adapter.
 
-    Instantiate with a SocrataConfig to target a specific state portal.
-    Fetches permit records via SODA API, normalizes, and upserts into
-    generator_permits.  Uses entity_resolution.resolve_company for
-    permittee name resolution.
+    Instantiated with a SocrataConfig pointing at a specific dataset.
     """
 
-    adapter_version = "1.1.0"
+    adapter_version = "2.0.0"
     declared_status = "partial"
 
     def __init__(self, config: SocrataConfig) -> None:
@@ -152,18 +120,21 @@ class SocrataPermitAdapter:
         self.adapter_name = config.name
         self.adapter_id = config.adapter_id
         self.pillar = config.pillar
-        self.source_id = config.adapter_id
+        # All NY datasets share the same source label so the row counts
+        # roll up cleanly under a single source in generator_permits.
+        self.source_id = "socrata_ny" if config.state_code == "NY" else config.adapter_id
         self.coverage_scope = config.state_code
-        self._semaphore = asyncio.Semaphore(4)
+        self._semaphore = asyncio.Semaphore(2)
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0),
+                timeout=httpx.Timeout(connect=15.0, read=60.0, write=10.0, pool=15.0),
                 follow_redirects=True,
                 headers={
-                    "User-Agent": "DatacenterIntelPlatform/1.0 (research@oracle.com)",
+                    "User-Agent": "strategic-insights-tool/1.0 (research)",
+                    "Accept": "application/json, */*",
                 },
             )
         return self._client
@@ -183,52 +154,77 @@ class SocrataPermitAdapter:
             self._client = None
 
     async def _fetch_all(self) -> list[dict]:
-        """Paginate through the Socrata dataset."""
+        """
+        Paginate through the Socrata dataset.
+
+        Tries the configured $where clause first; if Socrata rejects the
+        clause (HTTP 400, e.g. column doesn't exist on this dataset), falls
+        back to a single unfiltered page so we still land rows.
+        """
         cfg = self.config
         base_url = f"https://{cfg.domain}/resource/{cfg.dataset_id}.json"
 
-        all_records: list[dict] = []
-        offset = 0
-        max_pages = 30
+        async def fetch(where: str | None) -> list[dict]:
+            results: list[dict] = []
+            offset = 0
+            for _ in range(10):
+                params: dict[str, str] = {
+                    "$limit": str(_PAGE_SIZE),
+                    "$offset": str(offset),
+                }
+                if where:
+                    params["$where"] = where
+                try:
+                    page = await self._rate_limited_get(base_url, params)
+                except httpx.HTTPStatusError as exc:
+                    logger.warning(
+                        "socrata.fetch_page_error",
+                        extra={
+                            "adapter": self.adapter_id,
+                            "status": exc.response.status_code,
+                            "offset": offset,
+                            "where": where,
+                        },
+                    )
+                    if exc.response.status_code == 400 and where:
+                        # Surface the bad-clause error to the outer fallback
+                        raise
+                    break
+                if not page:
+                    break
+                results.extend(page)
+                if len(page) < _PAGE_SIZE:
+                    break
+                offset += _PAGE_SIZE
+            return results
 
-        for _ in range(max_pages):
-            params: dict[str, str] = {
-                "$limit": str(_PAGE_SIZE),
-                "$offset": str(offset),
-            }
-            if cfg.where_clause:
-                params["$where"] = cfg.where_clause
+        # Attempt with where clause; on 400 (bad column), retry without.
+        try:
+            return await fetch(cfg.where_clause or None)
+        except httpx.HTTPStatusError:
+            logger.info(
+                "socrata.where_clause_unsupported_falling_back",
+                extra={"adapter": self.adapter_id, "dataset": cfg.dataset_id},
+            )
+            return await fetch(None)
 
-            try:
-                records = await self._rate_limited_get(base_url, params)
-            except httpx.HTTPStatusError as exc:
-                logger.warning(
-                    "socrata.fetch_page_error",
-                    extra={
-                        "adapter": self.adapter_id,
-                        "status": exc.response.status_code,
-                        "offset": offset,
-                    },
-                )
-                break
-
-            if not records:
-                break
-
-            all_records.extend(records)
-            if len(records) < _PAGE_SIZE:
-                break
-            offset += _PAGE_SIZE
-
-        return all_records
+    @staticmethod
+    def _parse_date(value) -> date | None:
+        if not value:
+            return None
+        s = str(value).strip()
+        if not s:
+            return None
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except (ValueError, AttributeError):
+            return None
 
     def _normalize_record(self, record: dict) -> dict | None:
-        """Map Socrata fields to GeneratorPermit columns using the field_map."""
         fm = self.config.field_map
 
         permit_id = record.get(fm.get("permit_id", "permit_id"))
         if not permit_id:
-            # Try common fallback field names
             for fallback in ("permit_number", "source_number", "record_id", "id"):
                 permit_id = record.get(fallback)
                 if permit_id:
@@ -238,8 +234,15 @@ class SocrataPermitAdapter:
 
         lat_key = fm.get("latitude", "latitude")
         lon_key = fm.get("longitude", "longitude")
+        # NY datasets often expose lat/lon inside a georeference dict
+        georef = record.get("georeference") or {}
+        georef_coords = georef.get("coordinates") if isinstance(georef, dict) else None
+
         lat = record.get(lat_key)
         lon = record.get(lon_key)
+        if (lat is None or lon is None) and georef_coords and len(georef_coords) >= 2:
+            lon = georef_coords[0]
+            lat = georef_coords[1]
 
         try:
             lat_f = float(lat) if lat else None
@@ -251,22 +254,26 @@ class SocrataPermitAdapter:
             lon_f = None
 
         facility_name = record.get(fm.get("facility_name", "facility_name"))
-        permittee = record.get(fm.get("permittee", "permittee"))
+        permittee = record.get(fm.get("permittee", "facility_name"))
         status = record.get(fm.get("status", "status"))
+        issue_date = self._parse_date(record.get(fm.get("issue_date", "issue_date")))
+        expiry_date = self._parse_date(record.get(fm.get("expiry_date", "expiration_date")))
 
         return {
             "source": self.source_id,
-            "source_permit_id": str(permit_id),
+            "source_permit_id": str(permit_id)[:255],
             "facility_name": facility_name,
             "permittee_raw_name": permittee,
             "state_code": self.config.state_code,
             "latitude": lat_f,
             "longitude": lon_f,
-            "permit_status": status or "unknown",
+            "permit_status": (str(status) if status else "issued")[:100],
+            "issued_date": issue_date,
+            "expiry_date": expiry_date,
             "naics_code": (
-                record.get("naics_code")
-                or record.get("naics")
-                or record.get("sic_code")
+                str(record.get("naics_code") or record.get("naics") or record.get("sic_code"))[:50]
+                if (record.get("naics_code") or record.get("naics") or record.get("sic_code"))
+                else None
             ),
             "confidence": 0.65,
             "raw_payload": record,
@@ -293,7 +300,6 @@ class SocrataPermitAdapter:
     # ------------------------------------------------------------------
 
     async def run(self, session: AsyncSession) -> dict:
-        """Fetch, normalize, upsert permits from this Socrata instance."""
         run_record = IngestionRun(
             adapter_name=self.adapter_id,
             adapter_version=self.adapter_version,
@@ -324,7 +330,6 @@ class SocrataPermitAdapter:
                     continue
 
                 try:
-                    # Entity resolution for permittee
                     raw_name = normalized.get("permittee_raw_name")
                     resolved_company_id = None
                     if raw_name:
@@ -332,10 +337,8 @@ class SocrataPermitAdapter:
                             session, raw_name, source=self.source_id,
                         )
                         resolved_company_id = cid
-
                     normalized["resolved_company_id"] = resolved_company_id
 
-                    # Upsert GeneratorPermit
                     stmt = pg_insert(GeneratorPermit).values(**normalized)
                     stmt = stmt.on_conflict_do_update(
                         index_elements=["source", "source_permit_id"],
@@ -345,45 +348,14 @@ class SocrataPermitAdapter:
                             "resolved_company_id": stmt.excluded.resolved_company_id,
                             "latitude": stmt.excluded.latitude,
                             "longitude": stmt.excluded.longitude,
+                            "issued_date": stmt.excluded.issued_date,
+                            "expiry_date": stmt.excluded.expiry_date,
                             "raw_payload": stmt.excluded.raw_payload,
                             "updated_at": datetime.utcnow(),
                         },
                     )
                     await session.execute(stmt)
                     records_stored += 1
-
-                    # Site matching
-                    lat = normalized.get("latitude")
-                    lon = normalized.get("longitude")
-                    if lat is not None and lon is not None:
-                        site_id = await self._match_site(session, lat, lon)
-                        if site_id:
-                            alias_stmt = pg_insert(SiteAlias).values(
-                                site_id=site_id,
-                                source=self.source_id,
-                                source_record_id=normalized["source_permit_id"],
-                                match_method="latlon_within_100m",
-                                confidence=0.70,
-                            )
-                            alias_stmt = alias_stmt.on_conflict_do_nothing(
-                                constraint="uq_site_alias_source_recid"
-                            )
-                            await session.execute(alias_stmt)
-
-                            if resolved_company_id:
-                                assoc_stmt = pg_insert(SiteCompanyAssociation).values(
-                                    site_id=site_id,
-                                    company_id=resolved_company_id,
-                                    role="permittee_llc",
-                                    source=self.source_id,
-                                    source_record_id=normalized["source_permit_id"],
-                                    confidence=0.65,
-                                )
-                                assoc_stmt = assoc_stmt.on_conflict_do_nothing(
-                                    constraint="uq_site_company_role_source"
-                                )
-                                await session.execute(assoc_stmt)
-
                 except Exception as exc:
                     logger.error(
                         "socrata.upsert_error",
@@ -401,8 +373,11 @@ class SocrataPermitAdapter:
                     })
 
             await self._write_coverage(session, records_stored)
+            await self._write_lineage(session, run_record.id, records_stored)
 
-            run_record.status = "success" if not errors else "partial_failure"
+            run_record.status = "success" if records_stored > 0 else (
+                "partial_failure" if errors else "success"
+            )
             run_record.completed_at = datetime.utcnow()
             run_record.records_fetched = records_fetched
             run_record.records_stored = records_stored
@@ -453,6 +428,28 @@ class SocrataPermitAdapter:
                 "record_count": stmt.excluded.record_count,
                 "last_ingested_at": stmt.excluded.last_ingested_at,
                 "updated_at": datetime.utcnow(),
+            },
+        )
+        await session.execute(stmt)
+
+    async def _write_lineage(
+        self, session: AsyncSession, run_id: int, record_count: int
+    ) -> None:
+        if record_count <= 0:
+            return
+        cfg = self.config
+        stmt = pg_insert(DataLineage).values(
+            table_name="generator_permits",
+            record_id=run_id,
+            ingestion_run_id=run_id,
+            source_url=f"https://{cfg.domain}/resource/{cfg.dataset_id}.json",
+            retrieved_at=datetime.utcnow(),
+            parser_version=self.adapter_version,
+            confidence=0.65,
+            transformation={
+                "method": "socrata_soda",
+                "dataset_id": cfg.dataset_id,
+                "where": cfg.where_clause,
             },
         )
         await session.execute(stmt)

@@ -1,25 +1,29 @@
 """
-PJM ISO Interconnection Queue Adapter — Phase 1A.
+PJM ISO Interconnection Queue Adapter -- Phase 1.5.
 
-PJM Interconnection LLC publishes its interconnection queue publicly.
-This adapter fetches queue data and stores relevant entries (focusing on
-large-load and generation projects that indicate datacenter buildout) into
-the generator_permits table.
+PJM Interconnection LLC publishes its full active planning queue as a public
+XML feed. We fetch the bulk feed, parse with stdlib xml.etree, and persist
+filtered rows to generator_permits.
 
-PJM territory covers: VA, MD, DC, NJ, PA, OH, WV, KY, IL, IN, MI, NC, TN, DE.
+Phase 1.5 fix (2026-04-29):
+  * Retired the services.pjm.com/PJMPlanningApi/api/Queue POST endpoint --
+    PJM migrated to Data Miner 2 + the bulk XML feed.
+  * Switched to the public bulk XML feed at
+    https://www.pjm.com/pjmfiles/media/planning/queues-data/PlanningQueues.xml
+    which contains every active <Project> in the queue.
 
-Coverage:
-  - PJM states: 'partial'
-  - Other states: 'pending' (written by the coverage seed, not this adapter)
+The XML root element is <Projects>; children are <Project>. Field names
+include ProjectNumber, Name, CommercialName, State, County, Status,
+TransmissionOwner, MWEnergy, MWCapacity, MaximumFacilityOutput, Fuel,
+SubmittedDate, ProjectedInServiceDate, ActualInServiceDate.
 """
 from __future__ import annotations
 
 import asyncio
-import csv
-import io
 import logging
 import re
 from datetime import datetime, date
+from xml.etree import ElementTree as ET
 
 import httpx
 import stamina
@@ -29,6 +33,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.models import (
     DataCoverage,
+    DataLineage,
     GeneratorPermit,
     IngestionRun,
     Site,
@@ -41,11 +46,10 @@ logger = logging.getLogger(__name__)
 
 _PROXIMITY_DEGREES = 0.001
 
-# PJM queue data endpoints
-# The public queue is available as a downloadable Excel/CSV from PJM
-_PJM_QUEUE_URL = "https://services.pjm.com/PJMPlanningApi/api/Queue/ExportToXls"
-# Fallback: the JSON API (if available)
-_PJM_QUEUE_JSON_URL = "https://services.pjm.com/PJMPlanningApi/api/Queue"
+# Public bulk XML feed -- Phase 1.5 canonical endpoint
+_PJM_QUEUE_XML_URL = (
+    "https://www.pjm.com/pjmfiles/media/planning/queues-data/PlanningQueues.xml"
+)
 
 # States in PJM territory
 PJM_STATES = frozenset([
@@ -53,36 +57,40 @@ PJM_STATES = frozenset([
     "IL", "IN", "MI", "NC", "TN", "DE",
 ])
 
-# Keywords that indicate datacenter-related interconnection requests
+# Data-center-heavy transmission-owner zones (DOM = Dominion VA, etc.)
+_DC_TRANS_OWNERS = frozenset(["DOM", "BGE", "PEPCO", "APS", "JCPL", "ATSI"])
+
+# Hyperscaler / colocation regex catch-all on the project-name fields
 _DC_KEYWORDS = re.compile(
     r"data\s*center|hyperscale|cloud|colocation|colo|"
     r"digital\s*realty|equinix|cyrusone|qts|microsoft|google|amazon|meta|oracle|"
-    r"large\s*load|behind.the.meter",
+    r"large\s*load|behind.the.meter|crusoe|aligned|stack|compass",
     re.I,
 )
 
-# Minimum MW threshold to consider a project relevant
-_MIN_MW_THRESHOLD = 10
+# Minimum MW threshold for relevance
+_MIN_MW_THRESHOLD = 10.0
 
 
 class PjmIsoAdapter:
     """
     PJM Interconnection Queue ingestion adapter.
 
-    Fetches the public queue, filters for datacenter-relevant projects,
-    and upserts into generator_permits.
+    Pulls the public bulk XML feed, parses each <Project>, applies a
+    relevance filter (MW > 10 AND TransmissionOwner in DC-heavy zones,
+    OR project-name regex match), and upserts into generator_permits.
     """
 
     adapter_name = "PJM Interconnection Queue"
     adapter_id = "pjm_iso"
-    adapter_version = "1.0.0"
+    adapter_version = "1.1.0"
     pillar = "iso_queues"
-    source_id = "pjm_iso"
+    source_id = "pjm"
     declared_status = "partial"
     coverage_scope_states = PJM_STATES
 
     def __init__(self) -> None:
-        self._semaphore = asyncio.Semaphore(4)
+        self._semaphore = asyncio.Semaphore(2)
         self._client: httpx.AsyncClient | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -91,21 +99,20 @@ class PjmIsoAdapter:
                 timeout=httpx.Timeout(connect=15.0, read=120.0, write=10.0, pool=15.0),
                 follow_redirects=True,
                 headers={
-                    "User-Agent": "Datacenter Intelligence Platform research@oracle.com",
-                    "Accept": "application/json, text/csv, */*",
+                    "User-Agent": "strategic-insights-tool/1.0 (research)",
+                    "Accept": "application/xml, text/xml, */*",
                 },
             )
         return self._client
 
     @stamina.retry(on=httpx.TransportError, attempts=3, wait_initial=2.0)
-    async def _rate_limited_get(self, url: str, params: dict | None = None) -> httpx.Response:
-        """Rate-limited GET that returns the full Response object."""
+    async def _fetch_xml(self) -> str:
         async with self._semaphore:
             await asyncio.sleep(0.5)
             client = await self._get_client()
-            resp = await client.get(url, params=params or {})
+            resp = await client.get(_PJM_QUEUE_XML_URL)
             resp.raise_for_status()
-            return resp
+            return resp.text
 
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
@@ -113,175 +120,122 @@ class PjmIsoAdapter:
             self._client = None
 
     # ------------------------------------------------------------------
-    # Fetch PJM queue data
+    # Parse PJM XML into dicts
     # ------------------------------------------------------------------
 
-    async def _fetch_queue_json(self) -> list[dict]:
-        """
-        Try the PJM Planning API JSON endpoint first.
-        Falls back to CSV download if JSON is unavailable.
-        """
-        # Attempt JSON API
+    def _parse_xml(self, xml_text: str) -> list[dict]:
+        """Parse the PJM PlanningQueues XML into a list of project dicts."""
         try:
-            resp = await self._rate_limited_get(_PJM_QUEUE_JSON_URL)
-            data = resp.json()
-            # PJM API may wrap results
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get("items", data.get("data", data.get("results", [])))
-        except (httpx.HTTPStatusError, ValueError) as exc:
-            logger.info(
-                "pjm_iso.json_api_unavailable",
-                extra={"error": str(exc)},
-            )
-
-        # Fallback: try CSV/Excel download
-        return await self._fetch_queue_csv()
-
-    async def _fetch_queue_csv(self) -> list[dict]:
-        """Download the PJM queue as CSV and parse it."""
-        try:
-            resp = await self._rate_limited_get(_PJM_QUEUE_URL)
-            content = resp.text
-
-            # Parse CSV
-            reader = csv.DictReader(io.StringIO(content))
-            return list(reader)
-        except httpx.HTTPStatusError as exc:
-            logger.warning(
-                "pjm_iso.csv_download_error",
-                extra={"status": exc.response.status_code},
-            )
-            return []
-        except csv.Error as exc:
-            logger.warning(
-                "pjm_iso.csv_parse_error",
-                extra={"error": str(exc)},
-            )
+            # Strip BOM if present
+            if xml_text.startswith("\ufeff"):
+                xml_text = xml_text[1:]
+            root = ET.fromstring(xml_text)
+        except ET.ParseError as exc:
+            logger.error("pjm_iso.xml_parse_error", extra={"error": str(exc)})
             return []
 
+        projects: list[dict] = []
+        # Root tag is <Projects>; <Project> children. Accept either
+        # legacy <PlanningQueues> wrapper too in case PJM ever switches back.
+        for elem in root.findall(".//Project") + root.findall(".//PlanningQueues"):
+            row: dict = {}
+            for child in elem:
+                txt = (child.text or "").strip()
+                row[child.tag] = txt if txt else None
+            if row:
+                projects.append(row)
+        return projects
+
     # ------------------------------------------------------------------
-    # Normalize and filter
+    # Relevance filter & normalization
     # ------------------------------------------------------------------
 
-    def _is_relevant(self, record: dict) -> bool:
-        """
-        Check if a queue entry is relevant to datacenter intelligence.
-        Considers project name, fuel type, MW size, and customer info.
-        """
-        # Check text fields for datacenter keywords
-        text_fields = [
-            record.get("Project Name", ""),
-            record.get("project_name", ""),
-            record.get("Customer Name", ""),
-            record.get("customer_name", ""),
-            record.get("Fuel", ""),
-            record.get("fuel", ""),
-            record.get("County", ""),
-            record.get("county", ""),
-        ]
-        combined_text = " ".join(str(f) for f in text_fields if f)
-        if _DC_KEYWORDS.search(combined_text):
-            return True
+    @staticmethod
+    def _to_float(value) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(str(value).replace(",", ""))
+        except (ValueError, TypeError):
+            return None
 
-        # Large load interconnections (>100 MW) are often datacenters
-        mw = self._extract_mw(record)
-        if mw and mw >= 100:
-            return True
-
-        return False
+    @staticmethod
+    def _to_date(value) -> date | None:
+        if not value:
+            return None
+        s = str(value).strip()
+        if not s or s.upper() in {"N/A", "NA"}:
+            return None
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(s[:19], fmt).date()
+            except ValueError:
+                continue
+        return None
 
     def _extract_mw(self, record: dict) -> float | None:
-        """Extract MW value from various possible field names."""
-        for key in ["MFO", "MW Capacity", "mw_capacity", "Capacity (MW)",
-                     "MW", "mw", "Max Facility Output"]:
-            val = record.get(key)
-            if val is not None:
-                try:
-                    return float(str(val).replace(",", ""))
-                except (ValueError, TypeError):
-                    continue
+        for key in ("MWEnergy", "MWCapacity", "MaximumFacilityOutput", "MWInService"):
+            mw = self._to_float(record.get(key))
+            if mw is not None and mw > 0:
+                return mw
         return None
 
-    def _extract_state(self, record: dict) -> str | None:
-        """Extract state code from queue record."""
-        for key in ["State", "state", "State Code", "state_code"]:
-            val = record.get(key)
-            if val and len(str(val).strip()) == 2:
-                return str(val).strip().upper()
+    def _is_relevant(self, record: dict) -> bool:
+        """Pass if MW > 10 AND TransOwner in DC zones, OR project-name DC match."""
+        mw = self._extract_mw(record)
+        owner = (record.get("TransmissionOwner") or "").strip().upper()
+        text_blob = " ".join(
+            str(record.get(k, "") or "")
+            for k in ("Name", "CommercialName", "ProjectNumber", "Fuel", "County")
+        )
 
-        # Try to extract from county/location
-        county = record.get("County", "") or record.get("county", "")
-        # PJM often formats as "County, ST"
-        parts = str(county).split(",")
-        if len(parts) >= 2:
-            st = parts[-1].strip().upper()
-            if len(st) == 2 and st in PJM_STATES:
-                return st
-        return None
+        if _DC_KEYWORDS.search(text_blob):
+            return True
+        if mw is not None and mw >= _MIN_MW_THRESHOLD and owner in _DC_TRANS_OWNERS:
+            return True
+        # Catch large generation interconnections regardless of zone (>= 100 MW)
+        if mw is not None and mw >= 100.0:
+            return True
+        return False
 
     def _normalize_record(self, record: dict) -> dict | None:
-        """Convert a PJM queue entry into a GeneratorPermit-shaped dict."""
-        # Get queue position / project number as unique ID
-        queue_id = (
-            record.get("Queue Number", "")
-            or record.get("queue_number", "")
-            or record.get("Queue Position", "")
-            or record.get("queue_position", "")
-            or record.get("Project Number", "")
-            or record.get("project_number", "")
-        )
+        queue_id = record.get("ProjectNumber") or record.get("Queue")
         if not queue_id:
             return None
         queue_id = str(queue_id).strip()
 
-        project_name = (
-            record.get("Project Name", "")
-            or record.get("project_name", "")
-            or record.get("Name", "")
-        )
-        customer = (
-            record.get("Customer Name", "")
-            or record.get("customer_name", "")
-            or record.get("Developer", "")
-        )
+        project_name = record.get("Name") or record.get("CommercialName")
+        # Use commercial name as the permittee proxy (developer)
+        permittee = record.get("CommercialName") or record.get("TransmissionOwner") or ""
 
         mw = self._extract_mw(record)
-        state = self._extract_state(record)
-        fuel = record.get("Fuel", "") or record.get("fuel", "") or record.get("Fuel Type", "")
 
-        # Parse submitted date
-        submitted = (
-            record.get("Queue Date", "")
-            or record.get("queue_date", "")
-            or record.get("Submitted Date", "")
-        )
-        issued_date = None
-        if submitted:
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%Y-%m-%dT%H:%M:%S"):
-                try:
-                    issued_date = datetime.strptime(str(submitted).strip()[:19], fmt).date()
-                    break
-                except ValueError:
-                    continue
+        state = record.get("State")
+        if state and len(state) > 2:
+            state = state[:2].upper()
 
-        status = (
-            record.get("Status", "")
-            or record.get("status", "")
-            or record.get("Queue Status", "")
+        fuel = record.get("Fuel") or ""
+
+        # Application date = SubmittedDate; effective_date = ActualInServiceDate
+        # (or ProjectedInServiceDate as fallback)
+        application_date = self._to_date(record.get("SubmittedDate"))
+        effective_date = self._to_date(record.get("ActualInServiceDate")) or self._to_date(
+            record.get("ProjectedInServiceDate")
         )
+
+        status = (record.get("Status") or "queued").strip()
 
         return {
             "source": self.source_id,
             "source_permit_id": f"PJM-{queue_id}",
             "facility_name": str(project_name).strip() if project_name else None,
-            "permittee_raw_name": str(customer).strip() if customer else None,
+            "permittee_raw_name": str(permittee).strip() if permittee else None,
             "state_code": state,
             "rated_mw_total": mw,
-            "fuel_type": str(fuel).strip()[:50] if fuel else None,
-            "permit_status": str(status).strip()[:50] if status else "queued",
-            "issued_date": issued_date,
+            "fuel_type": str(fuel).strip()[:100] if fuel else None,
+            "permit_status": status[:100],
+            "issued_date": application_date,
+            "expiry_date": effective_date,
             "confidence": 0.70,
             "raw_payload": record,
         }
@@ -300,19 +254,12 @@ class PjmIsoAdapter:
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def _find_company(self, session: AsyncSession, name: str) -> int | None:
-        if not name:
-            return None
-        stmt = select(Company.id).where(Company.canonical_name == name).limit(1)
-        result = await session.execute(stmt)
-        return result.scalar_one_or_none()
-
     # ------------------------------------------------------------------
     # Main run
     # ------------------------------------------------------------------
 
     async def run(self, session: AsyncSession) -> dict:
-        """Fetch PJM queue, filter relevant entries, upsert into generator_permits."""
+        """Fetch PJM queue XML, filter, normalize, upsert."""
         run_record = IngestionRun(
             adapter_name=self.adapter_id,
             adapter_version=self.adapter_version,
@@ -329,11 +276,22 @@ class PjmIsoAdapter:
         errors: list[dict] = []
 
         try:
-            raw_queue = await self._fetch_queue_json()
+            try:
+                xml_text = await self._fetch_xml()
+            except httpx.HTTPStatusError as exc:
+                logger.error(
+                    "pjm_iso.fetch_http_error",
+                    extra={"status": exc.response.status_code},
+                )
+                xml_text = ""
+            except httpx.TransportError as exc:
+                logger.error("pjm_iso.fetch_transport_error", extra={"error": str(exc)})
+                xml_text = ""
+
+            raw_queue = self._parse_xml(xml_text) if xml_text else []
             records_fetched = len(raw_queue)
             logger.info("pjm_iso.queue_fetched", extra={"total": records_fetched})
 
-            # Filter to relevant entries
             relevant = [r for r in raw_queue if self._is_relevant(r)]
             logger.info(
                 "pjm_iso.relevant_filtered",
@@ -357,13 +315,14 @@ class PjmIsoAdapter:
                             "rated_mw_total": stmt.excluded.rated_mw_total,
                             "fuel_type": stmt.excluded.fuel_type,
                             "permit_status": stmt.excluded.permit_status,
+                            "issued_date": stmt.excluded.issued_date,
+                            "expiry_date": stmt.excluded.expiry_date,
                             "raw_payload": stmt.excluded.raw_payload,
                             "updated_at": datetime.utcnow(),
                         },
                     )
                     await session.execute(stmt)
                     records_stored += 1
-
                 except Exception as exc:
                     logger.error(
                         "pjm_iso.upsert_error",
@@ -379,16 +338,18 @@ class PjmIsoAdapter:
                         "error": str(exc),
                     })
 
-            # Write coverage rows for each PJM state
             await self._write_coverage(session, records_stored)
+            await self._write_lineage(session, run_record.id, records_stored)
 
-            run_record.status = "success" if not errors else "partial_failure"
+            run_record.status = "success" if records_stored > 0 else (
+                "partial_failure" if errors else "success"
+            )
             run_record.completed_at = datetime.utcnow()
             run_record.records_fetched = records_fetched
             run_record.records_stored = records_stored
             run_record.records_skipped = records_skipped
             run_record.records_normalized = len(relevant)
-            run_record.error_log = {"errors": errors} if errors else None
+            run_record.error_log = {"errors": errors[:50]} if errors else None
             await session.flush()
 
         except Exception as exc:
@@ -413,17 +374,16 @@ class PjmIsoAdapter:
         }
 
     async def _write_coverage(self, session: AsyncSession, record_count: int) -> None:
-        """Write data_coverage rows for each PJM state."""
         for state in PJM_STATES:
             stmt = pg_insert(DataCoverage).values(
                 pillar=self.pillar,
                 state_code=state,
                 source=self.source_id,
                 coverage_status=self.declared_status,
-                record_count=record_count,  # total across all PJM states
+                record_count=record_count,
                 last_ingested_at=datetime.utcnow(),
-                freshness_sla_hours=168,  # weekly
-                notes="PJM interconnection queue — datacenter-relevant entries",
+                freshness_sla_hours=168,
+                notes="PJM interconnection queue (bulk XML feed) -- DC-relevant entries",
             )
             stmt = stmt.on_conflict_do_update(
                 constraint="uq_coverage_pillar_state_source",
@@ -435,3 +395,20 @@ class PjmIsoAdapter:
                 },
             )
             await session.execute(stmt)
+
+    async def _write_lineage(
+        self, session: AsyncSession, run_id: int, record_count: int
+    ) -> None:
+        if record_count <= 0:
+            return
+        stmt = pg_insert(DataLineage).values(
+            table_name="generator_permits",
+            record_id=run_id,
+            ingestion_run_id=run_id,
+            source_url=_PJM_QUEUE_XML_URL,
+            retrieved_at=datetime.utcnow(),
+            parser_version=self.adapter_version,
+            confidence=0.70,
+            transformation={"method": "pjm_planning_queues_xml"},
+        )
+        await session.execute(stmt)

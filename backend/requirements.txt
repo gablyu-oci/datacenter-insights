@@ -17,3 +17,14 @@ python-dotenv==1.1.0
 pydantic-settings==2.8.1
 openai==1.78.0
 edgartools==3.5.1
+
+# PDF generator-permit parser (Phase 1.5 step 2)
+# Optional system binaries (install separately):
+#   sudo apt-get install -y tesseract-ocr poppler-utils
+pdfplumber==0.11.9
+pytesseract==0.3.13
+pdf2image==1.17.0
+anthropic==0.97.0
+
+# HTML scraping for state-permit adapters (TCEQ NSR pending permits)
+beautifulsoup4==4.14.3
