@@ -314,8 +314,16 @@ TOOLS: list[dict] = [
             "description": (
                 "Propose a chart to render. No DB call. The agent captures the "
                 "LATEST proposal and emits a ChartSpecEvent at end of round. "
-                "Use chart_type='none' to suppress. For pies, x is the "
-                "category column and y is the metric column (usually 'value')."
+                "Use chart_type='none' to suppress.\n\n"
+                "AXIS LABELS (these become legend / axis text the user sees):\n"
+                "  - x: human-readable name of the category dimension. e.g. "
+                "    'City', 'Provider', 'Stage', 'Year' — NOT 'city_name' or "
+                "    'provider_name'.\n"
+                "  - y: human-readable name of the metric. e.g. 'MW (capacity)', "
+                "    'Sites', 'Permits', 'Total GW', 'Filings'. NEVER pass the "
+                "    literal string 'value' — that becomes a meaningless legend.\n"
+                "  - title: a short caption the user reads (e.g. 'Microsoft "
+                "    capacity in Virginia by city')."
             ),
             "parameters": {
                 "type": "object",
@@ -377,8 +385,28 @@ def _build_system_prompt() -> str:
         "Skip a chart only when the answer is a list of named items already "
         "(in which case use chart_type=\"table\" or \"none\"), or when there's "
         "literally one row to show.\n\n"
+        "CHART TYPE PICKING:\n"
+        "  - pie: ≤8 categories AND the question is about share / "
+        "    concentration / distribution of a single entity's footprint "
+        "    (e.g. one operator's MW broken out by city). The pie shows "
+        "    'X is 44% of the total' viscerally; bars don't.\n"
+        "  - bar: ranking comparisons across many entities (top 10 operators "
+        "    by MW, top states by permits) where absolute values matter more "
+        "    than share.\n"
+        "  - line: time series (cumulative-over-quarter, year-over-year).\n"
+        "  - scatter: correlation between two numeric attributes (PUE vs MW).\n"
+        "  - table: list-style facts where the row identity matters more than "
+        "    a visual comparison.\n\n"
+        "AXIS LABELS — ALWAYS pass human-readable strings:\n"
+        "  - x: 'City', 'Provider', 'State', 'Stage', 'Year', etc. — NEVER\n"
+        "    the raw column name like 'city_name'.\n"
+        "  - y: 'MW (capacity)', 'Sites', 'Permits', 'Total GW', etc. —\n"
+        "    NEVER 'value' (the legend will literally say 'value' which is\n"
+        "    meaningless to the user).\n\n"
         "Cite source_url (datasheet_url / permit_url / edgar_url / "
-        "events.source_url) inline when present. Don't fabricate.\n\n"
+        "events.source_url) inline when present. Use Markdown for emphasis "
+        "(**bold**, *italic*) — the chat surface renders it.\n\n"
+        "Don't fabricate.\n\n"
         "═══ SCHEMA ═══\n\n"
         f"{_describe_schema_for_llm()}\n\n"
         "═══ WORKED EXAMPLES ═══\n\n"
@@ -387,8 +415,9 @@ def _build_system_prompt() -> str:
         "          Microsoft + VA where-clause, metric sum of MW).\n"
         "  Step 2: query AGAIN for the city breakdown (same where-clause but\n"
         "          group_by city_name, top 8 by sum MW).\n"
-        "  Step 3: propose_chart pie or bar over the city breakdown so the\n"
-        "          user sees how those MW are distributed across VA.\n"
+        "  Step 3: propose_chart with chart_type=\"pie\" (≤8 cities and the\n"
+        "          question is about concentration), x=\"City\", y=\"MW\",\n"
+        "          title=\"Microsoft capacity in Virginia by city\".\n"
         "  YOUR TEXT TO USER (style):\n"
         "    \"Microsoft operates roughly **2.54 GW** of data center capacity\n"
         "    in Virginia — the largest cluster of any hyperscaler in the\n"
@@ -404,7 +433,8 @@ def _build_system_prompt() -> str:
         "    returned in the tool result.\"\n\n"
         "Q: \"Top 5 hyperscalers by MW.\"\n"
         "  Step 1: query group_by provider_name, sum MW, top 5.\n"
-        "  Step 2: propose_chart bar.\n"
+        "  Step 2: propose_chart chart_type=\"bar\", x=\"Provider\", y=\"MW\",\n"
+        "          title=\"Top 5 hyperscalers by total MW\".\n"
         "  YOUR TEXT TO USER (style):\n"
         "    \"AWS leads the field at ~40 GW of disclosed capacity, followed\n"
         "    by … This ordering reflects total announced footprint; if you\n"
@@ -940,10 +970,17 @@ def _build_chart_event_from_proposal(
     proposal: dict,
     last_query_result: Optional[Any],
     last_query_table: Optional[str],
+    last_query_args: Optional[dict] = None,
 ) -> Optional[ChartSpecEvent]:
     """Construct a ChartSpecEvent from the captured propose_chart args. If the
     proposal has explicit `series`, use them; otherwise reconstruct from the
-    most recent query result."""
+    most recent query result.
+
+    The LLM is instructed to pass `x` / `y` as human-readable labels (e.g.
+    `x="City"`, `y="MW"`), NOT raw column names. We resolve the actual data
+    columns from the most recent query's group_by + the conventional `value`
+    column for aggregated metrics.
+    """
     if not proposal:
         return None
     chart_type = proposal.get("chart_type") or "none"
@@ -953,23 +990,42 @@ def _build_chart_event_from_proposal(
         return None
 
     title = proposal.get("title") or ""
-    x = proposal.get("x") or ""
-    y = proposal.get("y")
-    # Coerce y list -> first element to keep schema scalar.
-    if isinstance(y, list):
-        y = y[0] if y else "value"
-    y = y or "value"
+    x_label = proposal.get("x") or ""
+    y_label = proposal.get("y")
+    if isinstance(y_label, list):
+        y_label = y_label[0] if y_label else "value"
+    y_label = y_label or "value"
 
     series = proposal.get("series")
     if not series:
         rows = _result_rows(last_query_result) if last_query_result is not None else []
-        if rows and x and any(x in r for r in rows if isinstance(r, dict)):
-            y_col = "value" if any("value" in r for r in rows if isinstance(r, dict)) else y
+        # Resolve the x-column: prefer the most recent query's first group_by
+        # column (the LLM's `x` is a display label, not a column name).
+        # Fall back to the LLM-supplied label if it happens to match a key.
+        x_col = None
+        if last_query_args and isinstance(last_query_args.get("group_by"), list) and last_query_args["group_by"]:
+            x_col = last_query_args["group_by"][0]
+        if rows and (x_col is None or not any(isinstance(r, dict) and x_col in r for r in rows)):
+            # Fall back: try the LLM's label as a key, else first non-citation key.
+            if x_label and any(isinstance(r, dict) and x_label in r for r in rows):
+                x_col = x_label
+            else:
+                first = next((r for r in rows if isinstance(r, dict)), {})
+                x_col = next((k for k in first.keys() if k != "_citation" and k != "value"), None)
+        # Resolve y-column: aggregated queries always emit `value`; otherwise
+        # try the LLM's label as a key, else the second non-citation column.
+        y_col = None
+        if rows and any(isinstance(r, dict) and "value" in r for r in rows):
+            y_col = "value"
+        elif rows and y_label and any(isinstance(r, dict) and y_label in r for r in rows):
+            y_col = y_label
+
+        if rows and x_col and y_col:
             series = [
-                {"x": r.get(x), "y": r.get(y_col)}
+                {"x": r.get(x_col), "y": r.get(y_col)}
                 for r in rows
                 if isinstance(r, dict)
-                and r.get(x) is not None
+                and r.get(x_col) is not None
                 and r.get(y_col) is not None
             ]
         else:
@@ -980,8 +1036,8 @@ def _build_chart_event_from_proposal(
 
     return ChartSpecEvent(
         chart_type=chart_type,
-        x=x or "x",
-        y=str(y),
+        x=x_label or "x",
+        y=str(y_label),
         series=series,
         title=title,
         source_table=last_query_table or "",
@@ -1023,6 +1079,7 @@ async def answer_question(
     chart_proposal: dict = {}
     last_query_result: Optional[Any] = None
     last_query_table: Optional[str] = None
+    last_query_args: Optional[dict] = None
 
     rounds = 0
     max_rounds = 3
@@ -1080,6 +1137,7 @@ async def answer_question(
             if tool_name == "query" and isinstance(result, dict) and "rows" in result:
                 last_query_result = result
                 last_query_table = args.get("table")
+                last_query_args = args  # noqa: F841 — captured below
 
             summary, row_count = _result_summary(result)
             yield ToolResultEvent(
@@ -1133,7 +1191,7 @@ async def answer_question(
 
     # ----- Chart spec from captured proposal --------------------------------
     chart_event = _build_chart_event_from_proposal(
-        chart_proposal, last_query_result, last_query_table
+        chart_proposal, last_query_result, last_query_table, last_query_args
     )
     if chart_event is not None:
         yield chart_event
