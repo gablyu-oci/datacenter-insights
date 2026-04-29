@@ -379,7 +379,7 @@ function DealsModal({
 
 export default function PowerTab() {
   const { data: capData, loading: capLoading, error: capError, errorInfo: capErrorInfo, retry: capRetry, lastFetchedAt: capLastFetched, lineage: capLineage } = useApi<PowerCapacityResponse>("/api/power/capacity");
-  const { data: tsData, loading: tsLoading, lineage: tsLineage } = useApi<PowerTimeseriesResponse>("/api/power/timeseries");
+  // (Cumulative trend chart now derives from annData — no separate timeseries fetch needed.)
   const { data: annData, loading: annLoading, error: annError, errorInfo: annErrorInfo, retry: annRetry, lineage: annLineage } = useApi<AnnouncementsResponse>("/api/power/announcements");
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -388,7 +388,7 @@ export default function PowerTab() {
   const [showCharts, setShowCharts] = useState(true);
   const [drillCompany, setDrillCompany] = useState<string | null>(null);
 
-  if (capLoading || tsLoading) return <LoadingSpinner />;
+  if (capLoading || annLoading) return <LoadingSpinner />;
 
   if (capError) {
     return (
@@ -421,22 +421,54 @@ export default function PowerTab() {
     return buyerMatch && typeMatch;
   });
 
-  // Backend may return either the legacy quarterly-array shape (Phase-0 mock)
-  // or the new stage-keyed dict (Phase-1B real DB aggregation). Only the
-  // array shape feeds the quarterly line chart; the dict shape is empty here.
-  const seriesByCompany: Record<string, { quarter: string; gw: number }[]> = {};
-  for (const [c, v] of Object.entries(tsData?.data ?? {})) {
-    if (Array.isArray(v)) seriesByCompany[c] = v as { quarter: string; gw: number }[];
-  }
-  const tsQuarters = seriesByCompany["Microsoft"]?.map(d => d.quarter) ?? [];
-  const lineData = tsQuarters.map(q => {
-    const row: Record<string, string | number> = { quarter: q };
-    companies.forEach(c => {
-      const match = seriesByCompany[c]?.find(d => d.quarter === q);
-      if (match) row[c] = match.gw;
+  // Cumulative power-procurement trend, derived from the live announcements
+  // (curated_deals + edgar_extractions). For each (quarter × buyer) we take
+  // the running sum of capacity_mw and emit GW. No separate timeseries
+  // endpoint needed — every dot on the chart corresponds to a real disclosed
+  // deal in the DB.
+  const lineData: Array<Record<string, string | number>> = (() => {
+    type Item = { date: string; buyer: string; mw: number };
+    const canon = (raw: string | null | undefined): string => {
+      if (!raw) return "";
+      const head = raw.split(" / ")[0].split("/")[0].trim();
+      for (const c of companies) {
+        if (head.toLowerCase().includes(c.toLowerCase())) return c;
+      }
+      return "";
+    };
+    type RawDeal = { announced_date?: string | null; buyer?: string | null; capacity_mw?: number | null };
+    const items: Item[] = [];
+    for (const src of [annData?.curated ?? [], annData?.edgar ?? []]) {
+      for (const d of src as RawDeal[]) {
+        const b = canon(d.buyer);
+        if (!b || !d.announced_date || !d.capacity_mw) continue;
+        items.push({ date: d.announced_date.slice(0, 10), buyer: b, mw: d.capacity_mw });
+      }
+    }
+    if (items.length === 0) return [];
+
+    const quarter = (iso: string): string => {
+      const y = iso.slice(0, 4);
+      const m = parseInt(iso.slice(5, 7), 10) || 1;
+      return `${y} Q${Math.floor((m - 1) / 3) + 1}`;
+    };
+    const byQ: Record<string, Record<string, number>> = {};
+    for (const it of items) {
+      const q = quarter(it.date);
+      byQ[q] ??= {};
+      byQ[q][it.buyer] = (byQ[q][it.buyer] ?? 0) + it.mw;
+    }
+    const quarters = Object.keys(byQ).sort();
+    const running: Record<string, number> = {};
+    return quarters.map(q => {
+      const row: Record<string, string | number> = { quarter: q };
+      for (const c of companies) {
+        running[c] = (running[c] ?? 0) + (byQ[q][c] ?? 0);
+        if (running[c] > 0) row[c] = +(running[c] / 1000).toFixed(2);
+      }
+      return row;
     });
-    return row;
-  });
+  })();
 
   const totalAnnGW = Object.values(gwSummary).reduce((s, v) => s + v.gw_total, 0).toFixed(1);
   const totalNuclearGW = Object.values(gwSummary).reduce((s, v) => s + v.nuclear_gw, 0).toFixed(1);
@@ -522,8 +554,7 @@ export default function PowerTab() {
             <div>
               <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Cumulative Power Procurement Trend</h3>
               <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-                Quarterly modeled growth curve -- calibrated to disclosed annual totals
-                <span style={{ color: "#f59e0b", marginLeft: 8 }}>Warning: Modeled</span>
+                Running cumulative GW per hyperscaler · derived from curated_deals + live EDGAR extractions, bucketed by announcement quarter
               </p>
             </div>
             <TrendingUp size={18} color="#3b82f6" />
@@ -553,10 +584,10 @@ export default function PowerTab() {
             </LineChart>
           </ResponsiveContainer>
           <CitationFooter
-            sources={["Power Timeseries Model"]}
-            retrievedAt={tsLineage?.retrieved_at}
-            confidence={tsLineage?.confidence}
-            sourceUrl={tsLineage?.source_url}
+            sources={annData?.data_sources ?? ["curated_deals", "EDGAR live"]}
+            retrievedAt={annLineage?.retrieved_at}
+            confidence={annLineage?.confidence}
+            sourceUrl={annLineage?.source_url}
           />
         </div>
       )}
