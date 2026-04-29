@@ -1,35 +1,36 @@
 """
-Datacenter Q&A Agent — additive companion to triangulation_qa.py.
+Datacenter Q&A Agent — schema-aware tools-over-DB agent.
 
-Like triangulation_qa, this is a tools-over-DB agent: the LLM picks tool
-calls, we run async SQL against the live DB, and we stream a cited
-natural-language answer back. Unlike the simpler agent, this one yields
-a discriminated union of events (TextChunk / ToolCall / ToolResult /
-ChartSpec / Citation / Done / Error) so the new chat UI can render
-running tool transcripts and inline charts.
+Two tools are exposed to the LLM:
+  - `query`        unified, schema-introspecting data tool with WHERE / GROUP BY /
+                   metric / ORDER BY / LIMIT support.
+  - `propose_chart` render-proposal tool (no DB call); the dispatcher captures
+                   the most recent proposal and emits a ChartSpecEvent at the
+                   end of the tool loop.
+
+The schema doc is auto-built from a per-table whitelist + the SQLModel column
+introspection so the LLM sees the exact column names + types it can ask for.
 
 Public entrypoint: answer_question(session, question, history) -> AsyncIterator[QAEvent].
-
-We intentionally do NOT import or patch triangulation_qa.py — same
-patterns, separate file.
 """
 from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
-from typing import Any, AsyncIterator, Optional
+from datetime import date, datetime
+from typing import Any, AsyncIterator, Iterable, Optional
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import func
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.models import (
     Company,
     EdgarExtraction,
     EnergyProject,
+    Event,
     GeneratorPermit,
     Site,
-    SiteCompanyAssociation,
 )
 from llm.client import llm_client
 from schemas.qa import (
@@ -48,186 +49,357 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Schema whitelist — table -> {column: description}
+# Hand-written 1-line descriptions; columns are verified against the ORM model
+# at module import to defend against typos / drift.
+# ---------------------------------------------------------------------------
+
+_TABLE_MODELS: dict[str, Any] = {
+    "sites": Site,
+    "generator_permits": GeneratorPermit,
+    "energy_projects": EnergyProject,
+    "edgar_extractions": EdgarExtraction,
+    "companies": Company,
+    "events": Event,
+}
+
+
+_SCHEMA_WHITELIST: dict[str, dict[str, str]] = {
+    "sites": {
+        "aterio_dc_uid": "Stable Aterio site UID (preferred external id).",
+        "building_name": "Building name within a campus.",
+        "campus_name": "Campus / cluster name (groups buildings).",
+        "stage": "Lifecycle stage: Announcement, Construction, Activated, Cancelled, Withdrawn.",
+        "pct_construction": "Percent complete (0-100).",
+        "provider_name": "Datacenter operator (Microsoft, Amazon AWS, Google, Facebook, Oracle, ...).",
+        "provider_ticker": "Operator stock ticker.",
+        "provider_public_private": "Public / Private classification of operator.",
+        "end_user_companies": "Comma-separated end-user / customer names.",
+        "full_address": "Free-text street address.",
+        "county_name": "US county name.",
+        "city_name": "City name.",
+        "state_code": "Two-letter US state code (e.g. VA, TX).",
+        "country_code": "ISO country code.",
+        "latitude": "Decimal latitude.",
+        "longitude": "Decimal longitude.",
+        "site_acreage": "Site footprint in acres.",
+        "tot_facility_space_sqft": "Total facility floor area (sqft).",
+        "tot_datacenter_space_sqft": "Datacenter white-space (sqft).",
+        "prov_pub_tot_power_capacity_mw": "Operator-published total MW capacity.",
+        "aterio_est_mw": "Aterio-estimated MW.",
+        "power_capacity_mw": "Selected MW capacity (canonical MW field).",
+        "tot_project_cost": "Total project cost (USD).",
+        "yearly_pue": "Reported yearly Power Usage Effectiveness.",
+        "tot_num_generators": "Total backup generators on site.",
+        "announced_date": "Announcement date (text, may be partial).",
+        "construction_start_date": "Construction start date (text).",
+        "construction_finished_date": "Construction finish date (text).",
+        "activation_date": "Site activation date (text).",
+        "utility_name": "Serving electric utility.",
+        "bal_auth_abbr": "Balancing authority abbreviation (PJM, ERCOT, ...).",
+        "datasheet_url": "Aterio datasheet URL (citation source).",
+        "permit_url": "Permit document URL (citation source).",
+        "project_execution_likelihood": "High / Medium / Low.",
+        "is_ai_facility": "Boolean: AI-purpose facility flag.",
+        "flg_btm_onsite_power_generation": "Boolean: behind-the-meter onsite gen flag.",
+    },
+    "generator_permits": {
+        "source": "Source registry (epa_echo, tceq, ...).",
+        "source_permit_id": "Source-side permit identifier.",
+        "facility_name": "Facility name on the permit.",
+        "permittee_raw_name": "Permittee LLC raw string.",
+        "resolved_company_id": "FK to companies.id when resolved.",
+        "site_id": "FK to sites.id when matched.",
+        "state_code": "Two-letter US state code.",
+        "county_fips": "5-digit county FIPS.",
+        "latitude": "Decimal latitude.",
+        "longitude": "Decimal longitude.",
+        "rated_mw_total": "Total rated generator capacity (MW).",
+        "num_units": "Number of generator units.",
+        "fuel_type": "Diesel, NG, Dual-Fuel, etc.",
+        "permit_status": "Permit status string.",
+        "issued_date": "Permit issued date.",
+        "expiry_date": "Permit expiry date.",
+        "frs_id": "EPA FRS facility id.",
+        "naics_code": "NAICS industry code.",
+        "confidence": "Resolver confidence (0-1).",
+    },
+    "energy_projects": {
+        "id": "Primary key.",
+        "project_name": "Energy project name.",
+        "flg_btm_project": "Boolean: behind-the-meter project flag.",
+        "developer_companies": "Comma-separated developer company names.",
+        "developer_ticker": "Developer stock ticker.",
+        "eia_entity_names": "EIA-resolved entity names.",
+        "customer_companies": "Comma-separated offtaker / customer names.",
+        "tot_contracted_power_mw": "Total contracted power (MW).",
+        "tot_project_cost": "Total project cost (USD).",
+        "project_footprint_acreage": "Footprint in acres.",
+        "state_code": "Two-letter US state code.",
+        "latitude": "Decimal latitude.",
+        "longitude": "Decimal longitude.",
+    },
+    "edgar_extractions": {
+        "id": "Primary key.",
+        "cik": "SEC CIK of filer.",
+        "accession_number": "SEC accession number.",
+        "form_type": "Form type (10-K, 8-K, ...).",
+        "filing_date": "Filing date.",
+        "item_codes": "Form item codes hit.",
+        "edgar_url": "Direct EDGAR URL (citation source).",
+        "capacity_mw": "Extracted capacity (MW).",
+        "energy_source": "solar / gas / nuclear / wind / ...",
+        "buyer_raw": "Raw buyer string from filing.",
+        "seller_raw": "Raw seller string from filing.",
+        "parser_version": "Parser version label.",
+        "confidence": "Extractor confidence (0-1).",
+    },
+    "companies": {
+        "id": "Primary key.",
+        "canonical_name": "Canonical company name.",
+        "short_name": "Short / display name.",
+        "ticker": "Stock ticker.",
+        "cik": "SEC CIK.",
+        "parent_company_id": "FK to companies.id of parent.",
+        "public_private": "Public / Private classification.",
+    },
+    "events": {
+        "id": "Primary key.",
+        "aterio_dc_uid": "Aterio site UID this event refers to.",
+        "event_type": "announcement / permit_filed / construction_start / activation / expansion / cancellation.",
+        "event_date": "Event date.",
+        "event_description": "Free-text description.",
+        "source_url": "Source URL (citation).",
+    },
+}
+
+
+def _column_python_type(model: Any, name: str) -> str:
+    """Best-effort Python type label for an ORM column."""
+    col = getattr(model, name, None)
+    if col is None:
+        return "unknown"
+    try:
+        sa_col = col.property.columns[0]  # type: ignore[attr-defined]
+        py_type = getattr(sa_col.type, "python_type", None)
+        if py_type is not None:
+            return py_type.__name__
+    except Exception:  # noqa: BLE001
+        pass
+    return "unknown"
+
+
+def _table_columns(table: str) -> dict[str, str]:
+    """Return {column: type_label} for the table's whitelisted columns,
+    skipping any columns that are not actually defined on the ORM model."""
+    model = _TABLE_MODELS.get(table)
+    if model is None:
+        return {}
+    out: dict[str, str] = {}
+    for col_name in _SCHEMA_WHITELIST.get(table, {}).keys():
+        if getattr(model, col_name, None) is None:
+            # Defensive: hand-typed whitelist drift.
+            continue
+        out[col_name] = _column_python_type(model, col_name)
+    return out
+
+
+_SCHEMA_DOC_CACHE: Optional[str] = None
+
+
+def _describe_schema_for_llm() -> str:
+    """Build a compact schema doc for the system prompt.
+
+    Walks the per-table whitelist, verifies each column on the ORM model, and
+    emits `column (type) — description` lines under each table heading.
+    Cached at module level so we only build it once.
+    """
+    global _SCHEMA_DOC_CACHE
+    if _SCHEMA_DOC_CACHE is not None:
+        return _SCHEMA_DOC_CACHE
+
+    lines: list[str] = []
+    for table, model in _TABLE_MODELS.items():
+        whitelist = _SCHEMA_WHITELIST.get(table) or {}
+        if not whitelist:
+            continue
+        lines.append(f"### {table}")
+        for col_name, desc in whitelist.items():
+            if getattr(model, col_name, None) is None:
+                continue
+            tlabel = _column_python_type(model, col_name)
+            lines.append(f"- {col_name} ({tlabel}) — {desc}")
+        lines.append("")
+
+    text = "\n".join(lines).strip()
+    # Cap at ~3KB for prompt budget.
+    if len(text) > 3000:
+        text = text[:2997] + "..."
+    _SCHEMA_DOC_CACHE = text
+    return text
+
+
+# ---------------------------------------------------------------------------
 # Tool schema (OpenAI function-calling shape)
 # ---------------------------------------------------------------------------
+
+_ALLOWED_OPS = ["=", "!=", ">", ">=", "<", "<=", "in", "ilike", "is_null", "is_not_null", "between"]
 
 TOOLS: list[dict] = [
     {
         "type": "function",
         "function": {
-            "name": "query_sites",
+            "name": "query",
             "description": (
-                "Query the sites table for datacenter sites. Filter by "
-                "state code, provider/operator name, stage, or minimum MW."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string", "description": "Two-letter US state code"},
-                    "provider": {"type": "string", "description": "Provider/operator name fragment"},
-                    "stage": {"type": "string", "description": "Site stage e.g. Construction, Activated"},
-                    "min_mw": {"type": "number", "description": "Minimum power_capacity_mw"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_companies",
-            "description": "Query the canonical companies table by name fragment and optional role.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "name_contains": {"type": "string"},
-                    "role": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_energy_projects",
-            "description": "Query the energy_projects table (solar, gas, nuclear etc.).",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string"},
-                    "energy_source": {"type": "string"},
-                    "status": {"type": "string"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_generator_permits",
-            "description": "Query air-permitted backup/onsite generators by state, fuel type, or parent company.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "state": {"type": "string"},
-                    "fuel_type": {"type": "string"},
-                    "parent": {"type": "string", "description": "Parent / permittee LLC name fragment"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "query_edgar_extractions",
-            "description": "Query SEC EDGAR-extracted power deal records.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "company": {"type": "string", "description": "Buyer or seller name fragment"},
-                    "since": {"type": "string", "description": "ISO date YYYY-MM-DD"},
-                    "limit": {"type": "integer", "default": 50},
-                },
-                "required": [],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "aggregate",
-            "description": (
-                "Group-and-aggregate over one of the core tables. Use for "
-                "'top N', totals, and breakdowns. ALWAYS pass filter_eq when "
-                "the question is scoped to a specific provider/state/etc — "
-                "otherwise the chart will show unrelated global numbers. "
-                "Canonical group_by/filter_eq column names: "
-                "sites=[provider_name, state_code, stage, city_name, country_code]; "
-                "generator_permits=[state, fuel_type]; "
-                "energy_projects=[state, energy_source, status]; "
-                "edgar_extractions=[ticker, period, metric_category]. "
-                "On sites, when grouping by provider_name, the agent "
-                "automatically excludes the 'Company Not Disclosed' sentinel."
+                "Unified data tool. Filter (where), select columns, group_by + "
+                "metric for aggregation, order_by, limit. Always returns "
+                "{total_count, returned, rows, truncated}. Use the schema in "
+                "the system prompt to pick valid columns. Operators: " +
+                ", ".join(_ALLOWED_OPS) + "."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "table": {
                         "type": "string",
-                        "enum": ["sites", "generator_permits", "energy_projects", "edgar_extractions"],
+                        "enum": list(_TABLE_MODELS.keys()),
                     },
-                    "group_by": {"type": "array", "items": {"type": "string"}},
-                    "metric": {"type": "string", "enum": ["count", "sum_mw", "avg_mw"]},
-                    "filter_eq": {"type": "object"},
-                    "top_n": {"type": "integer", "default": 10},
+                    "where": {
+                        "type": "array",
+                        "description": "List of {column, op, value} clauses. AND-combined.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "op": {"type": "string", "enum": _ALLOWED_OPS},
+                                "value": {},
+                            },
+                        },
+                    },
+                    "select": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Columns to return (raw mode only). Default: all whitelisted columns.",
+                    },
+                    "group_by": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "If set, switches to aggregation mode.",
+                    },
+                    "metric": {
+                        "type": "string",
+                        "description": "Aggregation: count | sum:<col> | avg:<col> | min:<col> | max:<col> | count_distinct:<col>.",
+                    },
+                    "order_by": {
+                        "type": "array",
+                        "description": "List of {column, direction} (direction = asc|desc).",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "column": {"type": "string"},
+                                "direction": {"type": "string", "enum": ["asc", "desc"]},
+                            },
+                        },
+                    },
+                    "limit": {"type": "integer", "default": 100},
                 },
-                "required": ["table", "group_by", "metric"],
+                "required": ["table"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "propose_chart",
+            "description": (
+                "Propose a chart to render. No DB call. The agent captures the "
+                "LATEST proposal and emits a ChartSpecEvent at end of round. "
+                "Use chart_type='none' to suppress. For pies, x is the "
+                "category column and y is the metric column (usually 'value')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_type": {
+                        "type": "string",
+                        "enum": ["bar", "pie", "line", "scatter", "table", "none"],
+                    },
+                    "title": {"type": "string"},
+                    "x": {"type": "string"},
+                    "y": {},
+                    "series": {"type": "array", "items": {"type": "object"}},
+                    "breakdown_by": {"type": "string"},
+                    "reasoning": {"type": "string"},
+                },
+                "required": ["chart_type", "title"],
             },
         },
     },
 ]
 
 
-SYSTEM_PROMPT = (
-    "You are a research analyst for OCI's Datacenter & Power Intelligence "
-    "Platform. You answer questions by calling tools against the live DB.\n\n"
-    "═══ WORKED EXAMPLE — follow this pattern for any 'how much X has Y' "
-    "question ═══\n\n"
-    "Q: \"How much MW does Microsoft have in Virginia?\"\n"
-    "STEP 1 (REQUIRED — get the precise total):\n"
-    "  aggregate(\n"
-    "    table=\"sites\",\n"
-    "    group_by=[\"provider_name\"],\n"
-    "    metric=\"sum_mw\",\n"
-    "    filter_eq={\"provider_name\": \"Microsoft\", \"state_code\": \"VA\"}\n"
-    "  )\n"
-    "  → returns [{provider_name: \"Microsoft\", value: 2544.43}]\n"
-    "  → that single value IS the answer.\n"
-    "STEP 2 (citations only — do NOT sum these rows):\n"
-    "  query_sites(state=\"VA\", provider=\"Microsoft\", limit=5)\n"
-    "  → use 3-5 of these rows for citation links.\n"
-    "STEP 3:\n"
-    "  Write the answer: \"Microsoft has 2,544.43 MW of capacity in Virginia.\"\n"
-    "  Do NOT emit a chart — single-number answer.\n\n"
-    "═══ TOOL CHOICE — never violate these ═══\n\n"
-    "1. 'how much' / 'total' / 'sum' / 'count' questions: ALWAYS aggregate. "
-    "   NEVER query_sites then sum the rows yourself — query_sites returns at "
-    "   most 100 sample rows and your in-text quote of those rows is even "
-    "   more truncated. SQL SUM is the source of truth.\n\n"
-    "2. Always pass filter_eq when the question scopes to a specific entity. "
-    "   filter_eq={provider_name: \"Microsoft\"} restricts to Microsoft only; "
-    "   without it you'll get a global aggregate that won't match the "
-    "   question.\n\n"
-    "3. Only emit a chart for comparison/ranking/breakdown questions ("
-    "   multiple categories on the x-axis). Single-number answers — even "
-    "   'how much' totals — do NOT need a chart.\n\n"
-    "4. If you DO emit a chart, the underlying aggregate MUST use the same "
-    "   filter_eq as the answer. A scoped question + global chart misleads "
-    "   the user.\n\n"
-    "═══ CANONICAL COLUMN NAMES ═══\n\n"
-    "- sites: provider_name, state_code, stage, city_name, country_code\n"
-    "- generator_permits: state, fuel_type\n"
-    "- energy_projects: state, energy_source, status\n"
-    "- edgar_extractions: ticker, period, metric_category\n\n"
-    "Aliases (provider, company, state, city, …) are auto-resolved but the "
-    "canonical form above is preferred. filter_eq is exact-match; "
-    "query_sites's provider parameter is substring/ILIKE. Common provider_name "
-    "values in the DB: 'Microsoft', 'Amazon AWS', 'Google', 'Facebook' (Meta "
-    "is filed as 'Facebook'), 'Oracle'.\n\n"
-    "Cite source_url when present. Never fabricate numbers — if a tool "
-    "returns no rows, say so."
-)
+# ---------------------------------------------------------------------------
+# System prompt with schema doc + worked examples
+# ---------------------------------------------------------------------------
+
+def _build_system_prompt() -> str:
+    return (
+        "You are a research analyst for OCI's Datacenter & Power Intelligence "
+        "Platform. You answer questions by calling tools against the live DB.\n\n"
+        "Use `query` for ALL data access. The schema below enumerates every "
+        "queryable column with type + 1-line description. Pass column names "
+        "exactly as listed.\n\n"
+        "After data is gathered you MAY call `propose_chart` once to render a "
+        "chart. For pure single-fact answers you may skip propose_chart, OR "
+        "run a 2nd `query` for a meaningful breakdown then call propose_chart.\n\n"
+        "Never fabricate. Cite source_url (datasheet_url / permit_url / "
+        "edgar_url / events.source_url) inline when present.\n\n"
+        "═══ SCHEMA ═══\n\n"
+        f"{_describe_schema_for_llm()}\n\n"
+        "═══ WORKED EXAMPLES ═══\n\n"
+        "Q: \"How much MW does Microsoft have in Virginia?\"\n"
+        "  1) query(table=\"sites\",\n"
+        "         where=[{column:\"provider_name\", op:\"=\", value:\"Microsoft\"},\n"
+        "                {column:\"state_code\", op:\"=\", value:\"VA\"}],\n"
+        "         group_by=[\"provider_name\"], metric=\"sum:power_capacity_mw\")\n"
+        "     → returns rows=[{provider_name:\"Microsoft\", value:2544.43}], answer = 2544.43 MW.\n"
+        "  2) query(table=\"sites\",\n"
+        "         where=[{column:\"provider_name\", op:\"=\", value:\"Microsoft\"},\n"
+        "                {column:\"state_code\", op:\"=\", value:\"VA\"}],\n"
+        "         group_by=[\"city_name\"], metric=\"sum:power_capacity_mw\",\n"
+        "         order_by=[{column:\"value\", direction:\"desc\"}], limit=8)\n"
+        "  3) propose_chart(chart_type=\"pie\", title=\"Microsoft VA capacity by city\",\n"
+        "         x=\"city_name\", y=\"value\", breakdown_by=\"city_name\",\n"
+        "         reasoning=\"small categorical breakdown of one operator's footprint\")\n\n"
+        "Q: \"Top 5 hyperscalers by MW.\"\n"
+        "  1) query(table=\"sites\", group_by=[\"provider_name\"],\n"
+        "         metric=\"sum:power_capacity_mw\",\n"
+        "         order_by=[{column:\"value\", direction:\"desc\"}], limit=5)\n"
+        "  2) propose_chart(chart_type=\"bar\", title=\"Top 5 operators by total MW\",\n"
+        "         x=\"provider_name\", y=\"value\",\n"
+        "         reasoning=\"ranking comparison across operators\")\n\n"
+        "Q: \"Which sites have PUE under 1.3?\"\n"
+        "  1) query(table=\"sites\",\n"
+        "         where=[{column:\"yearly_pue\", op:\"<\", value:1.3}],\n"
+        "         select=[\"building_name\", \"provider_name\", \"yearly_pue\", \"state_code\", \"datasheet_url\"],\n"
+        "         order_by=[{column:\"yearly_pue\", direction:\"asc\"}], limit=20)\n"
+        "  → likely no chart (table-style fact list); skip propose_chart or pass chart_type=\"none\".\n\n"
+        "Rules:\n"
+        "- Reject hallucinated columns: if a column is not in the schema, the\n"
+        "  tool will return [{error: ...}]. Re-read the schema and retry.\n"
+        "- For 'how much X has Y' use group_by + metric=\"sum:<mw_col>\" and\n"
+        "  ALWAYS scope with a where clause for the entity in question.\n"
+        "- The 'Company Not Disclosed' sentinel is auto-excluded when grouping\n"
+        "  sites by provider_name."
+    )
+
+
+SYSTEM_PROMPT = _build_system_prompt()
 
 
 # ---------------------------------------------------------------------------
 # Per-table aggregate config: maps logical table to ORM model + MW column
+# (kept for quick reference; query tool reads via _resolve_column instead)
 # ---------------------------------------------------------------------------
 
 _AGG_TABLES: dict[str, dict[str, Any]] = {
@@ -235,10 +407,11 @@ _AGG_TABLES: dict[str, dict[str, Any]] = {
     "generator_permits": {"model": GeneratorPermit, "mw": GeneratorPermit.rated_mw_total},
     "energy_projects": {"model": EnergyProject, "mw": EnergyProject.tot_contracted_power_mw},
     "edgar_extractions": {"model": EdgarExtraction, "mw": EdgarExtraction.capacity_mw},
+    "companies": {"model": Company, "mw": None},
+    "events": {"model": Event, "mw": None},
 }
 
-# Common LLM column-name slips → canonical column. Saves a tool round-trip
-# when the model writes `provider` or `state` instead of the canonical form.
+# Column-name aliases so the LLM can be slightly fuzzy without a 2nd round-trip.
 _COLUMN_ALIASES: dict[str, str] = {
     "provider": "provider_name",
     "company": "provider_name",
@@ -278,8 +451,7 @@ _US_STATES: dict[str, str] = {
     "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
 }
 
-# Canonical hyperscaler provider_name values in the DB (verified via SELECT
-# DISTINCT). Maps user-spoken aliases → exact provider_name match for filter_eq.
+# Canonical hyperscaler provider_name values in the DB.
 _PROVIDER_ALIASES: dict[str, str] = {
     "microsoft": "Microsoft",
     "msft": "Microsoft",
@@ -297,27 +469,18 @@ _PROVIDER_ALIASES: dict[str, str] = {
 
 
 def _infer_scope_from_question(question: str) -> dict[str, str]:
-    """
-    Heuristically extract scope (state_code, provider_name) from the user's
-    question. Returns a dict suitable for filter_eq on the sites table.
-
-    Matches whole-word occurrences of state names + 2-letter codes and a
-    small set of canonical hyperscaler aliases. Conservative — only kicks in
-    when there's an unambiguous match.
-    """
+    """Heuristically extract scope (state_code, provider_name) from the user
+    question. Returns a dict suitable for query where-clauses."""
     import re
 
     q = (question or "").lower()
     scope: dict[str, str] = {}
 
-    # State name (multi-word) takes precedence over 2-letter code.
     for name, code in _US_STATES.items():
         if re.search(rf"\b{re.escape(name)}\b", q):
             scope["state_code"] = code
             break
     else:
-        # Fall through: try 2-letter codes — but only against the original
-        # casing so we don't match common English words like "in" or "or".
         for token in re.findall(r"\b[A-Z]{2}\b", question or ""):
             if token in _US_STATES.values():
                 scope["state_code"] = token
@@ -331,348 +494,327 @@ def _infer_scope_from_question(question: str) -> dict[str, str]:
     return scope
 
 
-def _augment_aggregate_args(args: dict, question: str) -> dict:
-    """
-    If the LLM called `aggregate` without filter_eq but the user's question
-    obviously scopes to a specific provider/state, inject those into
-    filter_eq. Existing filter_eq keys win (we never overwrite the LLM's
-    explicit choice).
-    """
+def _augment_query_args(args: dict, question: str) -> dict:
+    """If the LLM called `query` on sites without a where clause covering the
+    obvious scope keys (state_code/provider_name) inferred from the question,
+    inject them. Existing where-clause keys win."""
     if args.get("table") != "sites":
         return args
     scope = _infer_scope_from_question(question)
     if not scope:
         return args
-    existing = dict(args.get("filter_eq") or {})
-    # Resolve existing keys through the alias map so 'state' doesn't shadow
-    # an inferred 'state_code'.
-    canonical_existing = {_COLUMN_ALIASES.get(k, k) for k in existing.keys()}
+    where = list(args.get("where") or [])
+    # Resolve existing column names through the alias map.
+    existing_cols = {
+        _COLUMN_ALIASES.get(c.get("column", ""), c.get("column", ""))
+        for c in where
+        if isinstance(c, dict)
+    }
+    added = False
     for k, v in scope.items():
-        if k not in canonical_existing:
-            existing[k] = v
-    if existing != (args.get("filter_eq") or {}):
+        if k not in existing_cols:
+            where.append({"column": k, "op": "=", "value": v})
+            added = True
+    if added:
         new = dict(args)
-        new["filter_eq"] = existing
+        new["where"] = where
         return new
     return args
 
 
 # ---------------------------------------------------------------------------
-# Tool implementations
+# Citation builders (per-table, only when useful)
 # ---------------------------------------------------------------------------
 
-async def _tool_query_sites(
-    session: AsyncSession,
-    state: Optional[str] = None,
-    provider: Optional[str] = None,
-    stage: Optional[str] = None,
-    min_mw: Optional[float] = None,
-    limit: int = 50,
-) -> list[dict]:
-    limit = min(int(limit or 50), 100)
-    stmt = select(Site)
-    conds = []
-    if state:
-        conds.append(Site.state_code == state.upper())
-    if provider:
-        conds.append(Site.provider_name.ilike(f"%{provider}%"))
-    if stage:
-        conds.append(Site.stage.ilike(f"%{stage}%"))
-    if min_mw is not None:
-        conds.append(Site.power_capacity_mw >= float(min_mw))
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    stmt = stmt.order_by(Site.power_capacity_mw.desc().nullslast()).limit(limit)
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    out: list[dict] = []
-    for s in rows:
-        out.append(
-            {
-                "id": s.id,
-                "aterio_dc_uid": s.aterio_dc_uid,
-                "building_name": s.building_name,
-                "campus_name": s.campus_name,
-                "state_code": s.state_code,
-                "city_name": s.city_name,
-                "provider_name": s.provider_name,
-                "end_user_companies": s.end_user_companies,
-                "power_capacity_mw": s.power_capacity_mw,
-                "stage": s.stage,
-                "_citation": {
-                    "table": "sites",
-                    "row_id": str(s.aterio_dc_uid or s.id),
-                    "source_url": s.datasheet_url or s.permit_url or s.map_url,
-                    "label": s.building_name or s.campus_name or "site",
-                },
-            }
-        )
-    return out
-
-
-async def _tool_query_companies(
-    session: AsyncSession,
-    name_contains: Optional[str] = None,
-    role: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    limit = min(int(limit or 50), 100)
-    stmt = select(Company)
-    if name_contains:
-        stmt = stmt.where(Company.canonical_name.ilike(f"%{name_contains}%"))
-    if role:
-        # Optional join: only surface companies that have at least one
-        # association with the requested role.
-        stmt = stmt.join(
-            SiteCompanyAssociation,
-            SiteCompanyAssociation.company_id == Company.id,
-        ).where(SiteCompanyAssociation.role == role).distinct()
-    stmt = stmt.limit(limit)
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    return [
-        {
-            "id": c.id,
-            "canonical_name": c.canonical_name,
-            "ticker": c.ticker,
-            "cik": c.cik,
-            "public_private": c.public_private,
-            "_citation": {
-                "table": "companies",
-                "row_id": str(c.id),
-                "source_url": None,
-                "label": c.canonical_name,
-            },
+def _citation_for_row(table: str, row: dict, model_obj: Any) -> Optional[dict]:
+    """Build a _citation dict for a row, or None if there's nothing to cite."""
+    if table == "sites":
+        return {
+            "table": "sites",
+            "row_id": str(row.get("aterio_dc_uid") or row.get("id") or ""),
+            "source_url": (
+                row.get("datasheet_url")
+                or row.get("permit_url")
+                or getattr(model_obj, "map_url", None)
+            ),
+            "label": row.get("building_name") or row.get("campus_name") or "site",
         }
-        for c in rows
-    ]
-
-
-async def _tool_query_energy_projects(
-    session: AsyncSession,
-    state: Optional[str] = None,
-    energy_source: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    limit = min(int(limit or 50), 100)
-    stmt = select(EnergyProject)
-    conds = []
-    if state:
-        conds.append(EnergyProject.state_code == state.upper())
-    if energy_source:
-        # energy_source isn't a column; fall back to project_name fuzzy match.
-        conds.append(EnergyProject.project_name.ilike(f"%{energy_source}%"))
-    if status:
-        # Status lives in JSONB payload; best-effort name match.
-        conds.append(EnergyProject.project_name.ilike(f"%{status}%"))
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    stmt = stmt.order_by(
-        EnergyProject.tot_contracted_power_mw.desc().nullslast()
-    ).limit(limit)
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    out: list[dict] = []
-    for p in rows:
-        payload = p.payload if isinstance(p.payload, dict) else {}
-        out.append(
-            {
-                "id": p.id,
-                "project_name": p.project_name,
-                "developer_companies": p.developer_companies,
-                "customer_companies": p.customer_companies,
-                "state_code": p.state_code,
-                "tot_contracted_power_mw": p.tot_contracted_power_mw,
-                "flg_btm_project": p.flg_btm_project,
-                "_citation": {
-                    "table": "energy_projects",
-                    "row_id": str(p.id),
-                    "source_url": payload.get("source_url") if payload else None,
-                    "label": p.project_name or "energy_project",
-                },
-            }
-        )
-    return out
-
-
-async def _tool_query_generator_permits(
-    session: AsyncSession,
-    state: Optional[str] = None,
-    fuel_type: Optional[str] = None,
-    parent: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    limit = min(int(limit or 50), 100)
-    stmt = select(GeneratorPermit)
-    conds = []
-    if state:
-        conds.append(GeneratorPermit.state_code == state.upper())
-    if fuel_type:
-        conds.append(GeneratorPermit.fuel_type.ilike(f"%{fuel_type}%"))
-    if parent:
-        conds.append(GeneratorPermit.permittee_raw_name.ilike(f"%{parent}%"))
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    stmt = stmt.order_by(GeneratorPermit.rated_mw_total.desc().nullslast()).limit(limit)
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    out: list[dict] = []
-    for p in rows:
-        raw = p.raw_payload if isinstance(p.raw_payload, dict) else {}
-        out.append(
-            {
-                "id": p.id,
-                "facility_name": p.facility_name,
-                "permittee_raw_name": p.permittee_raw_name,
-                "state_code": p.state_code,
-                "rated_mw_total": p.rated_mw_total,
-                "fuel_type": p.fuel_type,
-                "permit_status": p.permit_status,
-                "_citation": {
-                    "table": "generator_permits",
-                    "row_id": str(p.id),
-                    "source_url": raw.get("source_url") if raw else None,
-                    "label": p.facility_name or p.permittee_raw_name or "permit",
-                },
-            }
-        )
-    return out
-
-
-async def _tool_query_edgar_extractions(
-    session: AsyncSession,
-    company: Optional[str] = None,
-    since: Optional[str] = None,
-    limit: int = 50,
-) -> list[dict]:
-    limit = min(int(limit or 50), 100)
-    stmt = select(EdgarExtraction)
-    conds = []
-    if company:
-        like = f"%{company}%"
-        conds.append(or_(EdgarExtraction.buyer_raw.ilike(like), EdgarExtraction.seller_raw.ilike(like)))
-    if since:
-        try:
-            cutoff = datetime.fromisoformat(since).date()
-            conds.append(EdgarExtraction.filing_date >= cutoff)
-        except ValueError:
-            # Tolerate freeform "since" strings such as "2024" by ignoring them.
-            pass
-    if conds:
-        stmt = stmt.where(and_(*conds))
-    stmt = stmt.order_by(EdgarExtraction.filing_date.desc().nullslast()).limit(limit)
-
-    result = await session.execute(stmt)
-    rows = result.scalars().all()
-    return [
-        {
-            "id": e.id,
-            "cik": e.cik,
-            "form_type": e.form_type,
-            "filing_date": e.filing_date.isoformat() if e.filing_date else None,
-            "buyer_raw": e.buyer_raw,
-            "seller_raw": e.seller_raw,
-            "capacity_mw": e.capacity_mw,
-            "energy_source": e.energy_source,
-            "edgar_url": e.edgar_url,
-            "_citation": {
-                "table": "edgar_extractions",
-                "row_id": str(e.id),
-                "source_url": e.edgar_url,
-                "label": f"{e.buyer_raw or '?'} / {e.filing_date or '?'}",
-            },
+    if table == "generator_permits":
+        raw = getattr(model_obj, "raw_payload", None) or {}
+        url = None
+        if isinstance(raw, dict):
+            url = raw.get("source_url")
+        return {
+            "table": "generator_permits",
+            "row_id": str(row.get("id") or ""),
+            "source_url": url,
+            "label": row.get("facility_name") or row.get("permittee_raw_name") or "permit",
         }
-        for e in rows
-    ]
+    if table == "edgar_extractions":
+        return {
+            "table": "edgar_extractions",
+            "row_id": str(row.get("id") or ""),
+            "source_url": row.get("edgar_url"),
+            "label": f"{row.get('buyer_raw') or '?'} / {row.get('filing_date') or '?'}",
+        }
+    if table == "events":
+        return {
+            "table": "events",
+            "row_id": str(row.get("id") or ""),
+            "source_url": row.get("source_url"),
+            "label": row.get("event_type") or "event",
+        }
+    return None
 
 
-async def _tool_aggregate(
+# ---------------------------------------------------------------------------
+# Unified query tool
+# ---------------------------------------------------------------------------
+
+def _coerce_for_json(v: Any) -> Any:
+    if isinstance(v, (datetime, date)):
+        return v.isoformat()
+    return v
+
+
+def _row_to_dict(model_obj: Any, table: str, select_cols: Iterable[str]) -> dict:
+    out: dict[str, Any] = {}
+    for c in select_cols:
+        out[c] = _coerce_for_json(getattr(model_obj, c, None))
+    return out
+
+
+def _build_metric_expr(metric: str, model: Any) -> tuple[Any, Optional[str]]:
+    """Return (sa_expression, error). Supports count | sum:<col> | avg:<col> |
+    min:<col> | max:<col> | count_distinct:<col>."""
+    if metric == "count":
+        return func.count().label("value"), None
+    if ":" not in metric:
+        return None, f"unknown metric: {metric}"
+    fn, col_name = metric.split(":", 1)
+    col, _ = _resolve_column(model, col_name.strip())
+    if col is None:
+        return None, f"unknown column for metric: {col_name}"
+    fn = fn.strip().lower()
+    if fn == "sum":
+        return func.coalesce(func.sum(col), 0).label("value"), None
+    if fn == "avg":
+        return func.avg(col).label("value"), None
+    if fn == "min":
+        return func.min(col).label("value"), None
+    if fn == "max":
+        return func.max(col).label("value"), None
+    if fn == "count_distinct":
+        return func.count(func.distinct(col)).label("value"), None
+    return None, f"unknown metric function: {fn}"
+
+
+def _apply_where(stmt, model: Any, where: list[dict], table: str):
+    """Apply a list of {column, op, value} clauses. Returns (stmt, error)."""
+    allowed_cols = set(_SCHEMA_WHITELIST.get(table, {}).keys())
+    for clause in where or []:
+        if not isinstance(clause, dict):
+            return None, f"bad where clause: {clause!r}"
+        col_name = clause.get("column")
+        op = clause.get("op", "=")
+        value = clause.get("value")
+        if not col_name:
+            return None, "where clause missing 'column'"
+        col, canonical = _resolve_column(model, col_name)
+        if col is None or canonical not in allowed_cols:
+            return None, f"unknown column on {table}: {col_name}"
+        if op == "=":
+            stmt = stmt.where(col == value)
+        elif op == "!=":
+            stmt = stmt.where(col != value)
+        elif op == ">":
+            stmt = stmt.where(col > value)
+        elif op == ">=":
+            stmt = stmt.where(col >= value)
+        elif op == "<":
+            stmt = stmt.where(col < value)
+        elif op == "<=":
+            stmt = stmt.where(col <= value)
+        elif op == "in":
+            if not isinstance(value, list):
+                return None, "op 'in' requires list value"
+            stmt = stmt.where(col.in_(value))
+        elif op == "ilike":
+            stmt = stmt.where(col.ilike(f"%{value}%"))
+        elif op == "is_null":
+            stmt = stmt.where(col.is_(None))
+        elif op == "is_not_null":
+            stmt = stmt.where(col.is_not(None))
+        elif op == "between":
+            if not isinstance(value, list) or len(value) != 2:
+                return None, "op 'between' requires 2-element list"
+            stmt = stmt.where(col.between(value[0], value[1]))
+        else:
+            return None, f"unknown op: {op}"
+    return stmt, None
+
+
+async def _tool_query(
     session: AsyncSession,
     table: str,
-    group_by: list[str],
-    metric: str,
-    filter_eq: Optional[dict] = None,
-    top_n: int = 10,
-) -> list[dict]:
+    where: Optional[list[dict]] = None,
+    select: Optional[list[str]] = None,
+    group_by: Optional[list[str]] = None,
+    metric: Optional[str] = None,
+    order_by: Optional[list[dict]] = None,
+    limit: int = 100,
+) -> dict:
+    """Unified data tool. Returns
+    {total_count, returned, rows: list[dict], truncated: bool}.
+
+    On error returns a list-shaped error envelope: [{"error": "..."}]
+    so existing callers (and the dispatcher) can detect failures uniformly.
     """
-    Group-and-aggregate. Each output row carries the group_by columns plus a
-    `value` field with the metric. Limited to columns we recognise on the
-    target ORM model (so the agent cannot probe unrelated columns).
-    """
-    cfg = _AGG_TABLES.get(table)
-    if cfg is None:
+    if table not in _TABLE_MODELS:
         return [{"error": f"unknown table: {table}"}]
-    model = cfg["model"]
-    mw_col = cfg["mw"]
+    model = _TABLE_MODELS[table]
+    allowed_cols = set(_SCHEMA_WHITELIST.get(table, {}).keys())
 
-    # Resolve group_by columns against the model. Aliases (provider, state,
-    # city, …) get rewritten to the canonical column. The output dict uses
-    # the canonical name so the chart spec is self-consistent.
-    group_cols = []
-    canonical_group_by: list[str] = []
-    for col_name in group_by or []:
-        col, canonical = _resolve_column(model, col_name)
-        if col is None:
-            return [{"error": f"unknown column on {table}: {col_name}"}]
-        group_cols.append(col)
-        canonical_group_by.append(canonical)
-    if not group_cols:
-        return [{"error": "group_by must be non-empty"}]
-    # Use the canonical names from here on for output keys.
-    group_by = canonical_group_by
+    try:
+        limit = int(limit) if limit is not None else 100
+    except (TypeError, ValueError):
+        limit = 100
+    limit = max(1, min(limit, 1000))
 
-    if metric == "count":
-        agg = func.count().label("value")
-    elif metric == "sum_mw":
-        agg = func.coalesce(func.sum(mw_col), 0).label("value")
-    elif metric == "avg_mw":
-        agg = func.avg(mw_col).label("value")
+    # --------------------------- aggregation mode ---------------------------
+    if group_by:
+        # Validate all group_by columns are whitelisted.
+        group_cols = []
+        canonical_group: list[str] = []
+        for g in group_by:
+            col, canonical = _resolve_column(model, g)
+            if col is None or canonical not in allowed_cols:
+                return [{"error": f"unknown column on {table}: {g}"}]
+            group_cols.append(col)
+            canonical_group.append(canonical)
+
+        agg_metric = metric or "count"
+        agg_expr, err = _build_metric_expr(agg_metric, model)
+        if err:
+            return [{"error": err}]
+
+        stmt = sa_select(*group_cols, agg_expr)
+        stmt, err = _apply_where(stmt, model, where or [], table)
+        if err:
+            return [{"error": err}]
+
+        # Sentinel suppression for sites/provider_name groupings.
+        if table == "sites" and "provider_name" in canonical_group:
+            stmt = stmt.where(Site.provider_name.is_not(None)).where(
+                Site.provider_name != "Company Not Disclosed"
+            )
+
+        stmt = stmt.group_by(*group_cols)
+
+        # ORDER BY — supports `value` referring to the aggregate alias.
+        ordered = False
+        for ob in order_by or []:
+            if not isinstance(ob, dict):
+                continue
+            ob_col = ob.get("column")
+            direction = (ob.get("direction") or "desc").lower()
+            if ob_col == "value":
+                expr = agg_expr
+            else:
+                col, canonical = _resolve_column(model, ob_col or "")
+                if col is None or canonical not in allowed_cols:
+                    return [{"error": f"unknown order_by column: {ob_col}"}]
+                expr = col
+            stmt = stmt.order_by(expr.desc() if direction == "desc" else expr.asc())
+            ordered = True
+        if not ordered:
+            stmt = stmt.order_by(agg_expr.desc())
+
+        stmt = stmt.limit(limit)
+        result = await session.execute(stmt)
+        raw_rows = result.all()
+        rows: list[dict] = []
+        for row in raw_rows:
+            d: dict[str, Any] = {}
+            for i, col_name in enumerate(canonical_group):
+                d[col_name] = _coerce_for_json(row[i])
+            val = row[len(canonical_group)]
+            if val is not None:
+                try:
+                    val = float(val)
+                except (TypeError, ValueError):
+                    pass
+            d["value"] = val
+            rows.append(d)
+        return {
+            "total_count": len(rows),
+            "returned": len(rows),
+            "rows": rows,
+            "truncated": False,
+        }
+
+    # --------------------------- raw row mode -------------------------------
+    # Validate select columns.
+    if select:
+        for s in select:
+            _, canonical = _resolve_column(model, s)
+            if canonical not in allowed_cols:
+                return [{"error": f"unknown column on {table}: {s}"}]
+        select_cols = [_COLUMN_ALIASES.get(s, s) for s in select]
     else:
-        return [{"error": f"unknown metric: {metric}"}]
+        select_cols = list(allowed_cols)
+        # Ensure 'id' is included if it's a real column on the model.
+        if getattr(model, "id", None) is not None and "id" not in select_cols:
+            select_cols.insert(0, "id")
 
-    stmt = select(*group_cols, agg)
+    stmt = sa_select(model)
+    stmt, err = _apply_where(stmt, model, where or [], table)
+    if err:
+        return [{"error": err}]
 
-    # Optional equality filters — also goes through the alias map.
-    if filter_eq:
-        for k, v in filter_eq.items():
-            col, _ = _resolve_column(model, k)
-            if col is None:
-                return [{"error": f"unknown filter column on {table}: {k}"}]
-            stmt = stmt.where(col == v)
+    # Order
+    ordered = False
+    for ob in order_by or []:
+        if not isinstance(ob, dict):
+            continue
+        ob_col = ob.get("column")
+        direction = (ob.get("direction") or "desc").lower()
+        col, canonical = _resolve_column(model, ob_col or "")
+        if col is None or canonical not in allowed_cols:
+            return [{"error": f"unknown order_by column: {ob_col}"}]
+        stmt = stmt.order_by(col.desc().nullslast() if direction == "desc" else col.asc().nullsfirst())
+        ordered = True
+    if not ordered:
+        # Sensible default: largest MW first when applicable.
+        mw_col = _AGG_TABLES.get(table, {}).get("mw")
+        if mw_col is not None:
+            stmt = stmt.order_by(mw_col.desc().nullslast())
 
-    # Suppress the Aterio "no provider known" sentinel when grouping by
-    # provider on the sites table — it's a data-quality bucket, not a real
-    # competitor, and dominates aggregates if left in.
-    if table == "sites" and "provider_name" in group_by:
-        stmt = stmt.where(
-            (Site.provider_name.is_(None)) == False,  # noqa: E712 — needed by SQLAlchemy
-        ).where(Site.provider_name != "Company Not Disclosed")
+    # total_count over the SAME where clause (no limit).
+    count_stmt = sa_select(func.count()).select_from(model)
+    count_stmt, err = _apply_where(count_stmt, model, where or [], table)
+    if err:
+        return [{"error": err}]
+    total_count = int((await session.execute(count_stmt)).scalar() or 0)
 
-    stmt = stmt.group_by(*group_cols).order_by(agg.desc()).limit(int(top_n or 10))
-
+    stmt = stmt.limit(limit)
     result = await session.execute(stmt)
-    rows = result.all()
-    out: list[dict] = []
-    for row in rows:
-        row_dict: dict[str, Any] = {}
-        for i, col_name in enumerate(group_by):
-            row_dict[col_name] = row[i]
-        # value is the last column
-        val = row[len(group_by)]
-        # SQL avg returns Decimal; cast for cleaner JSON
-        if val is not None:
-            try:
-                val = float(val)
-            except (TypeError, ValueError):
-                pass
-        row_dict["value"] = val
-        out.append(row_dict)
-    return out
+    objs = result.scalars().all()
+
+    rows: list[dict] = []
+    for o in objs:
+        d = _row_to_dict(o, table, select_cols)
+        cite = _citation_for_row(table, d, o)
+        if cite:
+            d["_citation"] = cite
+        rows.append(d)
+
+    return {
+        "total_count": total_count,
+        "returned": len(rows),
+        "rows": rows,
+        "truncated": total_count > len(rows),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -680,25 +822,35 @@ async def _tool_aggregate(
 # ---------------------------------------------------------------------------
 
 async def dispatch_tool(
-    session: AsyncSession, name: str, args: dict
-) -> list[dict]:
-    """Run the named tool against the DB; on any error return [{"error": ...}]."""
+    session: AsyncSession,
+    name: str,
+    args: dict,
+    *,
+    chart_proposal_holder: Optional[dict] = None,
+) -> Any:
+    """Run the named tool. Returns either:
+      - a dict {total_count, returned, rows, truncated} for `query` success,
+      - a list[{"error": ...}] for any error or `propose_chart` ack,
+      - {"acknowledged": True} for `propose_chart` (caller stores proposal).
+    """
     args = args or {}
     try:
-        if name == "query_sites":
-            return await _tool_query_sites(session, **args)
-        if name == "query_companies":
-            return await _tool_query_companies(session, **args)
-        if name == "query_energy_projects":
-            return await _tool_query_energy_projects(session, **args)
-        if name == "query_generator_permits":
-            return await _tool_query_generator_permits(session, **args)
-        if name == "query_edgar_extractions":
-            return await _tool_query_edgar_extractions(session, **args)
-        if name == "aggregate":
-            return await _tool_aggregate(session, **args)
+        if name == "query":
+            return await _tool_query(session, **args)
+        if name == "propose_chart":
+            if chart_proposal_holder is not None:
+                chart_proposal_holder.clear()
+                chart_proposal_holder.update(args)
+            return {"acknowledged": True}
         return [{"error": f"unknown tool: {name}"}]
-    except Exception as exc:  # noqa: BLE001 - intentionally broad
+    except TypeError as exc:
+        # Bad argument shape from the LLM.
+        logger.warning(
+            "datacenter_qa.tool_arg_error",
+            extra={"tool": name, "args": args, "error": str(exc)},
+        )
+        return [{"error": f"bad args: {exc}"}]
+    except Exception as exc:  # noqa: BLE001
         logger.warning(
             "datacenter_qa.tool_error",
             extra={"tool": name, "args": args, "error": str(exc)},
@@ -707,70 +859,99 @@ async def dispatch_tool(
 
 
 # ---------------------------------------------------------------------------
-# Helpers for chart spec inference
+# Helpers
 # ---------------------------------------------------------------------------
 
-_COMPARATIVE_KEYWORDS = (
-    "top",
-    "compare",
-    "by state",
-    "by provider",
-    "by company",
-    "most",
-    "total",
-    "how much",
-    "ranking",
-    "leaderboard",
-    "share",
-    "breakdown",
-)
+def _is_error_envelope(result: Any) -> bool:
+    return (
+        isinstance(result, list)
+        and len(result) >= 1
+        and isinstance(result[0], dict)
+        and "error" in result[0]
+    )
 
 
-def _looks_comparative(question: str) -> bool:
-    q = (question or "").lower()
-    return any(k in q for k in _COMPARATIVE_KEYWORDS)
+def _result_rows(result: Any) -> list[dict]:
+    """Extract rows from either query envelope or error envelope."""
+    if isinstance(result, dict) and "rows" in result:
+        return result["rows"] or []
+    if isinstance(result, list):
+        return result
+    return []
 
 
-def _build_chart_spec_event(
-    *, table: str, group_by: list[str], metric: str, rows: list[dict]
+def _result_summary(result: Any) -> tuple[str, int]:
+    """Build (summary, row_count) for the ToolResultEvent."""
+    if isinstance(result, dict) and "rows" in result:
+        rows = result["rows"] or []
+        total = result.get("total_count", len(rows))
+        if rows and isinstance(rows[0], dict) and "error" in rows[0]:
+            return f"error: {rows[0]['error'][:160]}", 0
+        if not rows:
+            return "no rows", 0
+        if total > len(rows):
+            return f"{len(rows)} of {total} row(s)", len(rows)
+        return f"{len(rows)} row(s)", len(rows)
+    if isinstance(result, list):
+        if result and isinstance(result[0], dict) and "error" in result[0]:
+            return f"error: {result[0]['error'][:160]}", 0
+        return f"{len(result)} row(s)", len(result)
+    if isinstance(result, dict) and result.get("acknowledged"):
+        return "ok", 0
+    return "ok", 0
+
+
+def _build_chart_event_from_proposal(
+    proposal: dict,
+    last_query_result: Optional[Any],
+    last_query_table: Optional[str],
 ) -> Optional[ChartSpecEvent]:
-    """
-    Build a ChartSpecEvent from the most-recent aggregate result. Returns
-    None if there is nothing chartable.
-    """
-    if not rows:
+    """Construct a ChartSpecEvent from the captured propose_chart args. If the
+    proposal has explicit `series`, use them; otherwise reconstruct from the
+    most recent query result."""
+    if not proposal:
         return None
-    # Reject error envelopes
-    if any("error" in r for r in rows[:1]):
+    chart_type = proposal.get("chart_type") or "none"
+    if chart_type == "none":
         return None
-    if not group_by:
+    if chart_type not in ("bar", "pie", "line", "scatter", "table"):
         return None
-    x_col = group_by[0]
-    series = [
-        {"x": r.get(x_col), "y": r.get("value")}
-        for r in rows
-        if r.get(x_col) is not None and r.get("value") is not None
-    ]
+
+    title = proposal.get("title") or ""
+    x = proposal.get("x") or ""
+    y = proposal.get("y")
+    # Coerce y list -> first element to keep schema scalar.
+    if isinstance(y, list):
+        y = y[0] if y else "value"
+    y = y or "value"
+
+    series = proposal.get("series")
+    if not series:
+        rows = _result_rows(last_query_result) if last_query_result is not None else []
+        if rows and x and any(x in r for r in rows if isinstance(r, dict)):
+            y_col = "value" if any("value" in r for r in rows if isinstance(r, dict)) else y
+            series = [
+                {"x": r.get(x), "y": r.get(y_col)}
+                for r in rows
+                if isinstance(r, dict)
+                and r.get(x) is not None
+                and r.get(y_col) is not None
+            ]
+        else:
+            series = []
+
     if not series:
         return None
 
-    # Pie only if it's a small categorical breakdown of count.
-    if len(group_by) == 1 and metric == "count" and len(series) <= 8:
-        chart_type = "pie"
-    elif len(group_by) == 1:
-        chart_type = "bar"
-    else:
-        chart_type = "table"
-
-    title_metric = {"count": "count", "sum_mw": "total MW", "avg_mw": "average MW"}.get(metric, metric)
-    title = f"{title_metric.title()} by {', '.join(group_by)} ({table})"
     return ChartSpecEvent(
         chart_type=chart_type,
-        x=x_col,
-        y="value",
+        x=x or "x",
+        y=str(y),
         series=series,
         title=title,
-        source_table=table,
+        source_table=last_query_table or "",
+        breakdown_by=proposal.get("breakdown_by"),
+        reasoning=proposal.get("reasoning"),
     )
 
 
@@ -783,37 +964,30 @@ async def answer_question(
     question: str,
     history: list[Message] | None = None,
 ) -> AsyncIterator[QAEvent]:
-    """
-    Multi-pass tool-using QA, yielding a discriminated union of events.
-
-    Pass 1 (up to 3 rounds): llm_client.reason picks tool calls; we run
-    them and yield ToolCall, ToolResult, and Citation events.
-    Pass 2: llm_client.chat_stream produces the final cited answer; we
-    yield TextChunk events. We may emit a ChartSpec event between passes
-    when the question is comparative/numeric and an aggregate result is
-    available.
-    """
+    """Multi-pass tool-using QA, yielding a discriminated union of events."""
     question = (question or "").strip()
     if not question:
         yield ErrorEvent(message="Please provide a question.")
         yield DoneEvent()
         return
 
-    # Build the message stack. Include short history so the LLM keeps context.
     messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
     if history:
-        for m in history[-8:]:  # cap context size
+        for m in history[-8:]:
             try:
                 messages.append({"role": m.role, "content": m.content})
             except AttributeError:
-                # tolerate raw dict history
                 if isinstance(m, dict) and m.get("role") and m.get("content"):
                     messages.append({"role": m["role"], "content": m["content"]})
     messages.append({"role": "user", "content": question})
 
     tool_results: list[dict] = []
-    last_aggregate_meta: Optional[dict] = None
     seen_citations: set[tuple] = set()
+
+    # Mutable holder for the latest propose_chart args; the dispatcher writes here.
+    chart_proposal: dict = {}
+    last_query_result: Optional[Any] = None
+    last_query_table: Optional[str] = None
 
     rounds = 0
     max_rounds = 3
@@ -821,7 +995,7 @@ async def answer_question(
         rounds += 1
         try:
             turn = await llm_client.reason(
-                prompt_version="datacenter_qa_v1",
+                prompt_version="datacenter_qa_v2",
                 messages=messages,
                 tools=TOOLS,
             )
@@ -835,7 +1009,6 @@ async def answer_question(
         if not tool_calls:
             break
 
-        # Append the assistant's tool-call turn to history (loop bookkeeping).
         messages.append(
             {
                 "role": "assistant",
@@ -857,43 +1030,30 @@ async def answer_question(
             else:
                 args = raw_args or {}
 
-            # Safety net: if the LLM forgot filter_eq on a scoped aggregate
-            # call, inject the scope inferred from the question. The LLM's
-            # explicit filters always win over inferred ones.
-            if tool_name == "aggregate":
-                args = _augment_aggregate_args(args, question)
+            # Safety net: scope inference for sites queries.
+            if tool_name == "query":
+                args = _augment_query_args(args, question)
 
-            # Emit the tool-call event for live UI transcript.
             yield ToolCallEvent(tool_name=tool_name, args=args)
 
-            result = await dispatch_tool(session, tool_name, args)
+            result = await dispatch_tool(
+                session, tool_name, args, chart_proposal_holder=chart_proposal
+            )
             tool_results.append({"tool": tool_name, "args": args, "result": result})
 
-            # Track aggregate metadata for later chart synthesis.
-            if tool_name == "aggregate" and result and "error" not in result[0]:
-                last_aggregate_meta = {
-                    "table": args.get("table"),
-                    "group_by": args.get("group_by") or [],
-                    "metric": args.get("metric"),
-                    "rows": result,
-                }
+            # Track most-recent successful query result for chart synthesis.
+            if tool_name == "query" and isinstance(result, dict) and "rows" in result:
+                last_query_result = result
+                last_query_table = args.get("table")
 
-            # Build a short summary string for the UI.
-            row_count = len(result)
-            if row_count == 1 and "error" in result[0]:
-                summary = f"error: {result[0]['error'][:160]}"
-            elif row_count == 0:
-                summary = "no rows"
-            else:
-                summary = f"{row_count} row(s)"
-
+            summary, row_count = _result_summary(result)
             yield ToolResultEvent(
                 tool_name=tool_name, summary=summary, row_count=row_count
             )
 
-            # Emit up to 3 unique citations from this result.
+            # Emit up to 3 unique citations from this result's rows.
             cites_emitted = 0
-            for row in result:
+            for row in _result_rows(result):
                 if cites_emitted >= 3:
                     break
                 cite = row.get("_citation") if isinstance(row, dict) else None
@@ -911,37 +1071,39 @@ async def answer_question(
                     label=cite.get("label") or "",
                 )
 
-            # Append a tool message back to the LLM. Strip _citation noise to
-            # save tokens — the LLM doesn't need it for synthesis.
-            stripped = []
-            for row in result:
-                if isinstance(row, dict):
-                    stripped.append({k: v for k, v in row.items() if k != "_citation"})
-                else:
-                    stripped.append(row)
+            # Append a tool message for the LLM. Strip _citation noise + cap size.
+            if isinstance(result, dict) and "rows" in result:
+                payload_for_llm: Any = {
+                    "total_count": result.get("total_count"),
+                    "returned": result.get("returned"),
+                    "truncated": result.get("truncated"),
+                    "rows": [
+                        {k: v for k, v in r.items() if k != "_citation"}
+                        if isinstance(r, dict)
+                        else r
+                        for r in (result.get("rows") or [])
+                    ],
+                }
+            else:
+                payload_for_llm = result
+
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": call_id,
                     "name": tool_name,
-                    "content": json.dumps(stripped, default=str)[:8000],
+                    "content": json.dumps(payload_for_llm, default=str)[:8000],
                 }
             )
 
-    # ----- Optional chart spec ------------------------------------------------
-    used_aggregate = any(tr["tool"] == "aggregate" for tr in tool_results)
-    if (used_aggregate or _looks_comparative(question)) and last_aggregate_meta is not None:
-        chart_event = _build_chart_spec_event(
-            table=last_aggregate_meta["table"],
-            group_by=last_aggregate_meta["group_by"],
-            metric=last_aggregate_meta["metric"],
-            rows=last_aggregate_meta["rows"],
-        )
-        if chart_event is not None:
-            yield chart_event
+    # ----- Chart spec from captured proposal --------------------------------
+    chart_event = _build_chart_event_from_proposal(
+        chart_proposal, last_query_result, last_query_table
+    )
+    if chart_event is not None:
+        yield chart_event
 
-    # ----- Pass 2: stream natural-language synthesis --------------------------
-    # Build a compact synthesis prompt that includes the gathered tool results.
+    # ----- Pass 2: stream natural-language synthesis ------------------------
     synthesis_prompt = (
         f"{SYSTEM_PROMPT}\n\n"
         f"User question: {question}\n\n"
@@ -964,11 +1126,8 @@ async def answer_question(
             if getattr(chunk, "done", False):
                 break
         if not any_text:
-            # Streamer returned nothing useful — degrade gracefully.
             yield TextChunkEvent(
-                content=(
-                    "(No streamed answer available; see tool results.)"
-                )
+                content="(No streamed answer available; see tool results.)"
             )
     except Exception as exc:  # noqa: BLE001
         logger.exception("datacenter_qa.stream_failed")

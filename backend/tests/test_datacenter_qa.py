@@ -1,5 +1,5 @@
 """
-Tests for the Datacenter Q&A agent.
+Tests for the Datacenter Q&A agent (schema-aware refactor).
 
 DB-level tool tests run against the live local Postgres at
 postgresql+asyncpg://sit_app:changeme@localhost:5432/strategic_insights.
@@ -15,15 +15,12 @@ import pytest_asyncio
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from agents.datacenter_qa import (
-    _tool_aggregate,
-    _tool_query_sites,
+    _describe_schema_for_llm,
+    _tool_query,
     answer_question,
     dispatch_tool,
 )
 
-# The spec calls out the canonical DB URL, but locally `.env` overrides the
-# password.  Prefer the configured settings.database_url, fall back to the
-# spec-default for portability.
 try:
     from config import settings as _settings
     DB_URL = _settings.database_url
@@ -46,36 +43,87 @@ async def session():
 
 @pytest.mark.asyncio
 async def test_query_sites_va(session):
-    rows = await _tool_query_sites(session, state="VA", limit=10)
-    assert isinstance(rows, list)
-    # Either we have VA sites or the DB is empty; tolerate both.
+    out = await _tool_query(
+        session,
+        table="sites",
+        where=[{"column": "state_code", "op": "=", "value": "VA"}],
+        limit=10,
+    )
+    assert isinstance(out, dict)
+    for k in ("rows", "total_count", "returned", "truncated"):
+        assert k in out, f"missing {k} in query result"
+    rows = out["rows"]
     if rows and "error" not in rows[0]:
         assert all(r.get("state_code") == "VA" for r in rows)
 
 
 @pytest.mark.asyncio
 async def test_aggregate_sites_by_provider(session):
-    rows = await _tool_aggregate(
-        session, table="sites", group_by=["provider_name"], metric="sum_mw", top_n=5
+    out = await _tool_query(
+        session,
+        table="sites",
+        group_by=["provider_name"],
+        metric="sum:power_capacity_mw",
+        limit=5,
     )
-    assert isinstance(rows, list)
+    assert isinstance(out, dict)
+    rows = out["rows"]
+    assert out["returned"] <= 5
     assert len(rows) <= 5
     if rows:
-        assert "value" in rows[0] or "error" in rows[0]
+        assert "value" in rows[0]
 
 
 @pytest.mark.asyncio
 async def test_dispatch_tool_unknown(session):
-    rows = await dispatch_tool(session, "does_not_exist", {})
-    assert rows and "error" in rows[0]
+    out = await dispatch_tool(session, "does_not_exist", {})
+    assert isinstance(out, list)
+    assert out and "error" in out[0]
 
 
 @pytest.mark.asyncio
 async def test_aggregate_unknown_column(session):
-    rows = await _tool_aggregate(
-        session, table="sites", group_by=["nope_not_a_column"], metric="count"
+    out = await _tool_query(
+        session,
+        table="sites",
+        where=[{"column": "nope_not_a_column", "op": "=", "value": 1}],
+        limit=5,
     )
-    assert rows and "error" in rows[0]
+    # Errors come back as the list-shaped error envelope.
+    assert isinstance(out, list)
+    assert out and "error" in out[0]
+
+
+# ---------------------------------------------------------------------------
+# New tests for the unified query tool
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_query_with_arbitrary_field(session):
+    out = await _tool_query(
+        session,
+        table="sites",
+        where=[{"column": "yearly_pue", "op": "<", "value": 1.5}],
+        limit=10,
+    )
+    assert isinstance(out, dict)
+    assert "rows" in out
+    assert "total_count" in out
+
+
+@pytest.mark.asyncio
+async def test_query_returns_total_count(session):
+    out = await _tool_query(session, table="sites", limit=2)
+    assert isinstance(out, dict)
+    assert out["returned"] <= out["total_count"]
+    assert out["truncated"] == (out["total_count"] > out["returned"])
+
+
+def test_schema_doc_includes_pue():
+    doc = _describe_schema_for_llm()
+    assert "yearly_pue" in doc
+    assert "tot_facility_space_sqft" in doc
+    assert "provider_name" in doc
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +168,6 @@ async def test_answer_question_top_providers_chart(session):
     except httpx.HTTPError as exc:
         _skip_if_llm_down(exc)
     types = {e.type for e in events}
-    # Comparative numeric question -- expect either a chart or at least a tool_result.
     assert "chart_spec" in types or "tool_result" in types or "error" in types
 
 

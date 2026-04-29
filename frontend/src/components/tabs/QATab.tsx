@@ -4,6 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell,
   LineChart, Line,
+  ScatterChart, Scatter, ZAxis,
 } from "recharts";
 import { MessageSquare, Send, Square, Trash2, ExternalLink, ChevronDown, ChevronUp } from "lucide-react";
 import { useQA } from "../../hooks/useQA";
@@ -78,6 +79,24 @@ function ChartRenderer({ spec }: { spec: ChartSpec }) {
           <Tooltip {...TOOLTIP_STYLES} />
           <Line type="monotone" dataKey="y" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
         </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "scatter") {
+    const scatterData = (spec.series || []).map((s) => ({
+      x: Number(s.x),
+      y: Number(s.y),
+    }));
+    return (
+      <ResponsiveContainer width="100%" height={260}>
+        <ScatterChart>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis type="number" dataKey="x" name={spec.x} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <YAxis type="number" dataKey="y" name={String(spec.y)} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <ZAxis range={[60, 60]} />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter data={scatterData} fill="#3b82f6" />
+        </ScatterChart>
       </ResponsiveContainer>
     );
   }
@@ -231,7 +250,15 @@ export default function QATab() {
                     <div key={j} style={{ marginTop: 12, padding: "10px 0", borderTop: "1px solid #1e293b" }}>
                       <div style={{ color: "white", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
                       <ChartRenderer spec={c} />
-                      <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>Source table: {c.source_table}</div>
+                      <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>
+                        Source table: {c.source_table}
+                        {c.breakdown_by ? ` · breakdown by ${c.breakdown_by}` : null}
+                      </div>
+                      {c.reasoning ? (
+                        <div style={{ color: "#64748b", fontSize: 11, marginTop: 4, fontStyle: "italic" }}>
+                          {c.reasoning}
+                        </div>
+                      ) : null}
                     </div>
                   ))}
                   {m.toolCalls && <ToolTrace calls={m.toolCalls} />}

@@ -87,6 +87,8 @@ export function useQA() {
                 series: evt.series,
                 title: evt.title,
                 source_table: evt.source_table,
+                breakdown_by: evt.breakdown_by ?? null,
+                reasoning: evt.reasoning ?? null,
               },
             ],
           }));

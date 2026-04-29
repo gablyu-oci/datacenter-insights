@@ -35,22 +35,26 @@ class ToolResultEvent(BaseModel):
 
 
 class ChartSpec(BaseModel):
-    chart_type: Literal["bar", "pie", "line", "table"]
+    chart_type: Literal["bar", "pie", "line", "scatter", "table"]
     x: str
     y: str
     series: list[dict]
     title: str
     source_table: str
+    breakdown_by: Optional[str] = None
+    reasoning: Optional[str] = None
 
 
 class ChartSpecEvent(BaseModel):
     type: Literal["chart_spec"] = "chart_spec"
-    chart_type: Literal["bar", "pie", "line", "table"]
+    chart_type: Literal["bar", "pie", "line", "scatter", "table"]
     x: str
     y: str
     series: list[dict]
     title: str
     source_table: str
+    breakdown_by: Optional[str] = None
+    reasoning: Optional[str] = None
 
 
 class Citation(BaseModel):

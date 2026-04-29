@@ -183,12 +183,14 @@ export type QAEvent =
   | { type: "tool_result"; tool_name: string; summary: string; row_count: number }
   | {
       type: "chart_spec";
-      chart_type: "bar" | "pie" | "line" | "table";
+      chart_type: "bar" | "pie" | "line" | "scatter" | "table";
       x: string;
       y: string;
       series: Array<Record<string, unknown>>;
       title: string;
       source_table: string;
+      breakdown_by?: string | null;
+      reasoning?: string | null;
     }
   | {
       type: "citation";
@@ -201,12 +203,14 @@ export type QAEvent =
   | { type: "error"; message: string };
 
 export interface ChartSpec {
-  chart_type: "bar" | "pie" | "line" | "table";
+  chart_type: "bar" | "pie" | "line" | "scatter" | "table";
   x: string;
   y: string;
   series: Array<Record<string, unknown>>;
   title: string;
   source_table: string;
+  breakdown_by?: string | null;
+  reasoning?: string | null;
 }
 
 export interface Citation {
