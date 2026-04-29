@@ -1,316 +1,432 @@
-import { useState, useRef, useEffect, KeyboardEvent } from "react";
+import { useState, useRef, useEffect } from "react";
+import type { KeyboardEvent } from "react";
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
+  PieChart, Pie, Cell,
+  LineChart, Line,
+  ScatterChart, Scatter, ZAxis,
+} from "recharts";
+import {
+  MessageSquare, Send, Square, Trash2, ExternalLink, ChevronDown, ChevronUp,
+  X, Maximize2, Minimize2,
+} from "lucide-react";
+import { useQA } from "../hooks/useQA";
+import type { ChartSpec, Citation, QAMessage } from "../types";
 
-type Role = "user" | "assistant";
-interface Message {
-  role: Role;
-  content: string;
+// ── Inline chart renderer for streamed chart_spec events ────────────────────
+
+const TOOLTIP_STYLES = {
+  contentStyle: { background: "#0f172a", border: "1px solid #334155", borderRadius: 8 },
+  labelStyle: { color: "white" },
+  itemStyle: { color: "#94a3b8" },
+};
+
+const PIE_COLORS = ["#3b82f6","#22c55e","#f59e0b","#ef4444","#8b5cf6","#06b6d4","#ec4899","#a855f7"];
+
+function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: number }) {
+  const data = (spec.series || []).map((s) => ({ x: String(s.x), y: Number(s.y) }));
+  if (spec.chart_type === "table") {
+    return (
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #334155" }}>
+              <th style={{ color: "#94a3b8", textAlign: "left", padding: "6px 8px" }}>{spec.x}</th>
+              <th style={{ color: "#94a3b8", textAlign: "right", padding: "6px 8px" }}>{spec.y}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.map((r, i) => (
+              <tr key={i} style={{ borderBottom: "1px solid #1e293b" }}>
+                <td style={{ color: "white", padding: "6px 8px" }}>{r.x}</td>
+                <td style={{ color: "white", padding: "6px 8px", textAlign: "right" }}>{r.y.toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+  if (spec.chart_type === "pie") {
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <PieChart>
+          <Pie data={data} dataKey="y" nameKey="x" outerRadius={Math.min(height * 0.35, 90)} label={({ x }) => x}>
+            {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+          </Pie>
+          <Tooltip {...TOOLTIP_STYLES} />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "line") {
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <LineChart data={data}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <Tooltip {...TOOLTIP_STYLES} />
+          <Line type="monotone" dataKey="y" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }} />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "scatter") {
+    const sd = (spec.series || []).map((s) => ({ x: Number(s.x), y: Number(s.y) }));
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <ScatterChart>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis type="number" dataKey="x" name={spec.x} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <YAxis type="number" dataKey="y" name={String(spec.y)} tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <ZAxis range={[60, 60]} />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} />
+          <Scatter data={sd} fill="#3b82f6" />
+        </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+  return (
+    <ResponsiveContainer width="100%" height={height}>
+      <BarChart data={data}>
+        <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+        <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+        <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} />
+        <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} />
+        <Legend wrapperStyle={{ color: "#94a3b8", fontSize: 12 }} />
+        <Bar dataKey="y" fill="#3b82f6" name={spec.y} radius={[4,4,0,0]} />
+      </BarChart>
+    </ResponsiveContainer>
+  );
 }
 
-const PANEL_BG = "#1e293b";
-const PANEL_BORDER = "#334155";
+function ToolTrace({ calls }: { calls: NonNullable<QAMessage["toolCalls"]> }) {
+  const [open, setOpen] = useState(false);
+  if (!calls || calls.length === 0) return null;
+  return (
+    <div style={{ marginTop: 8, fontSize: 11, color: "#64748b" }}>
+      <button onClick={() => setOpen(o => !o)} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 4, padding: 0, fontSize: 11 }}>
+        {open ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+        {calls.length} tool call{calls.length === 1 ? "" : "s"}
+      </button>
+      {open && (
+        <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+          {calls.map((c, i) => (
+            <li key={i} style={{ marginBottom: 2 }}>
+              <code style={{ color: "#94a3b8" }}>{c.tool_name}</code>
+              {typeof c.row_count === "number" && <span> -- {c.row_count} rows</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function CitationList({ items }: { items: Citation[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <div style={{ marginTop: 10, paddingTop: 8, borderTop: "1px solid #334155" }}>
+      <div style={{ color: "#475569", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 4 }}>Sources</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {items.map((c, i) => (
+          <div key={i} style={{ fontSize: 11, color: "#94a3b8" }}>
+            <span style={{ color: "#64748b" }}>[{c.table}#{c.row_id ?? "?"}]</span>{" "}
+            <span style={{ color: "#cbd5e1" }}>{c.label}</span>{" "}
+            {c.source_url && (
+              <a href={c.source_url} target="_blank" rel="noreferrer" style={{ color: "#60a5fa", textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                <ExternalLink size={9} /> link
+              </a>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const SUGGESTED = [
+  "How much MW does Microsoft have in Virginia?",
+  "Show me total MW by provider for top 5 hyperscalers",
+  "Which states have the most generator permits?",
+  "Compare AWS vs Microsoft datacenter announcements 2024-2026",
+  "What's our generator-permit coverage by state?",
+];
+
+// ── ChatPanel ───────────────────────────────────────────────────────────────
+//
+// Floating chat that takes over the responsibilities of the old separate Q&A
+// tab. Three layout modes:
+//   - "closed":    a single FAB in the bottom-right (open the panel)
+//   - "open":      floating panel docked bottom-right (~420×600)
+//   - "expanded":  large modal overlay covering most of the viewport
+// Minimize collapses back to FAB; expand toggles between panel <-> modal.
+
+type Mode = "closed" | "open" | "expanded";
 
 export default function ChatPanel() {
-  const [open, setOpen] = useState(false);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [mode, setMode] = useState<Mode>("closed");
   const [input, setInput] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const { messages, ask, stop, clear, streaming } = useQA();
   const listRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (listRef.current) {
-      listRef.current.scrollTop = listRef.current.scrollHeight;
-    }
+    if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight;
   }, [messages, streaming]);
 
-  const handleSend = async () => {
-    const trimmed = input.trim();
-    if (!trimmed || streaming) return;
-
-    setError(null);
+  const handleSubmit = () => {
+    const q = input.trim();
+    if (!q || streaming) return;
     setInput("");
     if (taRef.current) taRef.current.style.height = "auto";
-
-    const userMsg: Message = { role: "user", content: trimmed };
-    // Append user message + a placeholder assistant message we will fill via stream.
-    setMessages((prev) => [...prev, userMsg, { role: "assistant", content: "" }]);
-    setStreaming(true);
-
-    try {
-      const response = await fetch("/api/agent/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question: trimmed }),
-      });
-
-      if (!response.ok || !response.body) {
-        throw new Error(`Request failed (${response.status})`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      let done = false;
-
-      while (!done) {
-        const { value, done: streamDone } = await reader.read();
-        done = streamDone;
-        if (value) {
-          buffer += decoder.decode(value, { stream: !done });
-          // Split on newlines; SSE frames are line-based.
-          let newlineIdx = buffer.indexOf("\n");
-          while (newlineIdx !== -1) {
-            const line = buffer.slice(0, newlineIdx).trimEnd();
-            buffer = buffer.slice(newlineIdx + 1);
-            if (line.startsWith("data: ")) {
-              const payload = line.slice(6);
-              if (payload === "[DONE]") {
-                done = true;
-                break;
-              }
-              const decoded = payload.replace(/\\n/g, "\n");
-              setMessages((prev) => {
-                const next = [...prev];
-                const last = next[next.length - 1];
-                if (last && last.role === "assistant") {
-                  next[next.length - 1] = { role: "assistant", content: last.content + decoded };
-                }
-                return next;
-              });
-            }
-            newlineIdx = buffer.indexOf("\n");
-          }
-        }
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setError(msg);
-      // Remove the empty assistant placeholder if it never received content.
-      setMessages((prev) => {
-        const next = [...prev];
-        const last = next[next.length - 1];
-        if (last && last.role === "assistant" && last.content === "") {
-          next.pop();
-        }
-        return next;
-      });
-    } finally {
-      setStreaming(false);
-    }
+    ask(q);
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      handleSend();
+      handleSubmit();
     }
   };
 
-  const handleInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setInput(e.target.value);
-    const ta = e.target;
-    ta.style.height = "auto";
-    const lineHeight = 20;
-    const maxHeight = lineHeight * 3 + 16;
-    ta.style.height = Math.min(ta.scrollHeight, maxHeight) + "px";
-  };
-
-  if (!open) {
+  if (mode === "closed") {
     return (
       <button
-        onClick={() => setOpen(true)}
-        aria-label="Ask analyst"
+        onClick={() => setMode("open")}
+        title="Ask the analyst"
         style={{
-          position: "fixed",
-          right: 24,
-          bottom: 24,
-          zIndex: 1000,
-          background: "#3b82f6",
-          color: "white",
-          border: "none",
-          borderRadius: 999,
-          padding: "12px 18px",
-          fontSize: 14,
-          fontWeight: 600,
-          cursor: "pointer",
-          boxShadow: "0 6px 24px rgba(0,0,0,0.4)",
-          display: "flex",
-          alignItems: "center",
-          gap: 8,
+          position: "fixed", bottom: 22, right: 22, zIndex: 1200,
+          width: 56, height: 56, borderRadius: "50%",
+          background: "#3b82f6", border: "none", color: "white",
+          boxShadow: "0 8px 24px rgba(59,130,246,0.4)",
+          cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
         }}
       >
-        <span aria-hidden="true">{"\u{1F4AC}"}</span>
-        <span>Ask analyst</span>
+        <MessageSquare size={22} />
       </button>
     );
   }
 
-  return (
-    <div
-      role="dialog"
-      aria-label="Datacenter Q&A"
-      style={{
-        position: "fixed",
-        right: 24,
-        bottom: 24,
-        zIndex: 1000,
-        width: 380,
-        height: 520,
-        background: PANEL_BG,
-        border: `1px solid ${PANEL_BORDER}`,
-        borderRadius: 12,
-        display: "flex",
-        flexDirection: "column",
-        overflow: "hidden",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-        fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-      }}
-    >
-      {/* Header */}
-      <div
-        style={{
-          padding: "12px 14px",
-          borderBottom: `1px solid ${PANEL_BORDER}`,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          background: "#0f172a",
-        }}
-      >
-        <div style={{ color: "white", fontWeight: 600, fontSize: 14 }}>Datacenter Q&amp;A</div>
-        <button
-          onClick={() => setOpen(false)}
-          aria-label="Close chat"
-          style={{
-            background: "transparent",
-            border: "none",
-            color: "#94a3b8",
-            fontSize: 20,
-            cursor: "pointer",
-            lineHeight: 1,
-            padding: "0 4px",
-          }}
-        >
-          {"\u00D7"}
-        </button>
-      </div>
+  const isExpanded = mode === "expanded";
+  const outerStyle: React.CSSProperties = isExpanded
+    ? {
+        position: "fixed", inset: 0, margin: "auto",
+        width: "min(1200px, 92vw)", height: "min(820px, 88vh)",
+        background: "#0f172a", border: "1px solid #334155", borderRadius: 12,
+        boxShadow: "0 24px 64px rgba(0,0,0,0.6)",
+        zIndex: 1300, display: "flex", flexDirection: "column",
+      }
+    : {
+        position: "fixed", bottom: 22, right: 22,
+        width: 420, height: 600, maxHeight: "calc(100vh - 44px)",
+        background: "#0f172a", border: "1px solid #334155", borderRadius: 12,
+        boxShadow: "0 16px 40px rgba(0,0,0,0.5)",
+        zIndex: 1200, display: "flex", flexDirection: "column",
+      };
 
-      {/* Message list */}
-      <div
-        ref={listRef}
-        style={{
-          flex: 1,
-          overflowY: "auto",
-          padding: "12px 14px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-        }}
-      >
-        {messages.length === 0 && (
-          <div style={{ color: "#64748b", fontSize: 12, textAlign: "center", marginTop: 30 }}>
-            Ask about contracted GW, GPU deployments, permits, or cross-pillar signals.
+  const backdrop = isExpanded ? (
+    <div
+      onClick={() => setMode("open")}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 1290,
+      }}
+    />
+  ) : null;
+
+  return (
+    <>
+      {backdrop}
+      <div style={outerStyle}>
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", borderBottom: "1px solid #1e293b",
+          background: "#162032", borderRadius: "12px 12px 0 0",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <MessageSquare size={16} color="#3b82f6" />
+            <div>
+              <div style={{ color: "white", fontSize: 13, fontWeight: 600 }}>Ask the Analyst</div>
+              <div style={{ color: "#64748b", fontSize: 10 }}>
+                Live data over sites, permits, EDGAR, and energy projects
+              </div>
+            </div>
           </div>
-        )}
-        {messages.map((m, i) => {
-          const isAssistant = m.role === "assistant";
-          const isLast = i === messages.length - 1;
-          const showTyping = isAssistant && isLast && streaming && m.content === "";
-          return (
-            <div
-              key={i}
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            <button
+              onClick={clear}
+              disabled={streaming || messages.length === 0}
+              title="Clear conversation"
               style={{
-                color: isAssistant ? "white" : "#38bdf8",
-                fontSize: 13,
-                lineHeight: 1.5,
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
+                background: "none", border: "none", color: "#64748b",
+                cursor: streaming || messages.length === 0 ? "not-allowed" : "pointer",
+                padding: 6, display: "flex", borderRadius: 4,
               }}
             >
-              <div
-                style={{
-                  color: "#64748b",
-                  fontSize: 10,
-                  fontWeight: 600,
-                  textTransform: "uppercase",
-                  marginBottom: 2,
-                  letterSpacing: 0.5,
-                }}
-              >
-                {isAssistant ? "Analyst" : "You"}
-              </div>
-              {showTyping ? <span style={{ color: "#94a3b8" }}>...</span> : m.content}
-            </div>
-          );
-        })}
-        {error && (
-          <div
-            style={{
-              color: "#ef4444",
-              fontStyle: "italic",
-              fontSize: 12,
-            }}
-          >
-            {error}
+              <Trash2 size={14} />
+            </button>
+            <button
+              onClick={() => setMode(isExpanded ? "open" : "expanded")}
+              title={isExpanded ? "Shrink" : "Expand"}
+              style={{
+                background: "none", border: "none", color: "#94a3b8",
+                cursor: "pointer", padding: 6, display: "flex", borderRadius: 4,
+              }}
+            >
+              {isExpanded ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
+            </button>
+            <button
+              onClick={() => setMode("closed")}
+              title="Minimize"
+              style={{
+                background: "none", border: "none", color: "#94a3b8",
+                cursor: "pointer", padding: 6, display: "flex", borderRadius: 4,
+              }}
+            >
+              <X size={14} />
+            </button>
           </div>
-        )}
-      </div>
+        </div>
 
-      {/* Input row */}
-      <div
-        style={{
-          padding: 10,
-          borderTop: `1px solid ${PANEL_BORDER}`,
-          display: "flex",
-          gap: 8,
-          alignItems: "flex-end",
-          background: "#0f172a",
-        }}
-      >
-        <textarea
-          ref={taRef}
-          value={input}
-          onChange={handleInput}
-          onKeyDown={handleKeyDown}
-          rows={1}
-          placeholder="Ask a question..."
-          aria-label="Question"
-          disabled={streaming}
+        {/* Messages */}
+        <div
+          ref={listRef}
           style={{
-            flex: 1,
-            resize: "none",
-            background: "#1e293b",
-            border: `1px solid ${PANEL_BORDER}`,
-            borderRadius: 6,
-            color: "white",
-            fontSize: 13,
-            padding: "8px 10px",
-            fontFamily: "inherit",
-            outline: "none",
-            lineHeight: "20px",
-            maxHeight: 76,
-          }}
-        />
-        <button
-          onClick={handleSend}
-          disabled={streaming || !input.trim()}
-          aria-label="Send message"
-          style={{
-            background: streaming || !input.trim() ? "#334155" : "#3b82f6",
-            color: "white",
-            border: "none",
-            borderRadius: 6,
-            padding: "8px 14px",
-            fontSize: 13,
-            fontWeight: 600,
-            cursor: streaming || !input.trim() ? "not-allowed" : "pointer",
-            height: 36,
+            flex: 1, overflowY: "auto",
+            padding: "14px 16px",
+            display: "flex", flexDirection: "column", gap: 12,
           }}
         >
-          Send
-        </button>
+          {messages.length === 0 ? (
+            <div style={{
+              display: "flex", flexDirection: "column",
+              alignItems: "center", gap: 12, padding: "20px 8px",
+            }}>
+              <div style={{ color: "#64748b", fontSize: 12, textAlign: "center" }}>
+                Ask anything about the live data — agent picks the right tables and chart type.
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, width: "100%", maxWidth: 700 }}>
+                {SUGGESTED.map(q => (
+                  <button
+                    key={q}
+                    onClick={() => ask(q)}
+                    style={{
+                      textAlign: "left", padding: "8px 12px", background: "#1e293b",
+                      border: "1px solid #334155", borderRadius: 8, color: "#cbd5e1",
+                      fontSize: 12, cursor: "pointer",
+                    }}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            messages.map((m, i) => {
+              if (m.role === "user") {
+                return (
+                  <div key={i} style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <div style={{
+                      maxWidth: "85%", background: "#1e3a5f", border: "1px solid #2563eb",
+                      borderRadius: 10, padding: "8px 12px", color: "white",
+                      fontSize: 13, whiteSpace: "pre-wrap",
+                    }}>
+                      {m.content}
+                    </div>
+                  </div>
+                );
+              }
+              return (
+                <div key={i} style={{ display: "flex", justifyContent: "flex-start" }}>
+                  <div style={{
+                    maxWidth: "95%", width: "100%",
+                    background: "#1e293b", border: "1px solid #334155",
+                    borderRadius: 10, padding: "10px 12px",
+                  }}>
+                    <div style={{ color: "#475569", fontSize: 10, fontWeight: 600, letterSpacing: 0.5, textTransform: "uppercase", marginBottom: 6 }}>
+                      Analyst
+                    </div>
+                    <div style={{ color: "#e2e8f0", fontSize: 13, lineHeight: 1.55, whiteSpace: "pre-wrap" }}>
+                      {m.content || (streaming && i === messages.length - 1 ? <span style={{ color: "#64748b" }}>...</span> : null)}
+                    </div>
+                    {m.charts?.map((c, j) => (
+                      <div key={j} style={{ marginTop: 12, padding: "10px 0", borderTop: "1px solid #334155" }}>
+                        <div style={{ color: "white", fontSize: 12, fontWeight: 600, marginBottom: 4 }}>{c.title}</div>
+                        <ChartRenderer spec={c} height={isExpanded ? 280 : 200} />
+                        <div style={{ color: "#475569", fontSize: 10, marginTop: 4 }}>
+                          Source table: {c.source_table}
+                          {c.breakdown_by ? ` · breakdown by ${c.breakdown_by}` : null}
+                        </div>
+                        {c.reasoning ? (
+                          <div style={{ color: "#64748b", fontSize: 11, marginTop: 4, fontStyle: "italic" }}>
+                            {c.reasoning}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                    {m.toolCalls && <ToolTrace calls={m.toolCalls} />}
+                    {m.citations && <CitationList items={m.citations} />}
+                    {m.error && (
+                      <div style={{ marginTop: 8, color: "#ef4444", fontSize: 12, fontStyle: "italic" }}>
+                        {m.error}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+
+        {/* Input */}
+        <div style={{
+          borderTop: "1px solid #1e293b", padding: 10,
+          display: "flex", gap: 8, alignItems: "flex-end",
+          background: "#162032", borderRadius: "0 0 12px 12px",
+        }}>
+          <textarea
+            ref={taRef}
+            rows={1}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              const ta = e.target;
+              ta.style.height = "auto";
+              ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+            }}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask about MW, sites, permits, providers..."
+            disabled={streaming}
+            style={{
+              flex: 1, resize: "none", minHeight: 36, maxHeight: 120,
+              background: "#0f172a", border: "1px solid #334155", borderRadius: 6,
+              color: "white", fontSize: 13, padding: "8px 10px",
+              fontFamily: "inherit", outline: "none", lineHeight: "20px",
+            }}
+          />
+          {streaming ? (
+            <button onClick={stop} title="Stop" style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              background: "#ef4444", border: "none", borderRadius: 6,
+              color: "white", padding: "8px 14px", fontSize: 12,
+              fontWeight: 600, cursor: "pointer", height: 36,
+            }}>
+              <Square size={11} /> Stop
+            </button>
+          ) : (
+            <button onClick={handleSubmit} disabled={!input.trim()} title="Ask" style={{
+              display: "inline-flex", alignItems: "center", gap: 4,
+              background: input.trim() ? "#3b82f6" : "#334155", border: "none", borderRadius: 6,
+              color: "white", padding: "8px 14px", fontSize: 12,
+              fontWeight: 600, cursor: input.trim() ? "pointer" : "not-allowed", height: 36,
+            }}>
+              <Send size={11} /> Ask
+            </button>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

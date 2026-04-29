@@ -1,12 +1,12 @@
 import { useState, useRef, useEffect } from "react";
-import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server, Building2, MessageSquare } from "lucide-react";
+import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server, Building2 } from "lucide-react";
 
 // Top-level tabs rendered before the Supplier Insights dropdown.
 // Data Centers is first (the primary entry point — Aterio site map + table).
+// Q&A used to be a tab; now lives in the floating ChatPanel widget.
 const TOP_TABS = [
-  { id: "datacenters", label: "Data Centers Overview", icon: Server,        real: true },
-  { id: "power",       label: "Power Contracts",       icon: Zap,           real: true },
-  { id: "qa",          label: "Q&A",                   icon: MessageSquare, real: true },
+  { id: "datacenters", label: "Data Centers Overview", icon: Server, real: true },
+  { id: "power",       label: "Power Contracts",       icon: Zap,    real: true },
 ];
 
 const SUPPLIER_TABS = [
