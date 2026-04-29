@@ -281,15 +281,33 @@ export default function DataCentersTab() {
   const [providerChartType, setProviderChartType] = useState<"bar" | "pie">("bar");
   const [stateChartType, setStateChartType] = useState<"bar" | "pie">("bar");
   const [yearStageMetric, setYearStageMetric] = useState<"count" | "mw">("count");
-  // Per-column free-text filters for the Facility Directory table.
-  const [colFilters, setColFilters] = useState({
+  // Per-column filters for the Facility Directory table.
+  // Text fields use datalist-backed combobox (typeahead suggestions from the
+  // distinct values in the data). MW uses a structured comparator + number.
+  type MwOp = ">=" | "<=" | ">" | "<" | "=" | "between";
+  const [colFilters, setColFilters] = useState<{
+    provider: string;
+    site: string;
+    city: string;
+    state: string;
+    stage: string;
+    mw: { op: MwOp; value: string; value2: string };
+  }>({
     provider: "",
     site: "",
     city: "",
     state: "",
-    mw: "",
     stage: "",
+    mw: { op: ">=", value: "", value2: "" },
   });
+  const _MW_OP_LABELS: Record<MwOp, string> = {
+    ">=": "≥", "<=": "≤", ">": ">", "<": "<", "=": "=", "between": "between",
+  };
+  const clearColFilters = () =>
+    setColFilters({
+      provider: "", site: "", city: "", state: "", stage: "",
+      mw: { op: ">=", value: "", value2: "" },
+    });
 
   // API returns the raw Aterio-shaped Site row (building_name, state_code,
   // power_capacity_mw, etc.). Adapt to the component's SiteRecord shape and
@@ -348,35 +366,56 @@ export default function DataCentersTab() {
     });
   }, [filtered, sortField, sortAsc]);
 
-  // Apply per-column free-text filters on top of the already-filtered/sorted set.
+  // Distinct values per filterable column — populates the datalist
+  // suggestions (combobox-with-search behavior).
+  const distinctOptions = useMemo(() => {
+    const prov = new Set<string>(), site = new Set<string>(),
+      city = new Set<string>(), state = new Set<string>(), stage = new Set<string>();
+    for (const s of sites) {
+      if (s.provider_name) prov.add(s.provider_name);
+      if (s.site_name) site.add(s.site_name);
+      if (s.city) city.add(s.city);
+      if (s.state) state.add(s.state);
+      if (s.stage) stage.add(s.stage);
+    }
+    const sorted = (set: Set<string>) => [...set].sort((a, b) => a.localeCompare(b));
+    return {
+      provider: sorted(prov),
+      site: sorted(site),
+      city: sorted(city),
+      state: sorted(state),
+      stage: sorted(stage),
+    };
+  }, [sites]);
+
+  // Apply per-column filters on top of the already-filtered/sorted set.
   const tableRows = useMemo(() => {
     const m = (s: string | null | undefined, q: string) =>
       q === "" || (s ?? "").toLowerCase().includes(q.toLowerCase());
-    const mwQ = colFilters.mw.trim();
+    const mw = colFilters.mw;
+    const mwV = mw.value === "" ? null : Number(mw.value);
+    const mwV2 = mw.value2 === "" ? null : Number(mw.value2);
+    const mwMatches = (v: number): boolean => {
+      if (mwV === null || Number.isNaN(mwV)) return true;
+      switch (mw.op) {
+        case ">=": return v >= mwV;
+        case "<=": return v <= mwV;
+        case ">":  return v >  mwV;
+        case "<":  return v <  mwV;
+        case "=":  return v === mwV;
+        case "between":
+          return mwV2 !== null && !Number.isNaN(mwV2)
+            ? v >= mwV && v <= mwV2
+            : v >= mwV;
+      }
+    };
     return sorted.filter(d =>
       m(d.provider_name, colFilters.provider) &&
       m(d.site_name, colFilters.site) &&
       m(d.city, colFilters.city) &&
       m(d.state, colFilters.state) &&
       m(d.stage, colFilters.stage) &&
-      (mwQ === "" || (() => {
-        // numeric filter: ">=200", "<50", "100-300", or plain "200" (>=)
-        const v = d.total_mw ?? 0;
-        const range = mwQ.match(/^\s*(\d+)\s*-\s*(\d+)\s*$/);
-        if (range) return v >= +range[1] && v <= +range[2];
-        const cmp = mwQ.match(/^\s*(>=|<=|>|<|=)?\s*(\d+(?:\.\d+)?)\s*$/);
-        if (cmp) {
-          const n = +cmp[2];
-          switch (cmp[1]) {
-            case "<": return v < n;
-            case "<=": return v <= n;
-            case ">": return v > n;
-            case "=": return v === n;
-            default: return v >= n;
-          }
-        }
-        return true;
-      })())
+      mwMatches(d.total_mw ?? 0)
     );
   }, [sorted, colFilters]);
 
@@ -894,7 +933,7 @@ export default function DataCentersTab() {
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Facility Directory</h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              {tableStats.count.toLocaleString()} matching · click column headers to sort · type in the filter row to narrow · MW supports {">=200"}, {"<50"}, {"100-300"}
+              {tableStats.count.toLocaleString()} matching · click column headers to sort · pick from the dropdowns or type to search · MW filter uses comparator + value
             </p>
           </div>
         </div>
@@ -927,19 +966,19 @@ export default function DataCentersTab() {
                   </th>
                 ))}
               </tr>
-              {/* Per-column filter row */}
+              {/* Per-column filter row — datalist-backed combobox per text
+                  field, structured comparator + number for MW. */}
               <tr style={{ borderBottom: "1px solid #334155", background: "#0b1220" }}>
                 {([
-                  ["provider", "filter…"],
-                  ["site", "filter…"],
-                  ["city", "filter…"],
-                  ["state", "VA, TX…"],
-                  ["mw", ">=200"],
-                  ["stage", "filter…"],
-                ] as const).map(([key, ph]) => (
+                  ["provider", "Provider", distinctOptions.provider],
+                  ["site", "Site", distinctOptions.site],
+                  ["city", "City", distinctOptions.city],
+                  ["state", "State", distinctOptions.state],
+                ] as const).map(([key, ph, opts]) => (
                   <th key={key} style={{ padding: "4px 8px" }}>
                     <input
                       type="text"
+                      list={`dl-${key}`}
                       value={colFilters[key]}
                       onChange={e => setColFilters(f => ({ ...f, [key]: e.target.value }))}
                       placeholder={ph}
@@ -950,12 +989,78 @@ export default function DataCentersTab() {
                         padding: "4px 6px", fontSize: 11,
                       }}
                     />
+                    <datalist id={`dl-${key}`}>
+                      {opts.map(o => <option key={o} value={o} />)}
+                    </datalist>
                   </th>
                 ))}
                 <th style={{ padding: "4px 8px" }}>
-                  {Object.values(colFilters).some(v => v !== "") && (
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    <select
+                      value={colFilters.mw.op}
+                      onChange={e => setColFilters(f => ({ ...f, mw: { ...f.mw, op: e.target.value as MwOp } }))}
+                      style={{
+                        background: "#0f172a", border: "1px solid #1e293b",
+                        borderRadius: 4, color: "#e2e8f0",
+                        padding: "4px 4px", fontSize: 11, cursor: "pointer",
+                      }}
+                    >
+                      {(Object.entries(_MW_OP_LABELS) as [MwOp, string][]).map(([op, lbl]) => (
+                        <option key={op} value={op}>{lbl}</option>
+                      ))}
+                    </select>
+                    <input
+                      type="number"
+                      value={colFilters.mw.value}
+                      onChange={e => setColFilters(f => ({ ...f, mw: { ...f.mw, value: e.target.value } }))}
+                      placeholder="MW"
+                      style={{
+                        flex: 1, minWidth: 50, boxSizing: "border-box",
+                        background: "#0f172a", border: "1px solid #1e293b",
+                        borderRadius: 4, color: "#e2e8f0",
+                        padding: "4px 6px", fontSize: 11,
+                      }}
+                    />
+                    {colFilters.mw.op === "between" && (
+                      <input
+                        type="number"
+                        value={colFilters.mw.value2}
+                        onChange={e => setColFilters(f => ({ ...f, mw: { ...f.mw, value2: e.target.value } }))}
+                        placeholder="max"
+                        style={{
+                          flex: 1, minWidth: 50, boxSizing: "border-box",
+                          background: "#0f172a", border: "1px solid #1e293b",
+                          borderRadius: 4, color: "#e2e8f0",
+                          padding: "4px 6px", fontSize: 11,
+                        }}
+                      />
+                    )}
+                  </div>
+                </th>
+                <th style={{ padding: "4px 8px" }}>
+                  <input
+                    type="text"
+                    list="dl-stage"
+                    value={colFilters.stage}
+                    onChange={e => setColFilters(f => ({ ...f, stage: e.target.value }))}
+                    placeholder="Stage"
+                    style={{
+                      width: "100%", boxSizing: "border-box",
+                      background: "#0f172a", border: "1px solid #1e293b",
+                      borderRadius: 4, color: "#e2e8f0",
+                      padding: "4px 6px", fontSize: 11,
+                    }}
+                  />
+                  <datalist id="dl-stage">
+                    {distinctOptions.stage.map(o => <option key={o} value={o} />)}
+                  </datalist>
+                </th>
+                <th style={{ padding: "4px 8px" }}>
+                  {(colFilters.provider || colFilters.site || colFilters.city ||
+                    colFilters.state || colFilters.stage ||
+                    colFilters.mw.value !== "" || colFilters.mw.value2 !== "") && (
                     <button
-                      onClick={() => setColFilters({ provider: "", site: "", city: "", state: "", mw: "", stage: "" })}
+                      onClick={clearColFilters}
                       style={{ background: "transparent", border: "1px solid #334155", color: "#94a3b8", borderRadius: 4, padding: "3px 8px", cursor: "pointer", fontSize: 10 }}
                     >
                       Clear
