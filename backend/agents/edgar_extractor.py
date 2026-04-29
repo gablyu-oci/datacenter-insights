@@ -50,11 +50,48 @@ EDGAR_SCHEMA: dict[str, Any] = {
 
 
 SYSTEM_PREAMBLE = (
-    "Extract structured power-deal facts from the following SEC 8-K filing "
-    "excerpt. If a field is not stated, return null -- do NOT guess. "
-    "capacity_mw must be in megawatts (convert GW -> MW). signing_date in "
-    "YYYY-MM-DD if stated. energy_source is one of: nuclear, solar, wind, "
-    "natural_gas, hydro, geothermal, battery, mixed, or null.\n\n"
+    "You are extracting structured power-deal facts from an SEC 8-K excerpt. "
+    "Follow these rules exactly.\n\n"
+    "FIELD DEFINITIONS:\n"
+    "- capacity_mw: the megawatts of POWER GENERATION CAPACITY contracted, "
+    "  acquired, restarted, or otherwise the subject of THIS deal. NOT the "
+    "  buyer's total corporate capacity, NOT NVIDIA-chip wattage, NOT total "
+    "  cloud capex, NOT annual revenue. Convert units: 1 GW = 1000 MW; "
+    "  1,000 MW = 1 GW. If only MWh/year is given, divide by 8760 hours. If "
+    "  a range is given (e.g. '300–500 MW'), use the midpoint. If only a "
+    "  storage figure in MWh is given without a duration, return null.\n"
+    "- energy_source: ONE of nuclear, solar, wind, natural_gas, hydro, "
+    "  geothermal, battery, mixed (multi-source PPA / portfolio), or null.\n"
+    "- buyer: the party PROCURING the power (e.g. Microsoft, Amazon, Meta, "
+    "  Google, Oracle). For utility/operator-side filings (Constellation, "
+    "  Talen, Vistra) the buyer may be a hyperscaler counterparty.\n"
+    "- seller: the party PROVIDING the power (utility, IPP, asset owner).\n"
+    "- counterparty: the OTHER side of the deal from the filer's perspective. "
+    "  If the filer is the seller, counterparty = buyer; if filer is the "
+    "  buyer, counterparty = seller.\n"
+    "- signing_date: YYYY-MM-DD if explicitly stated; null otherwise.\n"
+    "- site_name: facility / plant / campus name if stated.\n\n"
+    "WORKED EXAMPLES:\n"
+    "Excerpt: 'Constellation Energy Corporation will restart Unit 1 of the "
+    "Three Mile Island plant. The 20-year power purchase agreement with "
+    "Microsoft will deliver 835 megawatts of carbon-free energy.'\n"
+    "  → capacity_mw=835, energy_source=nuclear, buyer=Microsoft, "
+    "    seller=Constellation Energy, site_name=Three Mile Island\n\n"
+    "Excerpt: 'Amazon contracted approximately 200 million MWh of clean "
+    "energy in 2024 across 510 projects.'\n"
+    "  → capacity_mw=22831 (200,000,000 / 8760), energy_source=mixed, "
+    "    buyer=Amazon, seller=null\n\n"
+    "Excerpt: 'Talen Energy completed the acquisition of Cumulus Data for "
+    "approximately $650 million. The transaction adds 2.5 GW of behind-the-"
+    "meter capacity.'\n"
+    "  → capacity_mw=2500, energy_source=null, buyer=Talen Energy, "
+    "    seller=Cumulus Data\n\n"
+    "Excerpt: 'Oracle reported Q4 cloud revenue of $5.4 billion, up 24% YoY.'\n"
+    "  → capacity_mw=null, energy_source=null, buyer=null, seller=null "
+    "    (this is not a power-deal disclosure)\n\n"
+    "If the excerpt does not state a specific power-MW figure for the deal, "
+    "return capacity_mw=null. NEVER fabricate a number. NEVER convert chip "
+    "wattage, datacenter sqft, or revenue figures into MW.\n\n"
     "EXCERPT:\n"
 )
 
@@ -126,7 +163,7 @@ async def run_llm_extraction(
         try:
             extraction = await llm_client.extract(
                 model=MODELS["extraction"],
-                prompt_version="edgar_8k_v1",
+                prompt_version="edgar_8k_v2",
                 input_text=SYSTEM_PREAMBLE + excerpt,
                 schema=EDGAR_SCHEMA,
             )
@@ -191,7 +228,7 @@ async def run_llm_extraction(
                     "buyer_raw": buyer,
                     "seller_raw": seller,
                     "excerpt": excerpt[:2000],
-                    "parser_version": "llm-v1",
+                    "parser_version": "llm-v2",
                     "confidence": confidence,
                     "retrieved_at": datetime.utcnow(),
                     "created_at": datetime.utcnow(),
