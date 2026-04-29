@@ -56,14 +56,14 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=6, minute=0),              # 0 6 * * *
         "phase": 1,
     },
-    "permits_weekly": {
+    "permits_state_daily": {
         "adapter": "permits_state",
-        "trigger": CronTrigger(day_of_week="mon", hour=7, minute=0),  # 0 7 * * 1
+        "trigger": CronTrigger(hour=7, minute=0),                # 0 7 * * *
         "phase": 1,
     },
-    "permits_air_weekly": {
+    "permits_air_daily": {
         "adapter": "epa_echo",
-        "trigger": CronTrigger(day_of_week="mon", hour=8, minute=0),  # 0 8 * * 1
+        "trigger": CronTrigger(hour=8, minute=0),                # 0 8 * * *
         "phase": 1,
     },
     # aterio_manual is API-trigger only -- not scheduled
@@ -260,8 +260,8 @@ async def _invoke_weekly_brief(session) -> dict:
 
 _JOB_FUNCTIONS: dict[str, callable] = {
     "edgar_daily": run_edgar_job,
-    "permits_weekly": run_permits_weekly_job,
-    "permits_air_weekly": run_epa_echo_job,
+    "permits_state_daily": run_permits_weekly_job,
+    "permits_air_daily": run_epa_echo_job,
     "coverage_refresh": run_coverage_refresh_job,
     "cache_cleanup": run_cache_cleanup_job,
     "stale_check": run_stale_check_job,

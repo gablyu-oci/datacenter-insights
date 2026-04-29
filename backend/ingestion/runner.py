@@ -31,14 +31,14 @@ JOB_CONFIG: dict = {
         "trigger": CronTrigger(hour=6, minute=0),
         "enabled": True,
     },
-    "permits_weekly": {
+    "permits_state_daily": {
         "adapter": "permits_state",
-        "trigger": CronTrigger(day_of_week="mon", hour=7, minute=0),
+        "trigger": CronTrigger(hour=7, minute=0),
         "enabled": True,
     },
-    "permits_air_weekly": {
+    "permits_air_daily": {
         "adapter": "epa_echo",
-        "trigger": CronTrigger(day_of_week="mon", hour=8, minute=0),
+        "trigger": CronTrigger(hour=8, minute=0),
         "enabled": True,
     },
     "coverage_refresh": {
