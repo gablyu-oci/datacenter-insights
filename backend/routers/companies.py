@@ -196,7 +196,16 @@ async def company_sites(
     if role:
         sub = sub.where(SiteCompanyAssociation.role == role)
 
-    count_query = select(func.count()).select_from(sub.subquery())
+    # COUNT DISTINCT site_id — a single site can hold multiple roles for the
+    # same company (e.g. both `provider` and `end_user`), so the association
+    # table can have N>1 rows per (company, site). The data query below
+    # de-duplicates via `Site.id.in_(sub)`; the count must match.
+    count_query = (
+        select(func.count(func.distinct(SiteCompanyAssociation.site_id)))
+        .where(SiteCompanyAssociation.company_id == id)
+    )
+    if role:
+        count_query = count_query.where(SiteCompanyAssociation.role == role)
     total = (await db.execute(count_query)).scalar() or 0
 
     offset = (page - 1) * page_size
