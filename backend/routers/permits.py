@@ -56,7 +56,7 @@ async def permits_list(
         ),
     ),
     page: int = Query(1, ge=1),
-    page_size: int = Query(100, ge=1, le=500),
+    page_size: int = Query(100, ge=1, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
     if MOCK_ENABLED:
@@ -159,7 +159,7 @@ async def permits_list(
 async def permits_datacenter(
     state: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
-    page_size: int = Query(200, ge=1, le=500),
+    page_size: int = Query(200, ge=1, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
     """Convenience endpoint pre-filtered to data-center-relevant fuel types.

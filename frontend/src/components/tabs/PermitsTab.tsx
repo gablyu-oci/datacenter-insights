@@ -1,6 +1,14 @@
 import { useMemo, useState, Fragment } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
+import MarkerClusterGroup from "react-leaflet-cluster";
+// react-leaflet-google-layer ships CJS; force-unwrap the default export so
+// React receives a component, not the wrapper module object.
+import RLGLImport from "react-leaflet-google-layer";
+const ReactLeafletGoogleLayer =
+  (RLGLImport as unknown as { default?: typeof RLGLImport }).default ?? RLGLImport;
 import "leaflet/dist/leaflet.css";
+import "leaflet.markercluster/dist/MarkerCluster.css";
+import "leaflet.markercluster/dist/MarkerCluster.Default.css";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
@@ -14,6 +22,8 @@ import ErrorPanel from "../shared/ErrorPanel";
 import NoDataPanel from "../shared/NoDataPanel";
 import CitationFooter from "../shared/CitationFooter";
 import CoverageBadge from "../shared/CoverageBadge";
+
+const GMAPS_KEY = (import.meta.env.VITE_GOOGLE_MAPS_API_KEY as string) || "";
 
 // ── Phase 1.5 fuel-type focus (per PRD §5: data-center-relevant) ────────────
 const DC_FUEL_TYPES = ["diesel", "natural_gas", "dual_fuel"] as const;
@@ -129,63 +139,76 @@ function PermitsMap({
       style={{ width: "100%", height: "100%", borderRadius: 8 }}
       scrollWheelZoom={true}
     >
-      <TileLayer
-        attribution='&copy; <a href="https://carto.com/">CARTO</a>'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-      />
-      {mappable.map((p) => {
-        const color = getFuelColor(p.fuel_type);
-        const isSelected = selectedId === p.id;
-        const mw = p.rated_mw_total ?? 0;
-        const radius = Math.max(4, Math.min(16, 4 + Math.sqrt(mw) * 0.5));
-        return (
-          <CircleMarker
-            key={p.id}
-            center={[p.latitude!, p.longitude!]}
-            radius={radius}
-            pathOptions={{
-              fillColor: color,
-              fillOpacity: isSelected ? 1 : 0.7,
-              color: isSelected ? "#ffffff" : color,
-              weight: isSelected ? 3 : 1,
-            }}
-            eventHandlers={{
-              click: () => onSelect(isSelected ? null : p.id),
-            }}
-          >
-            <Popup>
-              <div style={{ fontFamily: "system-ui, sans-serif", minWidth: 200 }}>
-                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>
-                  {p.facility_name || p.permittee_raw_name || `Permit #${p.id}`}
-                </div>
-                <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
-                  {permittee(p)}
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, fontSize: 11 }}>
-                  {p.fuel_type && (
-                    <div><strong>Fuel:</strong> {FUEL_LABEL[p.fuel_type.toLowerCase()] ?? p.fuel_type}</div>
-                  )}
-                  {p.rated_mw_total != null && (
-                    <div><strong>MW:</strong> {fmtMW(p.rated_mw_total)}</div>
-                  )}
-                  {p.state_code && <div><strong>State:</strong> {p.state_code}</div>}
-                  {p.county && <div><strong>County:</strong> {p.county}</div>}
-                  {p.permit_status && <div><strong>Status:</strong> {p.permit_status}</div>}
-                  {p.issued_date && <div><strong>Issued:</strong> {fmtDate(p.issued_date)}</div>}
-                </div>
-                {p.source_url && (
-                  <div style={{ marginTop: 6 }}>
-                    <a href={p.source_url} target="_blank" rel="noreferrer"
-                      style={{ color: "#3b82f6", fontSize: 11, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>
-                      <ExternalLink size={10} /> {SOURCE_LABEL[p.source ?? ""] ?? p.source ?? "Source"}
-                    </a>
+      {/* Basemap: Google Satellite when API key works; CARTO dark fallback. */}
+      {GMAPS_KEY ? (
+        <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
+      ) : (
+        <TileLayer
+          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        />
+      )}
+      <MarkerClusterGroup
+        chunkedLoading
+        maxClusterRadius={60}
+        disableClusteringAtZoom={10}
+        spiderfyOnMaxZoom={true}
+        showCoverageOnHover={false}
+      >
+        {mappable.map((p) => {
+          const color = getFuelColor(p.fuel_type);
+          const isSelected = selectedId === p.id;
+          const mw = p.rated_mw_total ?? 0;
+          const radius = Math.max(4, Math.min(16, 4 + Math.sqrt(mw) * 0.5));
+          return (
+            <CircleMarker
+              key={p.id}
+              center={[p.latitude!, p.longitude!]}
+              radius={radius}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: isSelected ? 1 : 0.85,
+                color: isSelected ? "#ffffff" : color,
+                weight: isSelected ? 3 : 1,
+              }}
+              eventHandlers={{
+                click: () => onSelect(isSelected ? null : p.id),
+              }}
+            >
+              <Popup>
+                <div style={{ fontFamily: "system-ui, sans-serif", minWidth: 200 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>
+                    {p.facility_name || p.permittee_raw_name || `Permit #${p.id}`}
                   </div>
-                )}
-              </div>
-            </Popup>
-          </CircleMarker>
-        );
-      })}
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
+                    {permittee(p)}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, fontSize: 11 }}>
+                    {p.fuel_type && (
+                      <div><strong>Fuel:</strong> {fuelLabel(p.fuel_type)}</div>
+                    )}
+                    {p.rated_mw_total != null && (
+                      <div><strong>MW:</strong> {fmtMW(p.rated_mw_total)}</div>
+                    )}
+                    {p.state_code && <div><strong>State:</strong> {p.state_code}</div>}
+                    {p.county_fips && <div><strong>County FIPS:</strong> {p.county_fips}</div>}
+                    {p.permit_status && <div><strong>Status:</strong> {p.permit_status}</div>}
+                    {p.issued_date && <div><strong>Issued:</strong> {fmtDate(p.issued_date)}</div>}
+                  </div>
+                  {p.source_url && (
+                    <div style={{ marginTop: 6 }}>
+                      <a href={p.source_url} target="_blank" rel="noreferrer"
+                        style={{ color: "#3b82f6", fontSize: 11, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 3 }}>
+                        <ExternalLink size={10} /> {SOURCE_LABEL[p.source ?? ""] ?? p.source ?? "Source"}
+                      </a>
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
+      </MarkerClusterGroup>
     </MapContainer>
   );
 }
@@ -229,13 +252,13 @@ export default function PermitsTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  // Build query string from active fuel chips.
-  const fuelQs = activeFuels.size > 0
-    ? Array.from(activeFuels).join(",")
-    : "";
-  const apiPath = fuelQs
-    ? `/api/permits/?fuel_type=${encodeURIComponent(fuelQs)}&page=1&page_size=500`
-    : `/api/permits/?page=1&page_size=500`;
+  // Single fetch -- no server-side fuel filter. Fuel filtering happens
+  // client-side via normalizeFuel so the map can render every permit
+  // with coordinates regardless of what's in the fuel chip selection.
+  // (EPA ECHO permits have lat/lon but no fuel_type; PJM/state-permit
+  // rows have fuel_type but no coords -- a server-side filter blanks
+  // the map.)
+  const apiPath = `/api/permits/?page=1&page_size=10000`;
 
   const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } =
     useApi<GeneratorPermitsResponse>(apiPath);
@@ -254,7 +277,22 @@ export default function PermitsTab() {
     [permits],
   );
 
+  // Charts/list filter: state + source + fuel chip (client-side).
   const filtered = useMemo(() => permits.filter(p => {
+    if (filterState !== "All" && p.state_code !== filterState) return false;
+    if (filterSource !== "All" && p.source !== filterSource) return false;
+    if (activeFuels.size > 0) {
+      const norm = normalizeFuel(p.fuel_type);
+      if (!norm || !activeFuels.has(norm as FuelType)) return false;
+    }
+    return true;
+  }), [permits, filterState, filterSource, activeFuels]);
+
+  // Map filter: state + source only -- fuel filter is intentionally
+  // skipped because a large fraction of coord-bearing permits (EPA ECHO)
+  // have no fuel_type populated. Apply the same fuel chip filter on the
+  // map and most pins disappear.
+  const mapFiltered = useMemo(() => permits.filter(p => {
     if (filterState !== "All" && p.state_code !== filterState) return false;
     if (filterSource !== "All" && p.source !== filterSource) return false;
     return true;
@@ -473,7 +511,7 @@ export default function PermitsTab() {
           </div>
         </div>
         <div style={{ height: 440 }}>
-          <PermitsMap permits={filtered} selectedId={selectedId} onSelect={setSelectedId} />
+          <PermitsMap permits={mapFiltered} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
       </div>
 
