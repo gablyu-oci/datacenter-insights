@@ -131,7 +131,7 @@ export default function TabNav({ active, onChange }: TabNavProps) {
             minWidth: 230,
             padding: "4px 0 8px",
           }}>
-            {SUPPLIER_TABS.map(({ id, label, icon: Icon }) => {
+            {SUPPLIER_TABS.map(({ id, label, icon: Icon, real }) => {
               const isActive = active === id;
               return (
                 <button
@@ -151,13 +151,7 @@ export default function TabNav({ active, onChange }: TabNavProps) {
                 >
                   <Icon size={13} />
                   {label}
-                  <span style={{
-                    marginLeft: "auto", padding: "1px 5px", borderRadius: "3px",
-                    fontSize: "9px", fontWeight: 600,
-                    background: "#1c1917", border: "1px solid #44403c", color: "#78716c",
-                  }}>
-                    MOCK
-                  </span>
+                  <span style={{ marginLeft: "auto" }}>{BADGE(real)}</span>
                 </button>
               );
             })}
