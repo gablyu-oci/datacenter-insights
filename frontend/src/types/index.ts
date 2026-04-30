@@ -217,23 +217,35 @@ export interface TriangulationRecord {
   confidence: number;
 }
 
+// Matches the live `/api/sources/` payload shape (data.sources[]).
+// Legacy fields kept optional for callers that still reference them.
 export interface SourceRecord {
-  id: number;
   name: string;
-  type: string;
-  url: string;
-  last_ingested: string;
-  records: number;
-  pillar: string;
-  description: string;
-  confidence: number;
+  version?: string | null;
+  last_run_at?: string | null;
+  last_completed_at?: string | null;
+  total_records_stored?: number | null;
+  run_count?: number | null;
+  // Legacy / not currently emitted by the backend — optional.
+  id?: number;
+  type?: string;
+  url?: string;
+  last_ingested?: string;
+  records?: number;
+  pillar?: string;
+  description?: string;
+  confidence?: number;
 }
 
+// Live API shape: { name, status, last_run }. Older `agent` and
+// `records_processed` fields are kept optional for backwards-compat
+// callers; SourcesTab merges records from the sources list by name.
 export interface AgentStatus {
-  agent: string;
+  name?: string;
+  agent?: string;
   status: string;
-  last_run: string;
-  records_processed: number;
+  last_run: string | null;
+  records_processed?: number;
 }
 
 // ---------------------------------------------------------------------------

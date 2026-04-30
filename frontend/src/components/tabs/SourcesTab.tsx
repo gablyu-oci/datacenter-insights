@@ -324,15 +324,30 @@ export default function SourcesTab() {
   const sources = data?.sources ?? [];
   const agents = data?.agents ?? [];
 
+  // The backend doesn't expose per-source confidence today; fall back to
+  // total_records_stored for the summary tile.
+  const totalRecords = sources.reduce(
+    (s, r) => s + (r.total_records_stored ?? r.records ?? 0),
+    0,
+  );
+  const sourcesWithRunData = sources.filter(r => (r.run_count ?? 0) > 0).length;
+
+  // Map source-name -> total_records_stored so per-agent cards can show
+  // a useful "records" count even though /api/sources/ doesn't put it on
+  // the agent rows directly.
+  const recordsByAgentName = new Map<string, number>(
+    sources.map(r => [r.name, r.total_records_stored ?? 0]),
+  );
+
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
       {/* Summary KPIs */}
       <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
         {[
           { label: "Data Sources", value: String(sources.length) },
-          { label: "Total Records Ingested", value: sources.length > 0 ? sources.reduce((s, r) => s + r.records, 0).toLocaleString() : "0" },
+          { label: "Total Records Ingested", value: totalRecords.toLocaleString() },
           { label: "Active Agents", value: String(agents.filter((a) => a.status === "active").length) },
-          { label: "Avg Source Confidence", value: sources.length > 0 ? `${(sources.reduce((s, r) => s + r.confidence, 0) / sources.length * 100).toFixed(0)}%` : "N/A" },
+          { label: "Sources with Run Data", value: `${sourcesWithRunData}/${sources.length}` },
         ].map(({ label, value }) => (
           <div key={label} style={{ ...CARD_STYLE, flex: 1, minWidth: 140 }}>
             <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>{label}</div>
@@ -386,7 +401,7 @@ export default function SourcesTab() {
                 border: `1px solid ${a.status === "active" ? "#22c55e44" : "#33415544"}`,
               }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ color: "white", fontSize: "13px", fontWeight: 500 }}>{a.agent}</div>
+                  <div style={{ color: "white", fontSize: "13px", fontWeight: 500 }}>{a.name ?? a.agent ?? "(unnamed)"}</div>
                   <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
                     {a.status === "active"
                       ? <CheckCircle size={12} color="#22c55e" />
@@ -400,11 +415,15 @@ export default function SourcesTab() {
                 <div style={{ display: "flex", gap: "16px", marginTop: "8px" }}>
                   <div>
                     <div style={{ color: "#64748b", fontSize: "10px" }}>Records</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "12px" }}>{a.records_processed.toLocaleString()}</div>
+                    <div style={{ color: "#e2e8f0", fontSize: "12px" }}>
+                      {(a.records_processed ?? recordsByAgentName.get(a.name ?? "") ?? 0).toLocaleString()}
+                    </div>
                   </div>
                   <div>
                     <div style={{ color: "#64748b", fontSize: "10px" }}>Last Run</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "11px" }}>{a.last_run.split("T")[0]}</div>
+                    <div style={{ color: "#e2e8f0", fontSize: "11px" }}>
+                      {a.last_run ? a.last_run.split("T")[0] : "--"}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -420,59 +439,60 @@ export default function SourcesTab() {
             Data Sources & Lineage
           </h3>
           <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {sources.map((s) => (
-              <div key={s.id} style={{
-                background: "#0f172a",
-                borderRadius: "8px",
-                padding: "14px 16px",
-                border: "1px solid #1e293b",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "flex-start",
-                flexWrap: "wrap",
-                gap: "12px",
-              }}>
-                <div style={{ flex: 1, minWidth: 250 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                    <span style={{
-                      background: `${PILLAR_COLORS[s.pillar] ?? "#64748b"}22`,
-                      color: PILLAR_COLORS[s.pillar] ?? "#94a3b8",
-                      fontSize: "10px",
-                      padding: "2px 6px",
-                      borderRadius: "4px",
-                      fontWeight: 600,
-                    }}>
-                      {s.pillar}
-                    </span>
-                    <span style={{ color: "#64748b", fontSize: "10px" }}>{s.type}</span>
+            {sources.map((s) => {
+              const records = s.total_records_stored ?? s.records ?? 0;
+              const lastRun = s.last_run_at ?? s.last_ingested ?? null;
+              const lastRunStr = lastRun ? lastRun.split("T")[0] : "--";
+              const runCount = s.run_count ?? null;
+              return (
+                <div key={s.name} style={{
+                  background: "#0f172a",
+                  borderRadius: "8px",
+                  padding: "14px 16px",
+                  border: "1px solid #1e293b",
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "flex-start",
+                  flexWrap: "wrap",
+                  gap: "12px",
+                }}>
+                  <div style={{ flex: 1, minWidth: 250 }}>
+                    {s.version && (
+                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                        <span style={{ color: "#64748b", fontSize: "10px" }}>v{s.version}</span>
+                      </div>
+                    )}
+                    <div style={{ color: "white", fontSize: "14px", fontWeight: 600 }}>{s.name}</div>
+                    {s.description && (
+                      <div style={{ color: "#94a3b8", fontSize: "12px", marginTop: "2px" }}>{s.description}</div>
+                    )}
                   </div>
-                  <div style={{ color: "white", fontSize: "14px", fontWeight: 600 }}>{s.name}</div>
-                  <div style={{ color: "#94a3b8", fontSize: "12px", marginTop: "2px" }}>{s.description}</div>
-                </div>
-                <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
-                  <div>
-                    <div style={{ color: "#64748b", fontSize: "10px" }}>Records</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{s.records.toLocaleString()}</div>
-                  </div>
-                  <div>
-                    <div style={{ color: "#64748b", fontSize: "10px" }}>Last Ingested</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{s.last_ingested}</div>
-                  </div>
-                  <div>
-                    <div style={{ color: "#64748b", fontSize: "10px" }}>Confidence</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{(s.confidence * 100).toFixed(0)}%</div>
-                    <div style={{ background: "#1e293b", borderRadius: "4px", height: "3px", width: "60px", marginTop: "2px" }}>
-                      <div style={{ background: "#3b82f6", borderRadius: "4px", height: "3px", width: `${s.confidence * 100}%` }} />
+                  <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
+                    <div>
+                      <div style={{ color: "#64748b", fontSize: "10px" }}>Records</div>
+                      <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{records.toLocaleString()}</div>
                     </div>
+                    <div>
+                      <div style={{ color: "#64748b", fontSize: "10px" }}>Last Run</div>
+                      <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{lastRunStr}</div>
+                    </div>
+                    {runCount != null && (
+                      <div>
+                        <div style={{ color: "#64748b", fontSize: "10px" }}>Run Count</div>
+                        <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{runCount.toLocaleString()}</div>
+                      </div>
+                    )}
+                    {s.url && (
+                      <a href={s.url} target="_blank" rel="noreferrer"
+                        style={{ color: "#3b82f6", display: "flex", alignItems: "center", gap: "4px", textDecoration: "none", fontSize: "12px", marginTop: "12px" }}>
+                        <ExternalLink size={12} />
+                        View Source
+                      </a>
+                    )}
                   </div>
-                  <a href={s.url} target="_blank" rel="noreferrer"
-                    style={{ color: "#3b82f6", display: "flex", alignItems: "center", gap: "4px", textDecoration: "none", fontSize: "12px", marginTop: "12px" }}>
-                    <ExternalLink size={12} />
-                    View Source
-                  </a>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
           <CitationFooter
             sources={["Internal Data Pipeline"]}
