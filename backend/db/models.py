@@ -365,6 +365,49 @@ class GeneratorPermit(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# Building Permits — county-level US building-permit landing table
+# (Karan-fixes batch AC3). Distinct from `generator_permits` which holds
+# state air/generator permits. One row per (source, source_permit_id).
+# ---------------------------------------------------------------------------
+
+class BuildingPermit(SQLModel, table=True):
+    __tablename__ = "building_permits"
+    __table_args__ = (
+        UniqueConstraint(
+            "source", "source_permit_id",
+            name="uq_building_permit_source_permitid",
+        ),
+        Index("ix_building_permits_state_county", "state", "county"),
+        Index("ix_building_permits_issued_date", "issued_date"),
+        Index("ix_building_permits_permit_status", "permit_status"),
+    )
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    source: str = Field(max_length=40)              # 'loudoun_va' | 'mesa_az' | 'grantwa'
+    source_permit_id: str = Field(max_length=80)    # county's permit number
+    county: str = Field(max_length=80)
+    state: str = Field(max_length=2)
+    jurisdiction: Optional[str] = Field(default=None, max_length=80)
+    address: Optional[str] = Field(default=None, sa_column=SAColumn(Text))
+    latitude: Optional[float] = Field(default=None)
+    longitude: Optional[float] = Field(default=None)
+    permit_type: Optional[str] = Field(default=None, max_length=80)
+    permit_status: Optional[str] = Field(default=None, max_length=40)
+    applied_date: Optional[date] = Field(default=None)
+    issued_date: Optional[date] = Field(default=None)
+    completed_date: Optional[date] = Field(default=None)
+    valuation_usd: Optional[float] = Field(default=None)
+    square_footage: Optional[int] = Field(default=None)
+    applicant_name: Optional[str] = Field(default=None, max_length=200)
+    raw_payload: dict = Field(sa_column=SAColumn(JSONB, nullable=False))
+    created_at: datetime = Field(default_factory=_ts_now)
+    retrieved_at: datetime = Field(default_factory=_ts_now)
+
+
+# ---------------------------------------------------------------------------
 # Permit Parent Review Queue — per 03-architecture-design.md section 6.5.3
 # ---------------------------------------------------------------------------
 

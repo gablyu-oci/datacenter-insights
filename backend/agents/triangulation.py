@@ -23,6 +23,7 @@ Public entry point:
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 from typing import Optional
@@ -264,3 +265,242 @@ async def compute_l1(session) -> list[dict]:
 
     records.sort(key=lambda r: r["gw_total"], reverse=True)
     return records
+
+
+# ---------------------------------------------------------------------------
+# L2 (Compute Demand) modeling assumptions
+# ---------------------------------------------------------------------------
+# These are the dials of the model. Karan will push back on each;
+# that's the point. Document any change in git blame.
+H100_AVG_POWER_W      = 700      # H100 typical TDP (watts)
+B200_AVG_POWER_W      = 1000     # B200 typical TDP (watts)
+AVG_BLENDED_POWER_W   = 850      # 50/50 H100/B200 blended for 2025
+AVG_GPU_PRICE_USD     = 35_000   # blended H100/B200 ASP (USD)
+UTILIZATION_PCT       = 0.60     # AI workload utilization assumption
+OVERHEAD_MULTIPLIER   = 1.4      # PUE + networking + cooling overhead
+
+# Hyperscaler subset — the five companies we believe are the dominant
+# H100/B200 buyers. Utilities (Constellation, Talen, Vistra) are
+# excluded because they sell power, not consumers of compute.
+HYPERSCALER_SUBSET = ["Microsoft", "Amazon", "Google", "Oracle", "Meta"]
+# gw-summary stores Google rows under "Google" already; curated_deals
+# uses both "Google" and "Google / Alphabet". We treat Alphabet as an
+# alias of Google when bucketing for L2.
+_HYPERSCALER_ALIASES: dict[str, str] = {
+    "alphabet": "Google",
+    "google / alphabet": "Google",
+    "amazon / aws": "Amazon",
+    "aws": "Amazon",
+}
+
+
+def _canon_hyperscaler(buyer: Optional[str]) -> Optional[str]:
+    """Map a curated_deals buyer string to one of HYPERSCALER_SUBSET, or None.
+
+    First strip composite buyers ("Amazon / Microsoft / Google" → first
+    name only, since the deal is jointly attributed and we can't split MW
+    further without source data). Then check direct match and aliases.
+    """
+    if not buyer:
+        return None
+    head = buyer.split(" / ")[0].split("/")[0].strip()
+    head_low = head.lower()
+    # Direct hyperscaler match
+    for canon in HYPERSCALER_SUBSET:
+        if canon.lower() == head_low:
+            return canon
+    # Alias match against the full buyer string (lowercase)
+    full_low = buyer.strip().lower()
+    for needle, canon in _HYPERSCALER_ALIASES.items():
+        if needle in full_low:
+            return canon
+    return None
+
+
+async def nvidia_data_center_latest(session) -> tuple[Optional[dict], Optional[str]]:
+    """Pull the most recent NVIDIA Data Center segment row from
+    edgar_extractions(pillar='vendor_supply', cik='0001045810').
+
+    Returns (payload_dict, period_end_iso). payload_dict has keys
+    period_end, revenue_usd, inventory_usd, etc. (decoded from the
+    JSON-packed `excerpt` column the same way the GPU router does).
+    Returns (None, None) if no qualifying row exists.
+    """
+    NVIDIA_CIK = "0001045810"
+    try:
+        rows = (await session.execute(
+            text(
+                """
+                SELECT excerpt, filing_date
+                FROM edgar_extractions
+                WHERE pillar = 'vendor_supply'
+                  AND cik = :cik
+                  AND excerpt IS NOT NULL
+                ORDER BY filing_date DESC NULLS LAST
+                """
+            ),
+            {"cik": NVIDIA_CIK},
+        )).all()
+    except Exception as exc:
+        logger.warning("triangulation_l2.nvidia_query_failed", extra={"error": str(exc)})
+        return (None, None)
+
+    candidates: list[tuple[Optional[str], Optional[str], dict]] = []
+    for excerpt, filing_date in rows:
+        try:
+            payload = json.loads(excerpt) if excerpt else {}
+        except (ValueError, TypeError):
+            payload = {}
+        if not isinstance(payload, dict):
+            continue
+        if (payload.get("segment_name") or "").strip().lower() != "data center":
+            continue
+        if payload.get("revenue_usd") in (None, 0):
+            continue
+        period_end = payload.get("period_end")
+        filing_iso = filing_date.isoformat() if filing_date else None
+        candidates.append((period_end, filing_iso, payload))
+
+    if not candidates:
+        return (None, None)
+
+    # Sort: period_end DESC NULLS LAST, then filing_date DESC.
+    candidates.sort(
+        key=lambda t: (t[0] is not None, t[0] or "", t[1] or ""),
+        reverse=True,
+    )
+    period_end, filing_iso, payload = candidates[0]
+    effective_period = period_end or filing_iso
+    return (payload, effective_period)
+
+
+async def contracted_gw_map(session) -> dict[str, float]:
+    """Return {hyperscaler_canonical: contracted_gw} for the L2 subset,
+    sourced from curated_deals via the same SQL pattern as
+    routers.power._gw_summary_from_db (sums capacity_mw, divides by 1000).
+
+    Only keys in HYPERSCALER_SUBSET are returned. Composite buyers
+    (e.g. "Amazon / Microsoft / Google") are attributed to the first
+    listed buyer only — splitting MW across joint buyers is not
+    supported without authoritative deal-allocation data.
+    """
+    try:
+        rows = (await session.execute(
+            text(
+                """
+                SELECT buyer, COALESCE(SUM(capacity_mw), 0) AS mw
+                FROM curated_deals
+                WHERE capacity_mw IS NOT NULL
+                  AND capacity_mw > 0
+                  AND buyer IS NOT NULL
+                GROUP BY buyer
+                """
+            )
+        )).all()
+    except Exception as exc:
+        logger.warning("triangulation_l2.curated_query_failed", extra={"error": str(exc)})
+        return {}
+
+    totals: dict[str, float] = {h: 0.0 for h in HYPERSCALER_SUBSET}
+    for buyer, mw in rows:
+        canon = _canon_hyperscaler(buyer)
+        if canon is None:
+            continue
+        totals[canon] = totals.get(canon, 0.0) + float(mw or 0.0) / 1000.0
+
+    # Strip zero entries so callers can detect "no data" vs "real zero".
+    return {k: round(v, 2) for k, v in totals.items() if v > 0}
+
+
+async def compute_l2(session) -> dict:
+    """Compute L2 — compute-demand layer.
+
+    Translates NVIDIA's most recent Data Center segment revenue into an
+    inferred GPU-units count and an inferred deployable-compute GW
+    estimate, then distributes that GW across the hyperscaler subset
+    proportionally to their contracted_gw from curated_deals. The gap
+    between contracted_gw and implied_compute_gw is the surfaced signal
+    ("shipping ≠ deployment, the gap is the signal").
+
+    Returns a dict shaped to fit a CoverageEnvelope.data field:
+        {
+          period_end, nvidia_dc_revenue_usd, nvidia_inventory_usd,
+          inferred_units_total, inferred_compute_gw,
+          assumptions: {...},
+          per_hyperscaler_share: [{company, contracted_gw,
+              implied_compute_gw, gap_gw, status, share_fraction}, ...]
+        }
+
+    On absence of NVIDIA data, returns the same shape with zeros and
+    an empty per_hyperscaler_share list.
+    """
+    payload, period_end = await nvidia_data_center_latest(session)
+    contracted_map = await contracted_gw_map(session)
+
+    assumptions = {
+        "avg_gpu_price_usd": AVG_GPU_PRICE_USD,
+        "avg_blended_power_w": AVG_BLENDED_POWER_W,
+        "utilization_pct": UTILIZATION_PCT,
+        "overhead_multiplier": OVERHEAD_MULTIPLIER,
+        "h100_avg_power_w": H100_AVG_POWER_W,
+        "b200_avg_power_w": B200_AVG_POWER_W,
+    }
+
+    if payload is None or not payload.get("revenue_usd"):
+        return {
+            "period_end": period_end,
+            "nvidia_dc_revenue_usd": None,
+            "nvidia_inventory_usd": None,
+            "inferred_units_total": 0,
+            "inferred_compute_gw": 0.0,
+            "assumptions": assumptions,
+            "per_hyperscaler_share": [],
+        }
+
+    revenue_usd = int(payload["revenue_usd"])
+    inventory_usd = payload.get("inventory_usd")
+    inventory_usd_int = int(inventory_usd) if inventory_usd is not None else None
+
+    inferred_units_total = int(revenue_usd / AVG_GPU_PRICE_USD)
+    # Watts -> GW: divide by 1e9.
+    inferred_compute_gw_raw = (
+        inferred_units_total
+        * AVG_BLENDED_POWER_W
+        * UTILIZATION_PCT
+        * OVERHEAD_MULTIPLIER
+    ) / 1e9
+    inferred_compute_gw = round(inferred_compute_gw_raw, 1)
+
+    subset_total_gw = sum(contracted_map.get(h, 0.0) for h in HYPERSCALER_SUBSET)
+
+    per_hyperscaler_share: list[dict] = []
+    for company in HYPERSCALER_SUBSET:
+        contracted_gw = round(contracted_map.get(company, 0.0), 2)
+        if subset_total_gw > 0:
+            share_fraction = contracted_gw / subset_total_gw
+        else:
+            share_fraction = 0.0
+        # Distribute against the *rounded* headline so per-company
+        # implied figures sum back to inferred_compute_gw exactly to
+        # within float precision (test_math_basic asserts < 0.01).
+        implied_compute_gw = round(inferred_compute_gw * share_fraction, 4)
+        gap_gw = round(contracted_gw - implied_compute_gw, 2)
+        status = "overcontracted" if gap_gw > 0 else "undercontracted"
+        per_hyperscaler_share.append({
+            "company": company,
+            "contracted_gw": contracted_gw,
+            "implied_compute_gw": implied_compute_gw,
+            "gap_gw": gap_gw,
+            "status": status,
+            "share_fraction": round(share_fraction, 4),
+        })
+
+    return {
+        "period_end": period_end,
+        "nvidia_dc_revenue_usd": revenue_usd,
+        "nvidia_inventory_usd": inventory_usd_int,
+        "inferred_units_total": inferred_units_total,
+        "inferred_compute_gw": inferred_compute_gw,
+        "assumptions": assumptions,
+        "per_hyperscaler_share": per_hyperscaler_share,
+    }

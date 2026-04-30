@@ -146,6 +146,39 @@ export interface GeneratorPermitsResponse {
   sources_included: string[];
 }
 
+// AC3: Building permits (Loudoun VA, Mesa AZ, etc.) -- complement to
+// generator permits and a more direct construction-ground-truth signal
+// for hyperscaler datacenter shells.
+export interface BuildingPermitDto {
+  id: number;
+  source: string | null;                  // 'loudoun_va', 'mesa_az', ...
+  source_permit_id: string | null;
+  county: string | null;
+  state: string | null;
+  jurisdiction: string | null;
+  address: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  permit_type: string | null;
+  permit_status: string | null;
+  applied_date: string | null;
+  issued_date: string | null;
+  completed_date: string | null;
+  valuation_usd: number | null;
+  square_footage: number | null;
+  applicant_name: string | null;
+  raw_payload: Record<string, unknown> | null;
+  created_at: string | null;
+  retrieved_at: string | null;
+}
+
+export interface BuildingPermitsResponse {
+  data: BuildingPermitDto[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export interface SiteMilestone {
   date: string;
   label: string;

@@ -15,8 +15,10 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datetime import timedelta
+
 from db.session import get_db
-from db.models import Company, GeneratorPermit
+from db.models import BuildingPermit, Company, GeneratorPermit
 from schemas.common import CoverageEnvelope, CoverageMeta, LineageMeta
 
 MOCK_ENABLED = os.environ.get("MOCK_DATA", "0") == "1"
@@ -151,6 +153,101 @@ async def permits_list(
         coverage=CoverageMeta(
             pillar="permits",
             states_included=states_included,
+        ),
+    )
+
+
+def _building_permit_to_dict(p: BuildingPermit) -> dict:
+    """Serialize a BuildingPermit row, ISO-encoding date/datetime fields."""
+    d = {}
+    for col in BuildingPermit.__table__.columns:
+        val = getattr(p, col.name, None)
+        if isinstance(val, (datetime, date)):
+            val = val.isoformat()
+        d[col.name] = val
+    return d
+
+
+@router.get("/building")
+async def permits_building(
+    county: Optional[str] = Query(None, description="Filter by county name (case-insensitive)"),
+    state: Optional[str] = Query(None, description="Filter by 2-letter state code"),
+    days: int = Query(180, ge=1, le=3650, description="Window for issued_date (days back from today)"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(200, ge=1, le=10000),
+    db: AsyncSession = Depends(get_db),
+):
+    """County-level US building-permit feed (Karan-fixes AC3).
+
+    Backed by the building_permits table populated by
+    ingestion/permits_county adapters (Loudoun VA, Mesa AZ, etc.).
+    Distinct from /api/permits/datacenter, which serves the
+    generator_permits table.
+    """
+    cutoff = date.today() - timedelta(days=days)
+
+    query = select(BuildingPermit)
+    count_query = select(func.count(BuildingPermit.id))
+
+    # issued_date may be null (Loudoun outlines have no date) -- include
+    # those rows by OR-ing on a null check so the dataset isn't silently
+    # zeroed out for window-less sources.
+    date_filter = or_(
+        BuildingPermit.issued_date.is_(None),
+        BuildingPermit.issued_date >= cutoff,
+    )
+    query = query.where(date_filter)
+    count_query = count_query.where(date_filter)
+
+    if state:
+        query = query.where(BuildingPermit.state == state.upper())
+        count_query = count_query.where(BuildingPermit.state == state.upper())
+    if county:
+        query = query.where(BuildingPermit.county.ilike(f"%{county}%"))
+        count_query = count_query.where(BuildingPermit.county.ilike(f"%{county}%"))
+
+    total = (await db.execute(count_query)).scalar() or 0
+
+    offset = (page - 1) * page_size
+    query = query.order_by(
+        BuildingPermit.issued_date.desc().nullslast(),
+        BuildingPermit.id.desc(),
+    ).offset(offset).limit(page_size)
+    result = await db.execute(query)
+    rows = result.scalars().all()
+
+    states_result = await db.execute(
+        select(BuildingPermit.state).where(BuildingPermit.state.isnot(None)).distinct()
+    )
+    states_included = sorted([r[0] for r in states_result.fetchall() if r[0]])
+
+    # Freshness: row has been retrieved within the last 14 days = ok,
+    # otherwise stale; if the table is empty, unknown.
+    freshness_status: str = "unknown"
+    most_recent = (await db.execute(
+        select(func.max(BuildingPermit.retrieved_at))
+    )).scalar()
+    if most_recent is not None:
+        age = datetime.utcnow() - most_recent
+        freshness_status = "ok" if age <= timedelta(days=14) else "stale"
+
+    return CoverageEnvelope(
+        data={
+            "data": [_building_permit_to_dict(p) for p in rows],
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+        },
+        lineage=LineageMeta(
+            source_url="db://building_permits",
+            retrieved_at=datetime.utcnow(),
+            parser_version="building-permits-v1",
+            confidence=0.85,
+        ),
+        coverage=CoverageMeta(
+            pillar="building_permits",
+            states_included=states_included,
+            freshness_status=freshness_status,
         ),
     )
 

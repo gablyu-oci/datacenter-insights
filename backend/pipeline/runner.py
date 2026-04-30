@@ -71,6 +71,15 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=7, minute=0),                # 0 7 * * *
         "phase": 1,
     },
+    # Karan-fixes AC3 -- county-level US building-permit ingestion
+    # (Loudoun VA + Mesa AZ + Grant County WA placeholder). Runs Mondays
+    # 06:00 UTC; each adapter is independent so one failure does not
+    # block the others.
+    "county_permits_weekly": {
+        "adapter": "permits_county",
+        "trigger": CronTrigger(day_of_week="mon", hour=6, minute=0),  # 0 6 * * 1
+        "phase": 2,
+    },
     "permits_air_daily": {
         "adapter": "epa_echo",
         "trigger": CronTrigger(hour=8, minute=0),                # 0 8 * * *
@@ -123,6 +132,17 @@ async def run_anomaly_detection_job() -> None:
 async def run_permits_weekly_job() -> None:
     """Scheduled job: fetch state building-permit data."""
     await _run_adapter_job("permits_state", _invoke_permits_state)
+
+
+async def run_county_permits_weekly_job() -> None:
+    """Scheduled job: fetch county-level US building permits.
+
+    Runs Loudoun + Mesa + Grant County adapters sequentially (each is
+    independent). Failures in one source must not abort the others, so
+    each call is wrapped in its own try/except and contributes to a
+    summary log line.
+    """
+    await _run_adapter_job("permits_county", _invoke_permits_county)
 
 
 async def run_epa_echo_job() -> None:
@@ -241,6 +261,36 @@ async def _invoke_epa_echo(session) -> dict:
     return await adapter.run(session)
 
 
+async def _invoke_permits_county(session) -> dict:
+    """Run all county-level building-permit adapters sequentially.
+
+    Aggregates per-source counts into a single summary so the
+    ingestion_runs row reflects the full sweep. Adapters that raise
+    are logged but do not abort the others.
+    """
+    from ingestion.permits_county import loudoun, mesa, grantwa
+
+    summary: dict = {"fetched": 0, "stored": 0, "skipped": 0, "by_source": []}
+    for adapter_mod in (loudoun, mesa, grantwa):
+        name = getattr(adapter_mod, "SOURCE_ID", adapter_mod.__name__)
+        try:
+            result = await adapter_mod.fetch_and_store(session)
+        except Exception as exc:
+            logger.error("permits_county.%s.failed: %s", name, exc, exc_info=True)
+            summary["by_source"].append({"source": name, "error": str(exc)})
+            continue
+        summary["fetched"] += result.get("fetched", 0)
+        summary["stored"] += result.get("stored", 0)
+        summary["skipped"] += result.get("skipped_non_datacenter", 0)
+        summary["by_source"].append(result)
+    logger.info(
+        "permits_county.summary fetched=%s stored=%s skipped=%s",
+        summary["fetched"], summary["stored"], summary["skipped"],
+    )
+    await session.commit()
+    return summary
+
+
 async def _invoke_coverage_refresh(session) -> dict:
     """Safety-net coverage rollup heartbeat."""
     logger.info("coverage_refresh: heartbeat OK")
@@ -307,6 +357,7 @@ _JOB_FUNCTIONS: dict[str, callable] = {
     "quarterly_filings_weekly": run_edgar_quarterly_job,
     "anomaly_detection_nightly": run_anomaly_detection_job,
     "permits_state_daily": run_permits_weekly_job,
+    "county_permits_weekly": run_county_permits_weekly_job,
     "permits_air_daily": run_epa_echo_job,
     "coverage_refresh": run_coverage_refresh_job,
     "cache_cleanup": run_cache_cleanup_job,

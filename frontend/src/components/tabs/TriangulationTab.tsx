@@ -1,20 +1,21 @@
 /**
- * TriangulationTab — Phase 2 (AC4).
+ * TriangulationTab — Phase 2 (AC4) + AC2 (L2).
  *
- * The original "multi-layer Power Gap" placeholder was vapor — L2 (GPU
- * compute), L3 (NIC/optics), and L4 (county permits) all require paid
- * data feeds we have not procured. This rewrite ships ONLY Layer 1
- * (Contracted Power, GW per company × state), which we can compute
- * honestly today by summing sites + curated_deals + edgar_extractions.
+ * L1 (Contracted Power, GW per company × state) is sourced honestly from
+ * sites + curated_deals + EDGAR extractions.
  *
- * Endpoint: GET /api/triangulation/l1
+ * L2 (Compute Demand vs. Contracted Power) is modelled from NVIDIA Data
+ * Center segment revenue / inventory using assumption dials surfaced in
+ * the UI. L3 / L4 still require paid feeds.
+ *
+ * Endpoints: GET /api/triangulation/l1, GET /api/triangulation/l2
  */
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
-import { Info, AlertTriangle } from "lucide-react";
+import { Info } from "lucide-react";
 import ErrorPanel from "../shared/ErrorPanel";
 import NoDataPanel from "../shared/NoDataPanel";
 import CitationFooter from "../shared/CitationFooter";
@@ -35,6 +36,32 @@ interface L1Response {
   layers_pending?: string[];
 }
 
+interface L2HyperscalerShare {
+  company: string;
+  contracted_gw: number;
+  implied_compute_gw: number;
+  gap_gw: number;
+  status: string;
+  share_fraction: number;
+}
+interface L2Assumptions {
+  avg_gpu_price_usd: number;
+  avg_blended_power_w: number;
+  utilization_pct: number;
+  overhead_multiplier: number;
+  h100_avg_power_w: number;
+  b200_avg_power_w: number;
+}
+interface L2Data {
+  period_end: string | null;
+  nvidia_dc_revenue_usd: number | null;
+  nvidia_inventory_usd: number | null;
+  inferred_units_total: number | null;
+  inferred_compute_gw: number | null;
+  assumptions: L2Assumptions;
+  per_hyperscaler_share: L2HyperscalerShare[];
+}
+
 const CARD_STYLE = {
   background: "#1e293b",
   border: "1px solid #334155",
@@ -43,15 +70,26 @@ const CARD_STYLE = {
 } as const;
 
 const LAYERS = [
-  { layer: "L1", label: "Contracted Power",     desc: "GW signed with utilities (sites + curated deals + EDGAR)", status: "live"    },
-  { layer: "L2", label: "GPU Compute Demand",   desc: "Power draw × utilization (NVIDIA shipments — paid data)",   status: "blocked" },
-  { layer: "L3", label: "NIC/Optics Signals",   desc: "Coherent / Lumentum order books — paid data",                status: "blocked" },
-  { layer: "L4", label: "Permit Ground Truth",  desc: "County-level construction permits — paid data",              status: "blocked" },
+  { layer: "L1", label: "Contracted Power",     desc: "GW signed with utilities (sites + curated deals + EDGAR)",   status: "live"    },
+  { layer: "L2", label: "GPU Compute Demand",   desc: "NVIDIA DC revenue × unit economics (modelled — see assumptions)", status: "modelled" },
+  { layer: "L3", label: "NIC/Optics Signals",   desc: "Coherent / Lumentum order books — paid data",                  status: "blocked" },
+  { layer: "L4", label: "Permit Ground Truth",  desc: "County-level construction permits — paid data",                status: "blocked" },
 ];
 
 export default function TriangulationTab() {
   const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } =
     useApi<L1Response>("/api/triangulation/l1");
+
+  const {
+    data: l2Data,
+    loading: l2Loading,
+    error: l2Error,
+    errorInfo: l2ErrorInfo,
+    retry: l2Retry,
+    lastFetchedAt: l2LastFetchedAt,
+    lineage: l2Lineage,
+    coverage: l2Coverage,
+  } = useApi<L2Data>("/api/triangulation/l2");
 
   if (loading) return <Loader />;
 
@@ -89,31 +127,39 @@ export default function TriangulationTab() {
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           {LAYERS.map(({ layer, label, desc, status }) => {
             const isLive = status === "live";
+            const isModelled = status === "modelled";
+            const accent = isLive ? "#22c55e" : isModelled ? "#eab308" : "#334155";
+            const labelText =
+              isLive
+                ? "LIVE"
+                : isModelled
+                  ? "live (modelled — see assumptions)"
+                  : "Paid data required";
             return (
               <div key={layer} style={{
                 background: "#0f172a",
-                border: `1px solid ${isLive ? "#22c55e" : "#334155"}`,
+                border: `1px solid ${accent}`,
                 borderRadius: "8px",
                 padding: "12px 16px",
                 flex: 1,
                 minWidth: 180,
-                opacity: isLive ? 1 : 0.55,
+                opacity: isLive || isModelled ? 1 : 0.55,
               }}>
                 <div style={{
                   display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px",
                 }}>
                   <span style={{
-                    color: isLive ? "#22c55e" : "#64748b",
+                    color: isLive || isModelled ? accent : "#64748b",
                     fontSize: "11px", fontWeight: 700,
                   }}>{layer}</span>
                   <span style={{
-                    color: isLive ? "#22c55e" : "#94a3b8",
+                    color: isLive || isModelled ? accent : "#94a3b8",
                     fontSize: "10px",
-                    border: `1px solid ${isLive ? "#22c55e44" : "#33415588"}`,
+                    border: `1px solid ${isLive || isModelled ? `${accent}44` : "#33415588"}`,
                     borderRadius: "4px",
                     padding: "1px 6px",
                   }}>
-                    {isLive ? "LIVE" : "Paid data required"}
+                    {labelText}
                   </span>
                 </div>
                 <div style={{ color: "white", fontSize: "13px", fontWeight: 600 }}>{label}</div>
@@ -138,6 +184,20 @@ export default function TriangulationTab() {
           <L1Table records={records} />
         </>
       )}
+
+      {/* L2 — Compute Demand vs. Contracted Power */}
+      <L2Section
+        loading={l2Loading}
+        error={l2Error}
+        errorInfo={l2ErrorInfo}
+        retry={l2Retry}
+        lastFetchedAt={l2LastFetchedAt}
+        data={l2Data}
+        lineage={l2Lineage}
+        coverageNote={
+          l2Coverage?.states_excluded_with_reason?.ALL ?? null
+        }
+      />
 
       <CitationFooter
         sources={["sites.power_capacity_mw", "curated_deals.capacity_mw", "edgar_extractions.capacity_mw"]}
@@ -301,4 +361,346 @@ function Loader() {
       Loading L1 triangulation…
     </div>
   );
+}
+
+
+// ---------------------------------------------------------------------------
+// L2 — Compute Demand vs. Contracted Power
+// ---------------------------------------------------------------------------
+
+interface L2SectionProps {
+  loading: boolean;
+  error: string | null;
+  errorInfo: { title: string; message: string } | null;
+  retry: () => void;
+  lastFetchedAt: Date | null;
+  data: L2Data | null;
+  lineage: { source_url?: string; retrieved_at?: string; confidence?: number } | null;
+  coverageNote: string | null;
+}
+
+function L2Section({
+  loading, error, errorInfo, retry, lastFetchedAt,
+  data, lineage, coverageNote,
+}: L2SectionProps) {
+  return (
+    <div style={CARD_STYLE}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+        <Info size={16} color="#eab308" />
+        <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
+          L2 — Compute Demand vs. Contracted Power
+        </h3>
+        <span style={{
+          color: "#eab308",
+          fontSize: "10px",
+          border: "1px solid #eab30844",
+          borderRadius: "4px",
+          padding: "1px 6px",
+          marginLeft: "4px",
+        }}>
+          modelled
+        </span>
+      </div>
+      <p style={{ color: "#94a3b8", fontSize: "12px", margin: "0 0 16px" }}>
+        Translates NVIDIA Data Center segment revenue into implied compute GW
+        using GPU unit economics, then compares against L1 contracted power
+        per hyperscaler. The dials are open — see Assumptions below.
+      </p>
+
+      {loading && <L2Skeleton />}
+
+      {!loading && error && (
+        <ErrorPanel
+          title={errorInfo?.title}
+          message={errorInfo?.message}
+          onRetry={retry}
+          lastAttempt={lastFetchedAt}
+        />
+      )}
+
+      {!loading && !error && data && (
+        data.nvidia_dc_revenue_usd == null ? (
+          <div style={{
+            color: "#94a3b8",
+            fontSize: "13px",
+            padding: "24px",
+            textAlign: "center",
+            background: "#0f172a",
+            border: "1px dashed #334155",
+            borderRadius: "8px",
+          }}>
+            No NVIDIA Data Center revenue extracted yet.
+          </div>
+        ) : (
+          <L2Body data={data} coverageNote={coverageNote} lineage={lineage} />
+        )
+      )}
+    </div>
+  );
+}
+
+function L2Body({
+  data, coverageNote,
+}: {
+  data: L2Data;
+  coverageNote: string | null;
+  lineage: { source_url?: string; retrieved_at?: string; confidence?: number } | null;
+}) {
+  const periodEnd = data.period_end ?? "—";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
+      {/* KPI tiles */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
+        <KpiTile
+          label="NVIDIA DC Revenue"
+          value={formatUsdBillions(data.nvidia_dc_revenue_usd)}
+          subtitle={`as of ${periodEnd}`}
+          accent="#3b82f6"
+        />
+        <KpiTile
+          label="Inferred Units"
+          value={formatUnitsMillions(data.inferred_units_total)}
+          subtitle={`as of ${periodEnd}`}
+          accent="#a855f7"
+        />
+        <KpiTile
+          label="Inferred Compute GW"
+          value={formatGw(data.inferred_compute_gw)}
+          subtitle={`as of ${periodEnd}`}
+          accent="#f97316"
+        />
+      </div>
+
+      {/* Side-by-side bar chart per hyperscaler */}
+      <L2HyperscalerChart rows={data.per_hyperscaler_share} />
+
+      {/* Inventory overhang callout */}
+      {data.nvidia_inventory_usd != null && data.nvidia_inventory_usd > 0 && (
+        <div
+          title="NVIDIA inventory line item — chips on the balance sheet that have not yet shipped to customers."
+          style={{
+            background: "#0f172a",
+            border: "1px solid #f59e0b55",
+            borderRadius: "8px",
+            padding: "10px 14px",
+            display: "flex",
+            alignItems: "center",
+            gap: "10px",
+          }}
+        >
+          <span style={{ color: "#f59e0b", fontWeight: 700, fontSize: "12px" }}>
+            Inventory overhang
+          </span>
+          <span style={{ color: "#cbd5e1", fontSize: "13px" }}>
+            {formatUsdBillions(data.nvidia_inventory_usd)} warehoused but not yet deployed
+          </span>
+        </div>
+      )}
+
+      {/* Assumptions panel */}
+      <details style={{
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: "8px",
+        padding: "10px 14px",
+      }}>
+        <summary style={{
+          cursor: "pointer",
+          color: "#cbd5e1",
+          fontSize: "13px",
+          fontWeight: 600,
+          listStyle: "revert",
+        }}>
+          Assumptions (the dials of the model)
+        </summary>
+        <p style={{ color: "#64748b", fontSize: "11px", margin: "8px 0 12px" }}>
+          These are the dials of the model. Karan will push back on each — that's the point.
+        </p>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+          <tbody>
+            <AssumptionRow k="AVG_GPU_PRICE_USD"   v={formatUsd(data.assumptions.avg_gpu_price_usd)} />
+            <AssumptionRow k="AVG_BLENDED_POWER_W" v={`${data.assumptions.avg_blended_power_w} W`} />
+            <AssumptionRow k="UTILIZATION_PCT"     v={`${Math.round(data.assumptions.utilization_pct * 100)}%`} />
+            <AssumptionRow k="OVERHEAD_MULTIPLIER" v={`${data.assumptions.overhead_multiplier}\u00d7`} />
+            <AssumptionRow k="H100_AVG_POWER_W"    v={`${data.assumptions.h100_avg_power_w} W`} />
+            <AssumptionRow k="B200_AVG_POWER_W"    v={`${data.assumptions.b200_avg_power_w} W`} />
+          </tbody>
+        </table>
+      </details>
+
+      {/* Coverage note */}
+      {coverageNote && (
+        <p style={{ color: "#64748b", fontSize: "11px", margin: 0, lineHeight: 1.5 }}>
+          {coverageNote}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function L2HyperscalerChart({ rows }: { rows: L2HyperscalerShare[] }) {
+  if (!rows || rows.length === 0) {
+    return (
+      <div style={{
+        color: "#94a3b8", fontSize: "13px", padding: "16px", textAlign: "center",
+      }}>
+        No hyperscaler split available.
+      </div>
+    );
+  }
+
+  const chartData = rows.map((r) => ({
+    company: r.company,
+    "Contracted GW (L1)": Number(r.contracted_gw.toFixed(2)),
+    "Implied Compute GW (L2)": Number(r.implied_compute_gw.toFixed(2)),
+    gap_gw: r.gap_gw,
+    status: r.status,
+  }));
+
+  return (
+    <div>
+      <ResponsiveContainer width="100%" height={320}>
+        <BarChart data={chartData} layout="vertical" margin={{ left: 12, right: 140 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
+          <XAxis type="number" tick={{ fill: "#94a3b8", fontSize: 11 }} unit=" GW" />
+          <YAxis
+            type="category"
+            dataKey="company"
+            tick={{ fill: "#cbd5e1", fontSize: 12 }}
+            width={90}
+          />
+          <Tooltip
+            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
+            formatter={(v) => `${v} GW`}
+          />
+          <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
+          <Bar dataKey="Contracted GW (L1)" fill="#3b82f6" radius={[0, 4, 4, 0]} />
+          <Bar dataKey="Implied Compute GW (L2)" fill="#f97316" radius={[0, 4, 4, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+
+      {/* Gap labels per row */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "1fr",
+        gap: "4px",
+        marginTop: "4px",
+      }}>
+        {rows.map((r) => (
+          <div key={r.company} style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            fontSize: "11px",
+            padding: "2px 8px",
+          }}>
+            <span style={{ color: "#94a3b8" }}>{r.company}</span>
+            <span style={{
+              color: r.status === "overcontracted" ? "#22c55e" : "#ef4444",
+              fontWeight: 600,
+            }}>
+              {formatGap(r.gap_gw, r.status)}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssumptionRow({ k, v }: { k: string; v: string }) {
+  return (
+    <tr style={{ borderBottom: "1px solid #1f2937" }}>
+      <td style={{ padding: "6px 8px", color: "#94a3b8", fontFamily: "ui-monospace, monospace", fontSize: "11px" }}>
+        {k}
+      </td>
+      <td style={{ padding: "6px 8px", color: "white", fontWeight: 600, textAlign: "right" }}>
+        {v}
+      </td>
+    </tr>
+  );
+}
+
+function KpiTile({
+  label, value, subtitle, accent,
+}: { label: string; value: string; subtitle: string; accent: string }) {
+  return (
+    <div style={{
+      background: "#0f172a",
+      border: `1px solid ${accent}55`,
+      borderRadius: "8px",
+      padding: "12px 14px",
+    }}>
+      <div style={{ color: "#94a3b8", fontSize: "11px", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+        {label}
+      </div>
+      <div style={{ color: accent, fontSize: "22px", fontWeight: 700, marginTop: "4px" }}>
+        {value}
+      </div>
+      <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>
+        {subtitle}
+      </div>
+    </div>
+  );
+}
+
+function L2Skeleton() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "12px" }}>
+        {[0, 1, 2].map((i) => (
+          <div key={i} style={{
+            height: "78px",
+            background: "#0f172a",
+            border: "1px solid #334155",
+            borderRadius: "8px",
+          }} />
+        ))}
+      </div>
+      <div style={{
+        height: "320px",
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: "8px",
+      }} />
+      <div style={{ color: "#3b82f6", fontSize: "12px", textAlign: "center" }}>
+        Loading L2 triangulation…
+      </div>
+    </div>
+  );
+}
+
+
+// ---------------------------------------------------------------------------
+// formatters
+// ---------------------------------------------------------------------------
+
+function formatUsdBillions(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const b = v / 1_000_000_000;
+  return `$${b.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}B`;
+}
+
+function formatUsd(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+}
+
+function formatUnitsMillions(v: number | null | undefined): string {
+  if (v == null) return "—";
+  const m = v / 1_000_000;
+  return `${m.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}M`;
+}
+
+function formatGw(v: number | null | undefined): string {
+  if (v == null) return "—";
+  return `${v.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })} GW`;
+}
+
+function formatGap(gapGw: number, status: string): string {
+  const abs = Math.abs(gapGw).toFixed(1);
+  if (status === "overcontracted") return `+${abs} GW overcontracted`;
+  if (status === "undercontracted") return `\u2212${abs} GW undercontracted`;
+  return `${gapGw >= 0 ? "+" : "\u2212"}${abs} GW`;
 }
