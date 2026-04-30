@@ -13,11 +13,16 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
 import {
-  Filter, X, ExternalLink, MapPin, Zap, Flame, ChevronDown, ChevronUp,
+  Filter, X, ExternalLink, MapPin, Zap, Flame, Building2, ChevronDown, ChevronUp,
 } from "lucide-react";
 
 import { useApi } from "../../hooks/useApi";
-import type { GeneratorPermitDto, GeneratorPermitsResponse } from "../../types";
+import type {
+  GeneratorPermitDto,
+  GeneratorPermitsResponse,
+  BuildingPermitDto,
+  BuildingPermitsResponse,
+} from "../../types";
 import ErrorPanel from "../shared/ErrorPanel";
 import NoDataPanel from "../shared/NoDataPanel";
 import CitationFooter from "../shared/CitationFooter";
@@ -61,6 +66,8 @@ const SOURCE_LABEL: Record<string, string> = {
   va_open_data: "Virginia DEQ",
   ny_socrata: "NY DEC",
   socrata: "Socrata",
+  loudoun_va: "Loudoun VA",
+  mesa_az: "Mesa AZ",
 };
 
 const CARD_STYLE: React.CSSProperties = {
@@ -119,9 +126,21 @@ function permittee(p: GeneratorPermitDto): string {
   return p.resolved_company_name || p.permittee_raw_name || p.facility_name || "Unknown";
 }
 
-// ── Map ─────────────────────────────────────────────────────────────────────
+function isIssued(status: string | null | undefined): boolean {
+  return !!status && status.toLowerCase() === "issued";
+}
 
-function PermitsMap({
+function fmtUSD(v: number | null | undefined): string {
+  if (v == null) return "--";
+  if (v >= 1_000_000_000) return `$${(v / 1_000_000_000).toFixed(2)}B`;
+  if (v >= 1_000_000) return `$${(v / 1_000_000).toFixed(2)}M`;
+  if (v >= 1_000) return `$${(v / 1_000).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+// ── Generator Map ───────────────────────────────────────────────────────────
+
+function GeneratorMap({
   permits,
   selectedId,
   onSelect,
@@ -139,7 +158,6 @@ function PermitsMap({
       style={{ width: "100%", height: "100%", borderRadius: 8 }}
       scrollWheelZoom={true}
     >
-      {/* Basemap: Google Satellite when API key works; CARTO dark fallback. */}
       {GMAPS_KEY ? (
         <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
       ) : (
@@ -213,6 +231,93 @@ function PermitsMap({
   );
 }
 
+// ── Building Map ────────────────────────────────────────────────────────────
+
+function BuildingMap({
+  permits,
+  selectedId,
+  onSelect,
+}: {
+  permits: BuildingPermitDto[];
+  selectedId: number | null;
+  onSelect: (id: number | null) => void;
+}) {
+  const mappable = permits.filter(p => p.latitude != null && p.longitude != null);
+
+  return (
+    <MapContainer
+      center={[38.5, -96]}
+      zoom={4}
+      style={{ width: "100%", height: "100%", borderRadius: 8 }}
+      scrollWheelZoom={true}
+    >
+      {GMAPS_KEY ? (
+        <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
+      ) : (
+        <TileLayer
+          attribution='&copy; <a href="https://carto.com/">CARTO</a>'
+          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        />
+      )}
+      <MarkerClusterGroup
+        chunkedLoading
+        maxClusterRadius={60}
+        disableClusteringAtZoom={10}
+        spiderfyOnMaxZoom={true}
+        showCoverageOnHover={false}
+      >
+        {mappable.map((p) => {
+          const color = isIssued(p.permit_status) ? "#22c55e" : "#f59e0b";
+          const isSelected = selectedId === p.id;
+          // Bubble radius scales with valuation; floor at 5px, ceiling at 16px.
+          const v = p.valuation_usd ?? 0;
+          const radius = Math.max(5, Math.min(16, 5 + Math.log10(Math.max(1, v / 1_000_000)) * 3));
+          return (
+            <CircleMarker
+              key={p.id}
+              center={[p.latitude!, p.longitude!]}
+              radius={radius}
+              pathOptions={{
+                fillColor: color,
+                fillOpacity: isSelected ? 1 : 0.85,
+                color: isSelected ? "#ffffff" : color,
+                weight: isSelected ? 3 : 1,
+              }}
+              eventHandlers={{
+                click: () => onSelect(isSelected ? null : p.id),
+              }}
+            >
+              <Popup>
+                <div style={{ fontFamily: "system-ui, sans-serif", minWidth: 220 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 2 }}>
+                    {p.applicant_name || p.source_permit_id || `Permit #${p.id}`}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#666", marginBottom: 6 }}>
+                    {p.address ?? "--"}
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, fontSize: 11 }}>
+                    {p.permit_type && <div><strong>Type:</strong> {p.permit_type}</div>}
+                    {p.permit_status && <div><strong>Status:</strong> {p.permit_status}</div>}
+                    {p.county && <div><strong>County:</strong> {p.county}</div>}
+                    {p.state && <div><strong>State:</strong> {p.state}</div>}
+                    {p.issued_date && <div><strong>Issued:</strong> {fmtDate(p.issued_date)}</div>}
+                    {p.valuation_usd != null && (
+                      <div><strong>Value:</strong> {fmtUSD(p.valuation_usd)}</div>
+                    )}
+                  </div>
+                  <div style={{ marginTop: 6, fontSize: 11, color: "#3b82f6" }}>
+                    {SOURCE_LABEL[p.source ?? ""] ?? p.source ?? "--"}
+                  </div>
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
+      </MarkerClusterGroup>
+    </MapContainer>
+  );
+}
+
 // ── KPI ─────────────────────────────────────────────────────────────────────
 
 function MetricCard({ label, value, unit, sub, accent, icon: Icon }: {
@@ -240,7 +345,15 @@ function MetricCard({ label, value, unit, sub, accent, icon: Icon }: {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+type PermitMode = "generator" | "building";
+
 export default function PermitsTab() {
+  // AC3: Toggle between generator (existing) and building-permit views.
+  const [mode, setMode] = useState<PermitMode>("generator");
+
+  // Building-permit fetch window. Default 365d; the empty-state CTA bumps to 730.
+  const [buildingDays, setBuildingDays] = useState<number>(365);
+
   // Default to data-center-relevant fuel types per PRD §5.
   const [activeFuels, setActiveFuels] = useState<Set<FuelType>>(
     new Set<FuelType>(DC_FUEL_TYPES),
@@ -252,20 +365,44 @@ export default function PermitsTab() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
 
-  // Single fetch -- no server-side fuel filter. Fuel filtering happens
-  // client-side via normalizeFuel so the map can render every permit
-  // with coordinates regardless of what's in the fuel chip selection.
-  // (EPA ECHO permits have lat/lon but no fuel_type; PJM/state-permit
-  // rows have fuel_type but no coords -- a server-side filter blanks
-  // the map.)
-  const apiPath = `/api/permits/?page=1&page_size=10000`;
+  // Building-permit table sort
+  const [buildingSortField, setBuildingSortField] = useState<
+    "issued_date" | "valuation_usd" | "applicant_name" | "permit_status"
+  >("issued_date");
+  const [buildingSortAsc, setBuildingSortAsc] = useState(false);
+  const [selectedBuildingId, setSelectedBuildingId] = useState<number | null>(null);
 
-  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } =
-    useApi<GeneratorPermitsResponse>(apiPath);
+  // Generator fetch (kept identical to prior behavior).
+  const generatorPath = `/api/permits/?page=1&page_size=10000`;
+  const {
+    data: genData,
+    loading: genLoading,
+    error: genError,
+    errorInfo: genErrorInfo,
+    retry: genRetry,
+    lastFetchedAt: genLastFetchedAt,
+    lineage: genLineage,
+  } = useApi<GeneratorPermitsResponse>(generatorPath);
 
-  const permits: GeneratorPermitDto[] = data?.data ?? [];
-  const total = data?.total ?? permits.length;
-  const sourcesIncluded = data?.sources_included ?? [];
+  // Building fetch (parallel; runs unconditionally so toggling is instant).
+  const buildingPath = `/api/permits/building?days=${buildingDays}`;
+  const {
+    data: bldData,
+    loading: bldLoading,
+    error: bldError,
+    errorInfo: bldErrorInfo,
+    retry: bldRetry,
+    lastFetchedAt: bldLastFetchedAt,
+    lineage: bldLineage,
+    coverage: bldCoverage,
+  } = useApi<BuildingPermitsResponse>(buildingPath);
+
+  const permits: GeneratorPermitDto[] = genData?.data ?? [];
+  const total = genData?.total ?? permits.length;
+  const sourcesIncluded = genData?.sources_included ?? [];
+
+  const buildingPermits: BuildingPermitDto[] = bldData?.data ?? [];
+  const buildingTotal = bldData?.total ?? buildingPermits.length;
 
   // Hooks must run before any early returns.
   const states = useMemo(
@@ -277,7 +414,14 @@ export default function PermitsTab() {
     [permits],
   );
 
-  // Charts/list filter: state + source + fuel chip (client-side).
+  // Hoisted to satisfy Rules of Hooks — must run on every render whether
+  // we early-return for loading/error/empty in generator mode or not.
+  const buildingSources = useMemo(
+    () => Array.from(new Set(buildingPermits.map(p => p.source).filter(Boolean) as string[])),
+    [buildingPermits],
+  );
+
+  // Charts/list filter for generator mode.
   const filtered = useMemo(() => permits.filter(p => {
     if (filterState !== "All" && p.state_code !== filterState) return false;
     if (filterSource !== "All" && p.source !== filterSource) return false;
@@ -288,10 +432,7 @@ export default function PermitsTab() {
     return true;
   }), [permits, filterState, filterSource, activeFuels]);
 
-  // Map filter: state + source only -- fuel filter is intentionally
-  // skipped because a large fraction of coord-bearing permits (EPA ECHO)
-  // have no fuel_type populated. Apply the same fuel chip filter on the
-  // map and most pins disappear.
+  // Map filter for generator mode (no fuel filter).
   const mapFiltered = useMemo(() => permits.filter(p => {
     if (filterState !== "All" && p.state_code !== filterState) return false;
     if (filterSource !== "All" && p.source !== filterSource) return false;
@@ -345,14 +486,67 @@ export default function PermitsTab() {
       .sort((a, b) => b.mw - a.mw);
   }, [filtered]);
 
-  // KPIs
+  // Building aggregations
+  const byCounty = useMemo(() => {
+    const map: Record<string, number> = {};
+    buildingPermits.forEach(p => {
+      const c = p.county ?? p.jurisdiction ?? "Unknown";
+      map[c] = (map[c] ?? 0) + 1;
+    });
+    return Object.entries(map)
+      .map(([county, count]) => ({ county, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+  }, [buildingPermits]);
+
+  const sortedBuildings = useMemo(() => {
+    return [...buildingPermits].sort((a, b) => {
+      const dir = buildingSortAsc ? 1 : -1;
+      switch (buildingSortField) {
+        case "issued_date": {
+          const av = a.issued_date ?? "";
+          const bv = b.issued_date ?? "";
+          return av.localeCompare(bv) * dir;
+        }
+        case "valuation_usd": {
+          const av = a.valuation_usd ?? 0;
+          const bv = b.valuation_usd ?? 0;
+          return (av - bv) * dir;
+        }
+        case "applicant_name": {
+          const av = a.applicant_name ?? "";
+          const bv = b.applicant_name ?? "";
+          return av.localeCompare(bv) * dir;
+        }
+        case "permit_status": {
+          const av = a.permit_status ?? "";
+          const bv = b.permit_status ?? "";
+          return av.localeCompare(bv) * dir;
+        }
+      }
+    });
+  }, [buildingPermits, buildingSortField, buildingSortAsc]);
+
+  // Generator KPIs
   const totalMW = filtered.reduce((s, p) => s + (p.rated_mw_total ?? 0), 0);
   const uniqueStates = new Set(filtered.map(p => p.state_code).filter(Boolean)).size;
   const resolvedParents = filtered.filter(p => p.resolved_company_id != null).length;
 
+  // Building KPIs
+  const buildingIssued = buildingPermits.filter(p => isIssued(p.permit_status)).length;
+  const buildingPending = buildingPermits.length - buildingIssued;
+  const buildingValuation = buildingPermits.reduce(
+    (s, p) => s + (p.valuation_usd ?? 0), 0,
+  );
+
   const toggleSort = (field: typeof sortField) => {
     if (sortField === field) setSortAsc(v => !v);
     else { setSortField(field); setSortAsc(false); }
+  };
+
+  const toggleBuildingSort = (field: typeof buildingSortField) => {
+    if (buildingSortField === field) setBuildingSortAsc(v => !v);
+    else { setBuildingSortField(field); setBuildingSortAsc(false); }
   };
 
   const toggleFuel = (f: FuelType) => {
@@ -364,24 +558,81 @@ export default function PermitsTab() {
     });
   };
 
-  // Now safe to short-circuit.
-  if (loading) return <Loader />;
-  if (error) {
-    return (
-      <div style={{ padding: "24px" }}>
-        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
-      </div>
-    );
-  }
-  if (permits.length === 0) {
-    return (
-      <div style={{ padding: "24px" }}>
-        <NoDataPanel
-          pillar="Generator Permits"
-          reason="No permits matched the active filters. Try enabling additional fuel types or check ingestion status."
-        />
-      </div>
-    );
+  // ── Toggle UI ──────────────────────────────────────────────────────────────
+  const toggleBar = (
+    <div
+      role="tablist"
+      aria-label="Permit dataset"
+      style={{
+        display: "inline-flex",
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: 999,
+        padding: 3,
+        gap: 2,
+        alignSelf: "flex-start",
+      }}
+    >
+      {[
+        { id: "generator" as const, label: "Generator Permits", icon: Flame, accent: "#f97316" },
+        { id: "building" as const, label: "Building Permits", icon: Building2, accent: "#22c55e" },
+      ].map(opt => {
+        const active = mode === opt.id;
+        const Icon = opt.icon;
+        return (
+          <button
+            key={opt.id}
+            role="tab"
+            aria-selected={active}
+            onClick={() => setMode(opt.id)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 6,
+              padding: "8px 16px",
+              borderRadius: 999,
+              border: "none",
+              background: active ? opt.accent : "transparent",
+              color: active ? "white" : "#94a3b8",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              transition: "background 0.15s",
+            }}
+          >
+            <Icon size={13} />
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  // ── Loading / error gating per active mode ────────────────────────────────
+  // Generator path errors only block generator mode; building path errors only
+  // block building mode. Unconditional fetches mean toggling is instant once
+  // both have resolved.
+  if (mode === "generator") {
+    if (genLoading) return <Loader />;
+    if (genError) {
+      return (
+        <div style={{ padding: "24px" }}>
+          <div style={{ marginBottom: 16 }}>{toggleBar}</div>
+          <ErrorPanel title={genErrorInfo?.title} message={genErrorInfo?.message} onRetry={genRetry} lastAttempt={genLastFetchedAt} />
+        </div>
+      );
+    }
+    if (permits.length === 0) {
+      return (
+        <div style={{ padding: "24px" }}>
+          <div style={{ marginBottom: 16 }}>{toggleBar}</div>
+          <NoDataPanel
+            pillar="Generator Permits"
+            reason="No permits matched the active filters. Try enabling additional fuel types or check ingestion status."
+          />
+        </div>
+      );
+    }
   }
 
   const filterSelectStyle: React.CSSProperties = {
@@ -396,8 +647,137 @@ export default function PermitsTab() {
 
   const sourceLabels = sourcesIncluded.map(s => SOURCE_LABEL[s] ?? s);
 
+  // ── Building-mode coverage strings ────────────────────────────────────────
+  // (buildingSources useMemo is hoisted to the top of the component above
+  // any early returns -- Rules of Hooks. The plain-JS derivations below
+  // are safe to compute here.)
+  const buildingStatesIncluded = bldCoverage?.states_included ?? [];
+  const buildingCoverageNote =
+    (bldCoverage as unknown as { note?: string } | null)?.note ??
+    (buildingStatesIncluded.length === 0
+      ? "Building permits from Loudoun VA + Mesa AZ -- Grant WA pending free-API"
+      : null);
+  const buildingSourceLabels =
+    buildingSources.length > 0
+      ? buildingSources.map(s => SOURCE_LABEL[s] ?? s)
+      : ["Loudoun VA + Mesa AZ"];
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
+      {/* Toggle */}
+      {toggleBar}
+
+      {mode === "generator" ? (
+        <GeneratorView
+          toggleBar={null}
+          permits={permits}
+          filtered={filtered}
+          sorted={sorted}
+          mapFiltered={mapFiltered}
+          byState={byState}
+          byFuel={byFuel}
+          totalMW={totalMW}
+          uniqueStates={uniqueStates}
+          resolvedParents={resolvedParents}
+          total={total}
+          sourcesIncluded={sourcesIncluded}
+          sourceLabels={sourceLabels}
+          lineage={genLineage}
+          states={states}
+          sources={sources}
+          filterState={filterState}
+          setFilterState={setFilterState}
+          filterSource={filterSource}
+          setFilterSource={setFilterSource}
+          activeFuels={activeFuels}
+          setActiveFuels={setActiveFuels}
+          toggleFuel={toggleFuel}
+          sortField={sortField}
+          sortAsc={sortAsc}
+          toggleSort={toggleSort}
+          selectedId={selectedId}
+          setSelectedId={setSelectedId}
+          expandedId={expandedId}
+          setExpandedId={setExpandedId}
+          filterSelectStyle={filterSelectStyle}
+        />
+      ) : (
+        <BuildingView
+          loading={bldLoading}
+          error={bldError}
+          errorInfo={bldErrorInfo}
+          retry={bldRetry}
+          lastFetchedAt={bldLastFetchedAt}
+          buildingPermits={buildingPermits}
+          sortedBuildings={sortedBuildings}
+          buildingTotal={buildingTotal}
+          buildingIssued={buildingIssued}
+          buildingPending={buildingPending}
+          buildingValuation={buildingValuation}
+          byCounty={byCounty}
+          buildingDays={buildingDays}
+          setBuildingDays={setBuildingDays}
+          buildingSortField={buildingSortField}
+          buildingSortAsc={buildingSortAsc}
+          toggleBuildingSort={toggleBuildingSort}
+          selectedBuildingId={selectedBuildingId}
+          setSelectedBuildingId={setSelectedBuildingId}
+          buildingStatesIncluded={buildingStatesIncluded}
+          buildingCoverageNote={buildingCoverageNote}
+          buildingSourceLabels={buildingSourceLabels}
+          lineage={bldLineage}
+        />
+      )}
+    </div>
+  );
+}
+
+// ── Generator-mode view (existing UI extracted into a sub-component) ────────
+
+function GeneratorView(props: {
+  toggleBar: React.ReactNode;
+  permits: GeneratorPermitDto[];
+  filtered: GeneratorPermitDto[];
+  sorted: GeneratorPermitDto[];
+  mapFiltered: GeneratorPermitDto[];
+  byState: { state: string; mw: number; count: number }[];
+  byFuel: { fuel: string; mw: number; count: number }[];
+  totalMW: number;
+  uniqueStates: number;
+  resolvedParents: number;
+  total: number;
+  sourcesIncluded: string[];
+  sourceLabels: string[];
+  lineage: { source_url?: string; retrieved_at?: string; confidence?: number } | null;
+  states: string[];
+  sources: string[];
+  filterState: string;
+  setFilterState: (s: string) => void;
+  filterSource: string;
+  setFilterSource: (s: string) => void;
+  activeFuels: Set<FuelType>;
+  setActiveFuels: (s: Set<FuelType>) => void;
+  toggleFuel: (f: FuelType) => void;
+  sortField: "rated_mw_total" | "issued_date" | "permittee";
+  sortAsc: boolean;
+  toggleSort: (f: "rated_mw_total" | "issued_date" | "permittee") => void;
+  selectedId: number | null;
+  setSelectedId: (id: number | null) => void;
+  expandedId: number | null;
+  setExpandedId: (id: number | null) => void;
+  filterSelectStyle: React.CSSProperties;
+}) {
+  const {
+    permits, filtered, sorted, mapFiltered, byState, byFuel,
+    totalMW, uniqueStates, resolvedParents, total, sourcesIncluded, sourceLabels, lineage,
+    states, sources, filterState, setFilterState, filterSource, setFilterSource,
+    activeFuels, setActiveFuels, toggleFuel, sortField, sortAsc, toggleSort,
+    selectedId, setSelectedId, expandedId, setExpandedId, filterSelectStyle,
+  } = props;
+
+  return (
+    <>
       {/* Header banner */}
       <div style={{
         background: "linear-gradient(135deg, #0a1628 0%, #0f2240 100%)",
@@ -500,7 +880,6 @@ export default function PermitsTab() {
               Bubble size proportional to nameplate MW -- Colored by fuel type -- Click marker to inspect
             </p>
           </div>
-          {/* Fuel-color legend */}
           <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: "11px", color: "#94a3b8" }}>
             {DC_FUEL_TYPES.map(f => (
               <span key={f} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -511,13 +890,12 @@ export default function PermitsTab() {
           </div>
         </div>
         <div style={{ height: 440 }}>
-          <PermitsMap permits={mapFiltered} selectedId={selectedId} onSelect={setSelectedId} />
+          <GeneratorMap permits={mapFiltered} selectedId={selectedId} onSelect={setSelectedId} />
         </div>
       </div>
 
       {/* Charts row */}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-        {/* By State */}
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 320 }}>
           <h3 style={{ color: "white", fontWeight: 600, fontSize: 14, margin: "0 0 4px" }}>Generator MW by State (Top 8)</h3>
           <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 14px" }}>
@@ -554,7 +932,6 @@ export default function PermitsTab() {
           />
         </div>
 
-        {/* By Fuel */}
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 280 }}>
           <h3 style={{ color: "white", fontWeight: 600, fontSize: 14, margin: "0 0 4px" }}>MW by Fuel Type</h3>
           <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 14px" }}>
@@ -673,7 +1050,7 @@ export default function PermitsTab() {
                       </td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.facility_name ?? "--"}</td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.state_code ?? "--"}</td>
-                      <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.county ?? "--"}</td>
+                      <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.county_fips ?? "--"}</td>
                       <td style={{ padding: "9px 12px" }}>
                         {p.fuel_type ? (
                           <span style={{
@@ -739,7 +1116,318 @@ export default function PermitsTab() {
           confidence={lineage?.confidence}
         />
       </div>
-    </div>
+    </>
+  );
+}
+
+// ── Building-mode view ──────────────────────────────────────────────────────
+
+function BuildingView(props: {
+  loading: boolean;
+  error: string | null;
+  errorInfo: { title: string; message: string } | null;
+  retry: () => void;
+  lastFetchedAt: Date | null;
+  buildingPermits: BuildingPermitDto[];
+  sortedBuildings: BuildingPermitDto[];
+  buildingTotal: number;
+  buildingIssued: number;
+  buildingPending: number;
+  buildingValuation: number;
+  byCounty: { county: string; count: number }[];
+  buildingDays: number;
+  setBuildingDays: (n: number) => void;
+  buildingSortField: "issued_date" | "valuation_usd" | "applicant_name" | "permit_status";
+  buildingSortAsc: boolean;
+  toggleBuildingSort: (
+    f: "issued_date" | "valuation_usd" | "applicant_name" | "permit_status",
+  ) => void;
+  selectedBuildingId: number | null;
+  setSelectedBuildingId: (id: number | null) => void;
+  buildingStatesIncluded: string[];
+  buildingCoverageNote: string | null;
+  buildingSourceLabels: string[];
+  lineage: { source_url?: string; retrieved_at?: string; confidence?: number } | null;
+}) {
+  const {
+    loading, error, errorInfo, retry, lastFetchedAt,
+    buildingPermits, sortedBuildings, buildingTotal,
+    buildingIssued, buildingPending, buildingValuation, byCounty,
+    buildingDays, setBuildingDays,
+    buildingSortField, buildingSortAsc, toggleBuildingSort,
+    selectedBuildingId, setSelectedBuildingId,
+    buildingStatesIncluded, buildingCoverageNote, buildingSourceLabels, lineage,
+  } = props;
+
+  if (loading) return <Loader />;
+  if (error) {
+    return <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />;
+  }
+
+  // Empty state with widen-window CTA
+  if (buildingPermits.length === 0) {
+    return (
+      <div style={{ ...CARD_STYLE, textAlign: "center", padding: 40 }}>
+        <Building2 size={32} color="#64748b" style={{ marginBottom: 12 }} />
+        <div style={{ color: "#e2e8f0", fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
+          No building permits in window
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 16 }}>
+          No building permits in window -- try widening days param (currently {buildingDays}d).
+        </div>
+        <button
+          onClick={() => setBuildingDays(730)}
+          style={{
+            padding: "8px 16px",
+            borderRadius: 6,
+            background: "#22c55e",
+            border: "none",
+            color: "white",
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: "pointer",
+          }}
+        >
+          Refetch with days=730
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {/* Coverage banner */}
+      <div style={{
+        background: "linear-gradient(135deg, #022c22 0%, #064e3b 100%)",
+        border: "1px solid #15803d",
+        borderRadius: 10,
+        padding: "12px 20px",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        flexWrap: "wrap",
+        gap: 8,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <Building2 size={16} color="#22c55e" />
+          <span style={{ color: "white", fontWeight: 600, fontSize: 14 }}>
+            Datacenter Building Permits (Construction Filings)
+          </span>
+          <span style={{ padding: "2px 8px", borderRadius: 4, background: "#0f172a", border: "1px solid #15803d", color: "#86efac", fontSize: "10px", fontWeight: 600 }}>
+            {buildingTotal.toLocaleString()} permits in window
+          </span>
+        </div>
+        <div style={{ color: "#94a3b8", fontSize: "11px", maxWidth: 540, textAlign: "right" }}>
+          {buildingStatesIncluded.length > 0
+            ? <>States: <span style={{ color: "#86efac" }}>{buildingStatesIncluded.join(", ")}</span></>
+            : null}
+          {buildingCoverageNote && (
+            <div style={{ marginTop: 2, color: "#64748b" }}>{buildingCoverageNote}</div>
+          )}
+        </div>
+      </div>
+
+      {/* KPI row */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <MetricCard label="Total Permits" value={String(buildingPermits.length)} sub="in active window" accent="#3b82f6" icon={Filter} />
+        <MetricCard label="Issued" value={String(buildingIssued)} sub={`${buildingPermits.length > 0 ? ((buildingIssued / buildingPermits.length) * 100).toFixed(0) : 0}% of total`} accent="#22c55e" icon={Building2} />
+        <MetricCard label="Pending" value={String(buildingPending)} sub="applied / under review" accent="#f59e0b" icon={Building2} />
+        <MetricCard label="Total Valuation" value={fmtUSD(buildingValuation)} sub="declared construction $" accent="#a855f7" icon={Zap} />
+      </div>
+
+      {/* Days-window control */}
+      <div style={{ ...CARD_STYLE, padding: "12px 18px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <Filter size={13} color="#64748b" />
+        <span style={{ color: "#64748b", fontSize: "12px" }}>Window:</span>
+        {[180, 365, 730].map(d => {
+          const active = buildingDays === d;
+          return (
+            <button
+              key={d}
+              onClick={() => setBuildingDays(d)}
+              style={{
+                padding: "5px 12px",
+                borderRadius: 999,
+                border: `1px solid ${active ? "#22c55e" : "#334155"}`,
+                background: active ? "#22c55e22" : "#0f172a",
+                color: active ? "#22c55e" : "#94a3b8",
+                fontSize: 11,
+                fontWeight: 600,
+                cursor: "pointer",
+              }}
+            >
+              Last {d}d
+            </button>
+          );
+        })}
+        <span style={{ marginLeft: "auto", color: "#64748b", fontSize: "11px" }}>
+          {buildingPermits.length} permits loaded
+        </span>
+      </div>
+
+      {/* Map */}
+      <div style={{ ...CARD_STYLE, padding: 0, overflow: "hidden" }}>
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid #334155", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Building Permit Locations</h3>
+            <p style={{ color: "#64748b", fontSize: "12px", margin: "3px 0 0" }}>
+              Bubble size proportional to declared valuation -- Colored by status -- Click marker to inspect
+            </p>
+          </div>
+          <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: "11px", color: "#94a3b8" }}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e" }} /> Issued
+            </span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#f59e0b" }} /> Pending
+            </span>
+          </div>
+        </div>
+        <div style={{ height: 440 }}>
+          <BuildingMap
+            permits={buildingPermits}
+            selectedId={selectedBuildingId}
+            onSelect={setSelectedBuildingId}
+          />
+        </div>
+      </div>
+
+      {/* Single bar chart: Permits by County */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ ...CARD_STYLE, flex: 1, minWidth: 320 }}>
+          <h3 style={{ color: "white", fontWeight: 600, fontSize: 14, margin: "0 0 4px" }}>Permits by County (Top 10)</h3>
+          <p style={{ color: "#64748b", fontSize: "11px", margin: "0 0 14px" }}>
+            Construction-permit volume by jurisdiction -- watch the leaders for new datacenter shells
+          </p>
+          {byCounty.length > 0 ? (
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={byCounty} layout="vertical" margin={{ left: 4, right: 24, top: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" horizontal={false} />
+                <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
+                <YAxis type="category" dataKey="county" tick={{ fill: "#94a3b8", fontSize: 11 }} width={120} />
+                <Tooltip
+                  contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                  labelStyle={{ color: "white" }}
+                  formatter={(v) => [`${Number(v)} permits`, "Count"]}
+                />
+                <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                  {byCounty.map((_, i) => (
+                    <Cell key={i} fill={`hsl(${145 + i * 12}, 60%, ${55 - i * 2}%)`} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ color: "#64748b", textAlign: "center", padding: 40 }}>No data to display.</div>
+          )}
+          <CitationFooter
+            sources={buildingSourceLabels}
+            retrievedAt={lineage?.retrieved_at}
+            confidence={lineage?.confidence}
+          />
+        </div>
+      </div>
+
+      {/* Building-permit table */}
+      <div style={CARD_STYLE}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+          <div>
+            <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Building Permit Records</h3>
+            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
+              {sortedBuildings.length} permits -- click column headers to sort
+            </p>
+          </div>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid #334155" }}>
+                {[
+                  { label: "Source", field: null },
+                  { label: "County", field: null },
+                  { label: "State", field: null },
+                  { label: "Permit Type", field: null },
+                  { label: "Status", field: "permit_status" as const },
+                  { label: "Issued", field: "issued_date" as const },
+                  { label: "Valuation $", field: "valuation_usd" as const },
+                  { label: "Applicant", field: "applicant_name" as const },
+                ].map(({ label, field }) => (
+                  <th key={label}
+                    onClick={field ? () => toggleBuildingSort(field) : undefined}
+                    style={{
+                      color: "#64748b", textAlign: "left", padding: "8px 12px",
+                      fontWeight: 500, whiteSpace: "nowrap",
+                      cursor: field ? "pointer" : "default",
+                      userSelect: "none",
+                    }}
+                  >
+                    {label}
+                    {field && buildingSortField === field && (
+                      buildingSortAsc
+                        ? <ChevronUp size={10} style={{ display: "inline", marginLeft: 3 }} />
+                        : <ChevronDown size={10} style={{ display: "inline", marginLeft: 3 }} />
+                    )}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sortedBuildings.slice(0, 100).map(p => {
+                const isSelected = selectedBuildingId === p.id;
+                const issued = isIssued(p.permit_status);
+                const statusBg = issued ? "#22c55e22" : "#f59e0b22";
+                const statusColorVal = issued ? "#22c55e" : "#f59e0b";
+                return (
+                  <tr
+                    key={p.id}
+                    onClick={() => setSelectedBuildingId(isSelected ? null : p.id)}
+                    style={{
+                      borderBottom: "1px solid #1e293b",
+                      cursor: "pointer",
+                      background: isSelected ? "#162032" : "transparent",
+                      transition: "background 0.1s",
+                    }}
+                  >
+                    <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: 11 }}>
+                      {SOURCE_LABEL[p.source ?? ""] ?? p.source ?? "--"}
+                    </td>
+                    <td style={{ padding: "9px 12px", color: "#e2e8f0", fontSize: 11 }}>{p.county ?? "--"}</td>
+                    <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: 11 }}>{p.state ?? "--"}</td>
+                    <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: 11 }}>{p.permit_type ?? "--"}</td>
+                    <td style={{ padding: "9px 12px" }}>
+                      <span style={{
+                        padding: "2px 8px", borderRadius: 4,
+                        background: statusBg, color: statusColorVal,
+                        fontSize: 11, fontWeight: 600,
+                      }}>
+                        {p.permit_status ?? "--"}
+                      </span>
+                    </td>
+                    <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: 11 }}>{fmtDate(p.issued_date)}</td>
+                    <td style={{ padding: "9px 12px", color: "white", fontWeight: 700, fontSize: 12 }}>
+                      {fmtUSD(p.valuation_usd)}
+                    </td>
+                    <td style={{ padding: "9px 12px", color: "#e2e8f0", fontSize: 11 }}>
+                      {p.applicant_name ?? "--"}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {sortedBuildings.length > 100 && (
+            <div style={{ color: "#64748b", fontSize: "12px", padding: "8px 12px" }}>
+              Showing 100 of {sortedBuildings.length} permits
+            </div>
+          )}
+        </div>
+        <CitationFooter
+          sources={buildingSourceLabels}
+          retrievedAt={lineage?.retrieved_at}
+          confidence={lineage?.confidence}
+        />
+      </div>
+    </>
   );
 }
 
