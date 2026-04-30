@@ -10,9 +10,9 @@ const TOP_TABS = [
 ];
 
 const SUPPLIER_TABS = [
-  { id: "gpu",  label: "GPU Supply",               icon: Cpu,       real: false },
-  { id: "nics", label: "NICs & Optics Supply",     icon: Network,   real: false },
-  { id: "tsmc", label: "Wafer Production & Supply", icon: Microchip, real: false },
+  { id: "gpu",  label: "GPU Supply",               icon: Cpu,       real: true },
+  { id: "nics", label: "NICs & Optics Supply",     icon: Network,   real: true },
+  { id: "tsmc", label: "Wafer Production & Supply", icon: Microchip, real: true },
 ];
 
 const AFTER_SUPPLIER = [

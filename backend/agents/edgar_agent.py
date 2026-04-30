@@ -8,6 +8,25 @@ Phase 0 fixes (H1 + H2):
         Wrap edgartools sync calls via asyncio.to_thread() if needed.
 
 Phase 1C will replace regex extraction with LLM (backend/llm/agents/edgar_extractor.py).
+
+Phase 2 (Supplier Insights) — AC1 + AC4:
+  * VENDOR_FILERS is now a structured registry of `VendorFiler` records (not a flat
+    name->cik dict). Each entry carries the tab category, segment sub-bucket,
+    per-vendor SEC `form_types`, an FPI flag, and a free-text note. Downstream
+    code that still wants a flat name->cik mapping uses the
+    `_flatten_vendor_filers()` shim, preserving the legacy behaviour of
+    `TRACKED_FILERS = {**ENERGY_COMPANIES, **HYPERSCALERS, **VENDOR_FILERS}`.
+  * The quarterly fetcher (`fetch_real_quarterly_filings_async`) now consults a
+    per-CIK form-types map. For energy companies and hyperscalers we keep the
+    historical default ("10-K", "10-Q"). For vendor filers we use the registry's
+    `form_types` tuple, which lets foreign private issuers (TSMC, ASML, ASE,
+    GlobalFoundries) be fetched as 20-F + 6-K. **20-F is treated as the FPI
+    equivalent of 10-K, and 6-K as the FPI equivalent of 10-Q.** Vendors whose
+    `form_types` is empty (the press-only hyperscaler-silicon entries
+    Alphabet/Amazon/Microsoft) are skipped from the quarterly path; they are
+    intended to be tracked via the press-release pipeline instead.
+  * The 8-K fetcher (`fetch_real_8k_deals_async`) is unchanged: it still
+    iterates only ENERGY_COMPANIES + HYPERSCALERS by design.
 """
 import asyncio
 import json
@@ -15,8 +34,10 @@ import logging
 import re
 import time
 import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Literal
 
 import httpx
 
@@ -51,6 +72,316 @@ HYPERSCALERS = {
     "Meta":        "0001326801",
     "Oracle":      "0001341439",
 }
+
+# ---------------------------------------------------------------------------
+# Vendor registry (Supplier Insights — Phase 2 AC1)
+#
+# The Supplier Insights dropdown has three tabs (GPU Supply / NICs & Optics /
+# Wafer Production & Supply). Each tab needs more than a CIK to render — it
+# needs a segment label (for sub-grouping NICs vs optics, foundry vs packaging
+# vs equipment), per-vendor SEC form types (TSMC/ASML/ASE/GlobalFoundries are
+# foreign private issuers and file 20-F + 6-K instead of 10-K + 10-Q), and a
+# notes slot for fiscal-calendar quirks (Credo's April year-end) or special
+# cases (the press-only hyperscaler-silicon vendors).
+#
+# NB on Intel duality: Intel appears as TWO distinct registry entries —
+# "Intel-DCAI" (Data Center & AI segment, GPU tab) and "Intel-Foundry" (Intel
+# Foundry segment, Wafer tab). Both share CIK 0000050863 because there is
+# only one Intel filer with the SEC. The duplicate-CIK case is handled by
+# `_flatten_vendor_filers()` (first wins) and by `vendor_filer_by_cik()`
+# (returns a list of all entries on a CIK).
+#
+# Coherent CIK correction: prior code used 0001140536, which actually maps to
+# WILLIS TOWERS WATSON PLC. The correct CIK for Coherent Corp. (NASDAQ: COHR,
+# the optical components company) is 0000820318, verified via the SEC
+# submissions JSON endpoint on 2026-04-30.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class VendorFiler:
+    """One row in the Supplier Insights vendor registry.
+
+    Fields:
+      display_name -- canonical name; used as company label in API responses
+                      and UI cards. Two entries may share a CIK (Intel) so
+                      the display_name is what disambiguates them.
+      cik          -- zero-padded 10-digit SEC CIK (or None for "no EDGAR
+                      coverage", though no current entry uses None).
+      tab          -- which Supplier Insights tab the vendor belongs to.
+      segment      -- sub-bucket within the tab (gpu/nic/optics for tabs
+                      gpu+nics_optics; foundry/packaging/equipment for the
+                      wafer tab).
+      form_types   -- which SEC form codes the quarterly fetcher should pull.
+                      Empty tuple means "press-only — skip the EDGAR
+                      quarterly path" (used for Alphabet/Amazon/Microsoft
+                      under the GPU tab where the in-house silicon revenue is
+                      not separately disclosed in the 10-K).
+      is_fpi       -- foreign private issuer flag. Implied by form_types
+                      containing 20-F/6-K, but explicit is friendlier for
+                      review and per-vendor branching.
+      notes        -- free-text note shown in the "states_excluded_with_reason"
+                      block when no rows materialize for the vendor.
+    """
+
+    display_name: str
+    cik: str | None
+    tab: Literal["gpu", "nics_optics", "wafer"]
+    segment: Literal["gpu", "nic", "optics", "foundry", "packaging", "equipment"]
+    form_types: tuple[str, ...] = ("10-K", "10-Q")
+    is_fpi: bool = False
+    notes: str = ""
+    # Reporting currency. Default USD. TWD applies to Taiwanese filers
+    # (TSMC, ASE Technology) whose 20-F / 6-K disclosures use New Taiwan
+    # dollars. The router converts to USD at display time using
+    # FX_TO_USD below; raw stored values stay as the extractor pulled them.
+    reporting_currency: Literal["USD", "TWD", "EUR"] = "USD"
+
+
+# Approximate FX rates for converting non-USD reporting currencies at
+# display time. Refresh annually; precision isn't critical for chart
+# trends, only for absolute readability.
+FX_TO_USD: dict[str, float] = {
+    "USD": 1.0,
+    "TWD": 1.0 / 32.0,   # ~NT$32 = US$1 as of 2026-04-30
+    "EUR": 1.07,
+}
+
+
+# Curated 17-entry vendor registry (matches docs/planning/SUPPLIER_VENDOR_SCOPE.md).
+VENDOR_FILERS: dict[str, VendorFiler] = {
+    # -- GPU Supply --------------------------------------------------------
+    "NVIDIA": VendorFiler(
+        display_name="NVIDIA",
+        cik="0001045810",
+        tab="gpu",
+        segment="gpu",
+    ),
+    "AMD": VendorFiler(
+        display_name="AMD",
+        cik="0000002488",
+        tab="gpu",
+        segment="gpu",
+    ),
+    "Intel-DCAI": VendorFiler(
+        display_name="Intel-DCAI",
+        cik="0000050863",
+        tab="gpu",
+        segment="gpu",
+        notes="Data Center & AI segment within Intel",
+    ),
+    "Alphabet": VendorFiler(
+        display_name="Alphabet",
+        cik="0001652044",
+        tab="gpu",
+        segment="gpu",
+        form_types=(),
+        notes="press-only (TPU)",
+    ),
+    "Amazon": VendorFiler(
+        display_name="Amazon",
+        cik="0001018724",
+        tab="gpu",
+        segment="gpu",
+        form_types=(),
+        notes="press-only (Trainium/Inferentia)",
+    ),
+    "Microsoft": VendorFiler(
+        display_name="Microsoft",
+        cik="0000789019",
+        tab="gpu",
+        segment="gpu",
+        form_types=(),
+        notes="press-only (Maia)",
+    ),
+
+    # -- NICs & Optics Supply ---------------------------------------------
+    "Broadcom": VendorFiler(
+        display_name="Broadcom",
+        cik="0001730168",
+        tab="nics_optics",
+        segment="nic",
+    ),
+    "Marvell": VendorFiler(
+        display_name="Marvell",
+        cik="0001835632",
+        tab="nics_optics",
+        segment="nic",
+    ),
+    "Coherent": VendorFiler(
+        display_name="Coherent",
+        # Verified 2026-04-30: 0000820318 is COHERENT CORP. (ticker COHR);
+        # the previously-stored 0001140536 maps to WILLIS TOWERS WATSON PLC.
+        cik="0000820318",
+        tab="nics_optics",
+        segment="optics",
+        notes="CIK corrected from 0001140536 (Willis Towers Watson) to 0000820318",
+    ),
+    "Lumentum": VendorFiler(
+        display_name="Lumentum",
+        cik="0001633978",
+        tab="nics_optics",
+        segment="optics",
+    ),
+    "Credo": VendorFiler(
+        display_name="Credo",
+        cik="0001807794",
+        tab="nics_optics",
+        segment="nic",
+        notes="fiscal year ends April — normalize to calendar Q in router",
+    ),
+    "Astera Labs": VendorFiler(
+        display_name="Astera Labs",
+        cik="0001736297",
+        tab="nics_optics",
+        segment="nic",
+    ),
+    "Fabrinet": VendorFiler(
+        display_name="Fabrinet",
+        cik="0001408710",
+        tab="nics_optics",
+        segment="optics",
+    ),
+
+    # -- Wafer Production & Supply ----------------------------------------
+    "TSMC": VendorFiler(
+        display_name="TSMC",
+        cik="0001046179",
+        tab="wafer",
+        segment="foundry",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+        reporting_currency="TWD",
+    ),
+    "Intel-Foundry": VendorFiler(
+        display_name="Intel-Foundry",
+        cik="0000050863",
+        tab="wafer",
+        segment="foundry",
+        notes="Intel Foundry segment (shares CIK with Intel-DCAI)",
+    ),
+    "GlobalFoundries": VendorFiler(
+        display_name="GlobalFoundries",
+        cik="0001709048",
+        tab="wafer",
+        segment="foundry",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+    ),
+    "Amkor": VendorFiler(
+        display_name="Amkor",
+        cik="0001047127",
+        tab="wafer",
+        segment="packaging",
+    ),
+    "ASE Technology": VendorFiler(
+        display_name="ASE Technology",
+        cik="0001122411",
+        tab="wafer",
+        segment="packaging",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+        reporting_currency="TWD",
+    ),
+    "ASML": VendorFiler(
+        display_name="ASML",
+        cik="0000937966",
+        tab="wafer",
+        segment="equipment",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+    ),
+    "Applied Materials": VendorFiler(
+        display_name="Applied Materials",
+        cik="0000006951",
+        tab="wafer",
+        segment="equipment",
+    ),
+}
+
+
+def _flatten_vendor_filers() -> dict[str, str | None]:
+    """Flatten VENDOR_FILERS into a name->cik map for backwards-compat callers.
+
+    Skips duplicate CIKs (first wins) so that the merge into TRACKED_FILERS
+    doesn't double-fetch Intel. Vendors with cik=None are still included so
+    callers that pre-existed `VendorFiler` see a stable shape.
+    """
+    seen: set[str] = set()
+    out: dict[str, str | None] = {}
+    for entry in VENDOR_FILERS.values():
+        if entry.cik and entry.cik in seen:
+            continue
+        if entry.cik:
+            seen.add(entry.cik)
+        out[entry.display_name] = entry.cik
+    return out
+
+
+def vendor_filers_for_tab(tab: str) -> list[VendorFiler]:
+    """Return all VendorFiler entries assigned to the given tab."""
+    return [v for v in VENDOR_FILERS.values() if v.tab == tab]
+
+
+def vendor_filer_by_cik(cik: str) -> list[VendorFiler]:
+    """Return all VendorFiler entries on a given CIK.
+
+    Returns a list because Intel (CIK 0000050863) has two registry entries
+    (Intel-DCAI on the GPU tab and Intel-Foundry on the Wafer tab).
+    """
+    return [v for v in VENDOR_FILERS.values() if v.cik == cik]
+
+
+def edgar_eligible_vendors() -> list[VendorFiler]:
+    """Vendors that the EDGAR quarterly fetcher should pull.
+
+    Excludes vendors with cik=None (no EDGAR coverage) and vendors with an
+    empty form_types tuple (press-only — Alphabet/Amazon/Microsoft under the
+    GPU tab).
+    """
+    return [v for v in VENDOR_FILERS.values() if v.cik and v.form_types]
+
+
+# Unified registry. Old constants are kept for backwards-compat callers;
+# new code should iterate TRACKED_FILERS or use the helpers above.
+TRACKED_FILERS = {**ENERGY_COMPANIES, **HYPERSCALERS, **_flatten_vendor_filers()}
+
+
+# ---------------------------------------------------------------------------
+# Per-CIK form-types map (Phase 2 AC4)
+#
+# The quarterly fetcher used to assume every filer reports on 10-K + 10-Q.
+# That silently produced 0 rows for foreign private issuers, who file 20-F
+# annually and 6-K quarterly instead. Build a map that:
+#   * defaults energy companies + hyperscalers to ("10-K", "10-Q"),
+#   * uses each VendorFiler's `form_types` for vendor CIKs (which may be
+#     ("20-F", "6-K") for FPIs, or () for press-only entries),
+#   * unions form_types across multiple vendor entries on the same CIK so
+#     Intel's shared CIK ends up listing all of {10-K, 10-Q}.
+# Empty tuples are kept (and treated as "skip" by the fetcher) so callers
+# can distinguish "no coverage" from "default coverage".
+# ---------------------------------------------------------------------------
+
+_DEFAULT_QUARTERLY_FORMS: tuple[str, ...] = ("10-K", "10-Q")
+
+
+def _build_form_types_map() -> dict[str, tuple[str, ...]]:
+    out: dict[str, tuple[str, ...]] = {}
+    # Default forms for energy + hyperscaler filers.
+    for cik in list(ENERGY_COMPANIES.values()) + list(HYPERSCALERS.values()):
+        if cik:
+            out[cik] = _DEFAULT_QUARTERLY_FORMS
+    # Vendor-specific forms; union when multiple entries share a CIK (Intel).
+    for entry in VENDOR_FILERS.values():
+        if not entry.cik:
+            continue
+        existing = out.get(entry.cik, ())
+        merged = tuple(sorted(set(existing) | set(entry.form_types)))
+        out[entry.cik] = merged
+    return out
+
+
+CIK_FORM_TYPES: dict[str, tuple[str, ...]] = _build_form_types_map()
 
 # Shared async HTTP client — created on first use, reused across calls
 _http_client: httpx.AsyncClient | None = None
@@ -380,6 +711,227 @@ async def _mine_amazon_energy_commitment_async() -> dict | None:
                 )
                 break
     return None
+
+
+# ---------------------------------------------------------------------------
+# AC1 (Phase 2): 10-K + 10-Q multi-form ingestion.
+#
+# 8-Ks are short and event-driven; 10-K/10-Q are long (50-500KB cleaned text)
+# and need chunking. We split on standard SEC section markers (Item 1, Item 7
+# MD&A, Item 8 Financial Statements, etc.); when no markers are found we fall
+# back to fixed-size 3000-char windows with 200-char overlap. Each chunk is
+# yielded as its own filing-shaped dict so the downstream LLM extractor can
+# classify and merge per chunk.
+# ---------------------------------------------------------------------------
+
+# Legacy constant retained for any external callers that imported it. New
+# code should use the per-CIK CIK_FORM_TYPES map (built above from the
+# vendor registry, energy companies, and hyperscalers).
+_QUARTERLY_FORMS = _DEFAULT_QUARTERLY_FORMS
+_ITEM_SECTION_RE = re.compile(
+    r"\bItem\s+\d+[A-Z]?\b\.?",
+    re.IGNORECASE,
+)
+
+
+def _chunk_long_filing(text: str, max_chars: int = 6000) -> list[str]:
+    """Split a long filing's cleaned text into LLM-sized chunks.
+
+    Strategy:
+      1. Split on /\bItem\s+\d+[A-Z]?\b/ markers. Group adjacent sections to
+         pack each chunk close to max_chars without exceeding it.
+      2. If fewer than 3 markers found (corrupt / non-SEC HTML), fall back
+         to fixed 3000-char windows with 200-char overlap.
+      3. Special case: if markers exist but are all clustered in the last
+         10% of the text (Intel's iXBRL 10-Q has all Items in a trailing
+         cross-reference table), the marker-based split would discard the
+         actual MD&A. Fall back to fixed-window chunking in that case.
+    """
+    if not text:
+        return []
+
+    markers = list(_ITEM_SECTION_RE.finditer(text))
+    # Detect the iXBRL-trailing-Items pattern: every marker sits in the
+    # last 10% of the text. Treat that as "no useful markers".
+    if markers and all(m.start() >= int(0.9 * len(text)) for m in markers):
+        markers = []
+
+    if len(markers) >= 3:
+        # Slice between markers
+        sections: list[str] = []
+        starts = [m.start() for m in markers] + [len(text)]
+        for i in range(len(markers)):
+            s = text[starts[i]: starts[i + 1]].strip()
+            if s:
+                sections.append(s)
+        # Pack sections into chunks
+        chunks: list[str] = []
+        buf = ""
+        for s in sections:
+            if len(buf) + len(s) + 2 <= max_chars:
+                buf = (buf + "\n\n" + s) if buf else s
+            else:
+                if buf:
+                    chunks.append(buf)
+                # If a single section itself exceeds max_chars, hard-split it
+                while len(s) > max_chars:
+                    chunks.append(s[:max_chars])
+                    s = s[max_chars - 200:]  # 200-char overlap
+                buf = s
+        if buf:
+            chunks.append(buf)
+        return chunks
+
+    # Fallback: fixed-size windows with overlap
+    window = 3000
+    overlap = 200
+    chunks = []
+    i = 0
+    while i < len(text):
+        chunks.append(text[i: i + window])
+        if i + window >= len(text):
+            break
+        i += window - overlap
+    return chunks
+
+
+async def _get_quarterly_filings(
+    cik: str,
+    company_name: str,
+    since: str,
+    allowed_forms: tuple[str, ...] = _DEFAULT_QUARTERLY_FORMS,
+) -> list[dict]:
+    """Return periodic-report filings since `since` for one CIK.
+
+    `allowed_forms` is the explicit set of SEC form codes to accept. Defaults
+    to ("10-K", "10-Q") for backwards compatibility, but callers should pass
+    the per-CIK tuple from CIK_FORM_TYPES so foreign private issuers (TSMC,
+    ASML, ASE, GlobalFoundries) get their 20-F + 6-K filings picked up. If
+    `allowed_forms` is empty the function returns [] without making a
+    submissions request — that's how press-only vendors are skipped.
+    """
+    if not allowed_forms:
+        return []
+    try:
+        data = await _get_submissions(cik)
+    except httpx.HTTPStatusError as e:
+        logger.error(
+            "edgar.quarterly_submissions_http_error",
+            extra={"cik": cik, "company": company_name, "status": e.response.status_code},
+        )
+        return []
+    except Exception as e:
+        logger.error(
+            "edgar.quarterly_submissions_error",
+            extra={"cik": cik, "company": company_name, "error": str(e)},
+        )
+        return []
+
+    f = data.get("filings", {}).get("recent", {})
+    forms = f.get("form", [])
+    dates = f.get("filingDate", [])
+    accs = f.get("accessionNumber", [])
+    docs = f.get("primaryDocument", [""] * len(forms))
+    out = []
+    for form, date, acc, doc in zip(forms, dates, accs, docs):
+        if form in allowed_forms and date >= since:
+            acc_path = acc.replace("-", "")
+            cik_num = cik.lstrip("0")
+            url = f"https://www.sec.gov/Archives/edgar/data/{cik_num}/{acc_path}/{doc}"
+            out.append({
+                "company": company_name,
+                "form": form,
+                "date": date,
+                "url": url,
+            })
+    return out
+
+
+async def _fetch_and_chunk(filing: dict) -> list[dict]:
+    """Fetch a 10-K/10-Q HTML, clean to text, return one filing-dict per chunk.
+
+    Each output dict mirrors the 8-K dict shape so it can flow through the
+    same downstream extractor — but with `chunk_index` / `chunk_count` set
+    so the merger knows which rows came from the same accession.
+    """
+    try:
+        html = await _async_fetch(filing["url"], is_json=False)
+        text = _html_to_text(html)
+    except Exception as e:
+        logger.warning(
+            "edgar.quarterly_fetch_failed",
+            extra={"url": filing["url"], "error": str(e)},
+        )
+        return []
+
+    chunks = _chunk_long_filing(text)
+    if not chunks:
+        return []
+
+    out = []
+    for idx, chunk in enumerate(chunks):
+        mw = _parse_mw_from_text(chunk)
+        out.append({
+            "source_company": filing["company"],
+            "date": filing["date"],
+            "form": filing["form"],
+            "items": "",
+            "edgar_url": filing["url"],
+            "capacity_mw": mw,
+            "excerpt": chunk[:6000],
+            "is_tech_related": True,
+            "data_source": f"SEC EDGAR {filing['form']}",
+            "confidence": 0.90,
+            "chunk_index": idx,
+            "chunk_count": len(chunks),
+        })
+    return out
+
+
+async def fetch_real_quarterly_filings_async(since: str = "2024-01-01") -> list[dict]:
+    """Fetch 10-K + 10-Q filings across TRACKED_FILERS, chunked.
+
+    Returns a flat list where each entry is one chunk. Chunks from the same
+    accession share `edgar_url` and a unique (chunk_index, chunk_count)
+    pair, letting the downstream extractor merge classification results
+    per accession.
+    """
+    cache_key = f"real_quarterly_{since.replace('-', '')}"
+    cached = _load_cache(cache_key)
+    if cached:
+        return cached
+
+    all_chunks: list[dict] = []
+    # Cap filings per company so a noisy filer can't dominate the budget.
+    PER_FILER_CAP = 6   # ≈ 1 10-K + 4 10-Qs since 2024 + buffer
+
+    for company, cik in TRACKED_FILERS.items():
+        if cik is None:
+            continue
+        # Per-CIK form-types lookup (defaults to 10-K/10-Q for energy +
+        # hyperscalers, 20-F/6-K for FPI vendors, () for press-only vendors).
+        allowed_forms = CIK_FORM_TYPES.get(cik, _DEFAULT_QUARTERLY_FORMS)
+        if not allowed_forms:
+            # Press-only vendor (e.g. Alphabet/Amazon/Microsoft as
+            # hyperscaler-silicon entries): skip the EDGAR quarterly path
+            # entirely — those are tracked via the press-release pipeline.
+            continue
+        try:
+            filings = await _get_quarterly_filings(cik, company, since, allowed_forms)
+            await asyncio.sleep(0.12)
+            for filing in filings[:PER_FILER_CAP]:
+                chunks = await _fetch_and_chunk(filing)
+                all_chunks.extend(chunks)
+                await asyncio.sleep(0.12)
+        except Exception as e:
+            logger.error(
+                "edgar.quarterly_batch_error",
+                extra={"company": company, "error": str(e)},
+            )
+            continue
+
+    _save_cache(cache_key, all_chunks)
+    return all_chunks
 
 
 def fetch_real_8k_deals(since: str = "2023-06-01") -> list[dict]:

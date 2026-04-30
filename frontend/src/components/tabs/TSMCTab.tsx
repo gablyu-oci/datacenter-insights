@@ -1,10 +1,14 @@
 import {
-  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  LineChart, Line, ResponsiveContainer,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  ResponsiveContainer,
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
-import type { TSMCResponse } from "../../types";
-import { AlertTriangle, CheckCircle } from "lucide-react";
+import type {
+  TSMCResponse,
+  VendorSupplyRow,
+  VendorTimeseriesPoint,
+} from "../../types";
+import { ExternalLink, AlertTriangle } from "lucide-react";
 import ErrorPanel from "../shared/ErrorPanel";
 import NoDataPanel from "../shared/NoDataPanel";
 import CitationFooter from "../shared/CitationFooter";
@@ -16,145 +20,282 @@ const CARD_STYLE = {
   padding: "20px",
 };
 
+const FOUNDRY_COLOR: Record<string, string> = {
+  TSMC: "#bf3030",
+  "Intel-Foundry": "#0071c5",
+  GlobalFoundries: "#0098db",
+};
+const PACKAGING_COLOR: Record<string, string> = {
+  Amkor: "#f59e0b",
+  "ASE Technology": "#22c55e",
+};
+const EQUIPMENT_COLOR: Record<string, string> = {
+  ASML: "#ec4899",
+  "Applied Materials": "#8b5cf6",
+};
+
+function formatBillions(usd: number | null | undefined) {
+  if (usd == null) return "--";
+  if (Math.abs(usd) >= 1e9) return `$${(usd / 1e9).toFixed(2)}B`;
+  return `$${(usd / 1e6).toFixed(0)}M`;
+}
+
+function buildChartData(
+  timeseries: Record<string, VendorTimeseriesPoint[]>,
+  vendors: string[]
+) {
+  const periodSet = new Set<string>();
+  for (const v of vendors) {
+    const series = timeseries[v] || [];
+    for (const p of series) {
+      const key = p.period_end || p.filing_date;
+      if (key) periodSet.add(key);
+    }
+  }
+  const periods = Array.from(periodSet).sort();
+  return periods.map((period) => {
+    const row: Record<string, number | string> = { period };
+    for (const v of vendors) {
+      const series = timeseries[v] || [];
+      const pt = series.find((p) => (p.period_end || p.filing_date) === period);
+      if (pt && pt.revenue_usd != null) row[v] = pt.revenue_usd / 1e9;
+    }
+    return row;
+  });
+}
+
+function latestRow(rows: VendorSupplyRow[] | undefined, vendor: string) {
+  if (!rows) return null;
+  const sub = rows
+    .filter((r) => r.company === vendor && r.revenue_usd != null)
+    .sort((a, b) => (a.period_end || a.filing_date || "").localeCompare(b.period_end || b.filing_date || ""));
+  return sub[sub.length - 1] ?? null;
+}
+
+interface SubPanelProps {
+  title: string;
+  description: string;
+  rows: VendorSupplyRow[];
+  timeseries: Record<string, VendorTimeseriesPoint[]>;
+  colorMap: Record<string, string>;
+  citationSource: string;
+}
+
+function SubPanel({ title, description, rows, timeseries, colorMap, citationSource }: SubPanelProps & { lineage?: { retrieved_at?: string; confidence?: number; source_url?: string } | null }) {
+  const vendors = Array.from(new Set(rows.map((r) => r.company))).filter(
+    (v) => (timeseries[v] || []).length > 0
+  );
+  if (vendors.length === 0) return null;
+  const chart = buildChartData(timeseries, vendors);
+  return (
+    <div style={CARD_STYLE}>
+      <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
+        {title}
+      </h3>
+      <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>{description}</p>
+      <ResponsiveContainer width="100%" height={260}>
+        <LineChart data={chart}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
+          <XAxis dataKey="period" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `$${v}B`} />
+          <Tooltip
+            contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
+            formatter={(v: number) => `$${v.toFixed(2)}B`}
+          />
+          <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
+          {vendors.map((v) => (
+            <Line
+              key={v}
+              type="monotone"
+              dataKey={v}
+              stroke={colorMap[v] || "#3b82f6"}
+              strokeWidth={2}
+              dot={{ r: 3 }}
+              connectNulls
+            />
+          ))}
+        </LineChart>
+      </ResponsiveContainer>
+      <CitationFooter sources={[citationSource]} />
+    </div>
+  );
+}
+
 export default function TSMCTab() {
-  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<TSMCResponse>("/api/tsmc");
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage, coverage } =
+    useApi<TSMCResponse>("/api/tsmc");
 
   if (loading) return <Loader />;
-
   if (error) {
     return (
       <div style={{ padding: "24px" }}>
-        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+        <ErrorPanel
+          title={errorInfo?.title}
+          message={errorInfo?.message}
+          onRetry={retry}
+          lastAttempt={lastFetchedAt}
+        />
       </div>
     );
   }
 
-  const capacity = data?.capacity ?? [];
-  const packaging = data?.packaging ?? [];
+  const timeseries = data?.timeseries ?? {};
+  const foundryRows = (data?.capacity ?? []) as VendorSupplyRow[];
+  const packagingRows = (data?.packaging ?? []) as VendorSupplyRow[];
+  const equipmentRows = (data?.equipment ?? []) as VendorSupplyRow[];
+  const filingsAudited = data?.filings_audited ?? 0;
+  const vendorsAudited = data?.vendors_audited ?? [];
+  const excluded = coverage?.states_excluded_with_reason ?? {};
 
-  const hasData = capacity.length > 0 || packaging.length > 0;
+  const allRows = [...foundryRows, ...packagingRows, ...equipmentRows];
+  const allVendorsWithSeries = Array.from(new Set(allRows.map((r) => r.company))).filter(
+    (v) => (timeseries[v] || []).length > 0
+  );
 
-  if (!hasData) {
+  if (allVendorsWithSeries.length === 0) {
     return (
-      <div style={{ padding: "24px" }}>
-        <NoDataPanel pillar="TSMC" reason="TSMC wafer production and CoWoS packaging data will be integrated in Phase 2. This will track upstream supply constraints for AI accelerators." />
+      <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <NoDataPanel
+          pillar="Wafer Production & Supply"
+          reason={
+            filingsAudited > 0
+              ? `${filingsAudited} vendor filings audited but no extractable revenue figures landed.`
+              : "Vendor-supply ingestion has not produced any extracted rows yet. Backend command: python3 -m cli vendor-supply-extract --since 2024-01-01"
+          }
+        />
+        {Object.keys(excluded).length > 0 && (
+          <CoverageGapsPanel excluded={excluded} />
+        )}
       </div>
     );
   }
 
-  const latest = capacity[capacity.length - 1];
-  const constrainedQuarters = packaging.filter((p) => p.constraint_flag).length;
+  // KPIs: latest revenue per vendor — pick top 4 by latest revenue
+  const kpiVendors = allVendorsWithSeries
+    .map((v) => ({ vendor: v, latest: latestRow(allRows, v) }))
+    .filter((x) => x.latest)
+    .sort((a, b) => (b.latest!.revenue_usd ?? 0) - (a.latest!.revenue_usd ?? 0))
+    .slice(0, 4);
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
-      {/* KPIs */}
       <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-        {[
-          { label: "3nm Wafer Starts (Q4 2024)", value: (latest?.node_3nm_wafers ?? 0).toLocaleString(), unit: "wafers/qtr", color: "#3b82f6" },
-          { label: "5nm Wafer Starts (Q4 2024)", value: (latest?.node_5nm_wafers ?? 0).toLocaleString(), unit: "wafers/qtr", color: "#06b6d4" },
-          { label: "Fab Utilization", value: `${latest?.utilization_pct ?? 0}%`, unit: "", color: (latest?.utilization_pct ?? 0) > 90 ? "#f59e0b" : "#22c55e" },
-          { label: "CoWoS Constraint Quarters", value: String(constrainedQuarters), unit: "/ 8 quarters", color: constrainedQuarters > 3 ? "#ef4444" : "#22c55e" },
-        ].map(({ label, value, unit, color }) => (
-          <div key={label} style={{ ...CARD_STYLE, flex: 1, minWidth: 150 }}>
-            <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>{label}</div>
-            <div style={{ color: "white", fontSize: "24px", fontWeight: 700 }}>
-              {value}<span style={{ color: "#64748b", fontSize: "11px", marginLeft: "4px" }}>{unit}</span>
-            </div>
-            <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: color, marginTop: "6px" }} />
-          </div>
-        ))}
-      </div>
-
-      {/* Wafer capacity by node */}
-      <div style={CARD_STYLE}>
-        <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          TSMC Wafer Capacity by Node (3nm vs 5nm)
-        </h3>
-        <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          AI accelerator supply constraint upstream -- TSMC Financial Reports
-        </p>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={capacity}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
-            <XAxis dataKey="quarter" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-            <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
-            <Tooltip
-              contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v) => Number(v).toLocaleString()}
-            />
-            <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
-            <Bar dataKey="node_3nm_wafers" name="3nm Wafers" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="node_5nm_wafers" name="5nm Wafers" fill="#06b6d4" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <CitationFooter
-          sources={["TSMC Financial Reports"]}
-          retrievedAt={lineage?.retrieved_at}
-          confidence={lineage?.confidence}
-          sourceUrl={lineage?.source_url}
-        />
-      </div>
-
-      {/* Utilization line */}
-      <div style={CARD_STYLE}>
-        <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          Fab Utilization Rate
-        </h3>
-        <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          High utilization (&gt; 90%) signals supply tightness and potential GPU shipment delays
-        </p>
-        <ResponsiveContainer width="100%" height={220}>
-          <LineChart data={capacity}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
-            <XAxis dataKey="quarter" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-            <YAxis domain={[50, 100]} tick={{ fill: "#94a3b8", fontSize: 11 }} unit="%" />
-            <Tooltip
-              contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v) => `${v}%`}
-            />
-            <Line type="monotone" dataKey="utilization_pct" name="Utilization" stroke="#f59e0b" strokeWidth={2} dot={{ r: 4 }} />
-          </LineChart>
-        </ResponsiveContainer>
-        <CitationFooter
-          sources={["TSMC Financial Reports"]}
-          retrievedAt={lineage?.retrieved_at}
-          confidence={lineage?.confidence}
-          sourceUrl={lineage?.source_url}
-        />
-      </div>
-
-      {/* CoWoS packaging constraints */}
-      <div style={CARD_STYLE}>
-        <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 12px" }}>
-          CoWoS Advanced Packaging -- Constraint Signals
-        </h3>
-        <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-          {packaging.map((p, i) => (
-            <div key={i} style={{
-              background: "#0f172a",
-              border: `1px solid ${p.constraint_flag ? "#ef4444" : "#22c55e"}`,
-              borderRadius: "8px",
-              padding: "10px 14px",
-              minWidth: "130px",
-            }}>
-              <div style={{ color: "#94a3b8", fontSize: "11px" }}>{p.quarter}</div>
-              <div style={{ color: "white", fontSize: "14px", fontWeight: 600, margin: "4px 0" }}>
-                {(p.cowos_capacity).toLocaleString()} <span style={{ color: "#64748b", fontSize: "10px" }}>units</span>
+        {kpiVendors.map(({ vendor, latest }) => {
+          const color =
+            FOUNDRY_COLOR[vendor] ||
+            PACKAGING_COLOR[vendor] ||
+            EQUIPMENT_COLOR[vendor] ||
+            "#3b82f6";
+          return (
+            <div
+              key={vendor}
+              style={{
+                ...CARD_STYLE,
+                flex: 1,
+                minWidth: 180,
+                borderLeft: `4px solid ${color}`,
+              }}
+            >
+              <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>{vendor}</div>
+              <div style={{ color: "white", fontSize: "24px", fontWeight: 700 }}>
+                {formatBillions(latest?.revenue_usd)}
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                {p.constraint_flag
-                  ? <><AlertTriangle size={12} color="#ef4444" /><span style={{ color: "#ef4444", fontSize: "11px" }}>Constrained</span></>
-                  : <><CheckCircle size={12} color="#22c55e" /><span style={{ color: "#22c55e", fontSize: "11px" }}>Normal</span></>
-                }
+              <div style={{ color: "#94a3b8", fontSize: "11px", marginTop: "2px" }}>
+                {latest?.period_end || latest?.filing_date || "--"}
+                {latest?.segment_name && (
+                  <span style={{ marginLeft: 6 }}>-- {latest.segment_name}</span>
+                )}
               </div>
             </div>
-          ))}
-        </div>
+          );
+        })}
+      </div>
+
+      <SubPanel
+        title="Foundry vendors -- Quarterly revenue"
+        description="TSMC HPC platform + Intel Foundry + GlobalFoundries. Leading-edge wafer capacity gates AI accelerator shipments."
+        rows={foundryRows}
+        timeseries={timeseries}
+        colorMap={FOUNDRY_COLOR}
+        citationSource="SEC EDGAR -- foundry 20-F / 10-K"
+        lineage={lineage}
+      />
+
+      <SubPanel
+        title="OSAT / Advanced Packaging -- Quarterly revenue"
+        description="Amkor Advanced Products + ASE LEAP. CoWoS / 2.5D / HDFO supply tracks Nvidia / AMD shipment cadence."
+        rows={packagingRows}
+        timeseries={timeseries}
+        colorMap={PACKAGING_COLOR}
+        citationSource="SEC EDGAR -- OSAT 10-K / 20-F"
+        lineage={lineage}
+      />
+
+      <SubPanel
+        title="Semiconductor equipment -- Quarterly revenue (leading indicator)"
+        description="ASML lithography + Applied Materials. Equipment orders precede foundry capacity by 6-12 months."
+        rows={equipmentRows}
+        timeseries={timeseries}
+        colorMap={EQUIPMENT_COLOR}
+        citationSource="SEC EDGAR -- equipment 10-K / 20-F"
+        lineage={lineage}
+      />
+
+      {Object.keys(excluded).length > 0 && (
+        <CoverageGapsPanel excluded={excluded} />
+      )}
+
+      <div
+        style={{
+          ...CARD_STYLE,
+          padding: "12px 20px",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+        }}
+      >
+        <ExternalLink size={14} color="#64748b" />
+        <span style={{ color: "#64748b", fontSize: "12px" }}>
+          {filingsAudited} vendor filings audited via SEC EDGAR. Vendors:{" "}
+          {vendorsAudited.join(", ") || "--"}.
+        </span>
       </div>
     </div>
   );
 }
 
+function CoverageGapsPanel({ excluded }: { excluded: Record<string, string> }) {
+  return (
+    <div style={CARD_STYLE}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+        <AlertTriangle size={16} color="#f59e0b" />
+        <h4 style={{ color: "white", fontWeight: 600, fontSize: "14px", margin: 0 }}>
+          Coverage gaps
+        </h4>
+      </div>
+      <ul style={{ margin: 0, paddingLeft: "20px", color: "#cbd5e1", fontSize: "12px", lineHeight: 1.6 }}>
+        {Object.entries(excluded).map(([vendor, reason]) => (
+          <li key={vendor}>
+            <strong style={{ color: "#e2e8f0" }}>{vendor}:</strong> {reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        height: "400px",
+        color: "#3b82f6",
+      }}
+    >
+      Loading...
+    </div>
+  );
 }

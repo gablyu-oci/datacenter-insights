@@ -34,6 +34,8 @@ from routers.agent import router as agent_router
 from routers.qa import router as qa_router
 from routers.brief import router as brief_router
 from routers.edgar_frames import router as edgar_frames_router
+from routers.anomalies import router as anomalies_router
+from routers.press_releases import router as press_releases_router
 # oci_share has a wildcard {tab} path -- register last to avoid shadowing
 from routers.oci_share import router as oci_share_router
 
@@ -133,5 +135,7 @@ app.include_router(agent_router)
 app.include_router(qa_router)
 app.include_router(brief_router)
 app.include_router(edgar_frames_router)
+app.include_router(anomalies_router)
+app.include_router(press_releases_router)
 # oci_share must be last -- its /api/{tab}/oci-share pattern is broad
 app.include_router(oci_share_router)

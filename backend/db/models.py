@@ -571,6 +571,10 @@ class EdgarExtraction(SQLModel, table=True):
     # FK lookups (populated by entity resolution after extraction)
     buyer_company_id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger))
     seller_company_id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger))
+    # Pillar tag — distinguishes 'power_contract' (existing extractor) from
+    # 'vendor_supply' (Phase 2 supplier-insights extractor). Plain VARCHAR
+    # rather than enum to keep migrations simple; routers filter on this.
+    pillar: Optional[str] = Field(default=None, max_length=32, index=True)
     created_at: datetime = Field(default_factory=_ts_now)
 
 
@@ -600,4 +604,87 @@ class BriefRun(SQLModel, table=True):
     tokens_in: Optional[int] = Field(default=None)
     tokens_out: Optional[int] = Field(default=None)
     latency_ms: Optional[int] = Field(default=None)
+    created_at: datetime = Field(default_factory=_ts_now)
+
+
+# ---------------------------------------------------------------------------
+# Anomalies -- Phase 2 WoW deviation detector (AC5)
+# ---------------------------------------------------------------------------
+
+class Anomaly(SQLModel, table=True):
+    """One row per detected anomaly: a metric whose week-over-week change
+    exceeds 2 standard deviations of the trailing 12-week distribution.
+
+    metric_kind     -- e.g. "pjm_queue_mw", "permit_filings_va", "edgar_capacity_mw"
+    dimension       -- optional sub-bucket like state code or fuel type ("ALL" if N/A)
+    period_end      -- ISO week-ending date this observation belongs to
+    value           -- the observed metric value for the week
+    baseline_mean   -- trailing-window mean (excluding the current week)
+    baseline_stddev -- trailing-window standard deviation
+    z_score         -- (value - baseline_mean) / baseline_stddev
+    direction       -- "spike" (z > 0) | "drop" (z < 0)
+    """
+    __tablename__ = "anomalies"
+    __table_args__ = (
+        UniqueConstraint(
+            "metric_kind", "dimension", "period_end",
+            name="uq_anomaly_metric_dim_period",
+        ),
+        Index("ix_anomaly_period_end", "period_end"),
+    )
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    metric_kind: str = Field(max_length=50, index=True)
+    dimension: str = Field(default="ALL", max_length=20)
+    period_end: date
+    value: float
+    baseline_mean: Optional[float] = Field(default=None)
+    baseline_stddev: Optional[float] = Field(default=None)
+    z_score: Optional[float] = Field(default=None)
+    direction: str = Field(default="spike", max_length=10)
+    sample_size: Optional[int] = Field(default=None)
+    note: Optional[str] = Field(default=None, sa_column=SAColumn(Text))
+    detected_at: datetime = Field(default_factory=_ts_now)
+    created_at: datetime = Field(default_factory=_ts_now)
+
+
+# ---------------------------------------------------------------------------
+# Press Releases -- Phase 2 IR scraper (AC3)
+# ---------------------------------------------------------------------------
+
+class PressRelease(SQLModel, table=True):
+    """IR-page press releases that mention power, datacenter, capacity, etc.
+
+    company_canon  -- canonical company name (Microsoft, Amazon, ...)
+    source_url     -- direct URL to the release (NOT the IR index)
+    published_date -- ISO date as published; falls back to retrieved_at date
+    title          -- release headline
+    summary        -- LLM- or heuristic-extracted 1-3 sentence summary
+    matched_terms  -- which keywords triggered (datacenter, power, GW, etc.)
+    """
+    __tablename__ = "press_releases"
+    __table_args__ = (
+        UniqueConstraint("source_url", name="uq_press_release_url"),
+        Index("ix_press_release_company_date", "company_canon", "published_date"),
+    )
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    company_canon: str = Field(max_length=100, index=True)
+    source_url: str = Field(max_length=1024)
+    published_date: Optional[date] = Field(default=None, index=True)
+    title: str = Field(max_length=500)
+    summary: Optional[str] = Field(default=None, sa_column=SAColumn(Text))
+    matched_terms: Optional[str] = Field(default=None, max_length=300)
+    excerpt: Optional[str] = Field(default=None, sa_column=SAColumn(Text))
+    parser_version: str = Field(default="press-v1", max_length=50)
+    retrieved_at: datetime = Field(default_factory=_ts_now)
+    # Pillar tag — see EdgarExtraction.pillar; valid values today are
+    # 'power_contract' or 'vendor_supply'.
+    pillar: Optional[str] = Field(default=None, max_length=32, index=True)
     created_at: datetime = Field(default_factory=_ts_now)

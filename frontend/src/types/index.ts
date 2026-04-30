@@ -28,38 +28,67 @@ export interface PowerTimeseriesResponse {
   colors: Record<string, string>;
 }
 
+// Vendor-supply row decoded from the JSON-packed `excerpt` column
+// (written by backend/agents/vendor_supply_extractor.py).
+export interface VendorSupplyRow {
+  company: string;
+  filing_date: string | null;
+  form_type: string | null;
+  accession_number: string | null;
+  edgar_url: string | null;
+  headline: string | null;
+  segment_name: string | null;
+  period_end: string | null;
+  revenue_usd: number | null;
+  inventory_usd: number | null;
+  purchase_commitments_usd: number | null;
+  customer_concentration_pct: number | null;
+  narrative_excerpt: string | null;
+  confidence: number | null;
+}
+
+export interface VendorTimeseriesPoint {
+  period_end: string | null;
+  filing_date: string | null;
+  segment_name: string | null;
+  revenue_usd: number | null;
+  headline: string | null;
+}
+
+// Legacy shape (still used by mock data); kept for backwards-compat.
 export interface GPUPoint { quarter: string; units: number; }
 export interface RevenuePoint { quarter: string; revenue_b: number; units_implied: number; }
 
 export interface GPUSupplyResponse {
-  shipped: GPUPoint[];
-  deployed: GPUPoint[];
-  inventory: GPUPoint[];
-  revenue_estimates: RevenuePoint[];
+  // Legacy fields (mock + still emitted as empty arrays in real-data branch)
+  shipped?: GPUPoint[];
+  deployed?: GPUPoint[];
+  inventory?: GPUPoint[] | VendorSupplyRow[];
+  revenue_estimates?: RevenuePoint[] | VendorSupplyRow[];
+  // New vendor-supply fields
+  timeseries?: Record<string, VendorTimeseriesPoint[]>;
+  vendors_audited?: string[];
+  filings_audited?: number;
 }
 
-export interface NICShipment { quarter: string; infiniband: number; ethernet: number; }
-export interface OpticsShipment { quarter: string; "400g": number; "800g": number; }
 export interface NICsOpticsResponse {
-  nic_shipments: NICShipment[];
-  optics_shipments: OpticsShipment[];
-  correlation_score: number;
+  nic_shipments?: VendorSupplyRow[];
+  optics_shipments?: VendorSupplyRow[];
+  correlation_score?: number | null;
+  timeseries?: Record<string, VendorTimeseriesPoint[]>;
+  vendors_audited?: string[];
+  filings_audited?: number;
 }
 
-export interface TSMCCapacity {
-  quarter: string;
-  node_3nm_wafers: number;
-  node_5nm_wafers: number;
-  utilization_pct: number;
-}
-export interface TSMCPackaging {
-  quarter: string;
-  cowos_capacity: number;
-  constraint_flag: boolean;
-}
 export interface TSMCResponse {
-  capacity: TSMCCapacity[];
-  packaging: TSMCPackaging[];
+  // Sub-buckets: foundry / OSAT / equipment vendors
+  capacity?: VendorSupplyRow[];
+  packaging?: VendorSupplyRow[];
+  equipment?: VendorSupplyRow[];
+  disclosures?: VendorSupplyRow[];
+  timeseries?: Record<string, VendorTimeseriesPoint[]>;
+  vendors_audited?: string[];
+  filings_audited?: number;
 }
 
 export interface PermitRecord {

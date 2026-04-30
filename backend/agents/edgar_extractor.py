@@ -18,7 +18,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from agents.edgar_agent import fetch_real_8k_deals_async
+from agents.edgar_agent import fetch_real_8k_deals_async, fetch_real_quarterly_filings_async
 from llm.client import MODELS, llm_client
 
 logger = logging.getLogger(__name__)
@@ -311,7 +311,7 @@ async def run_llm_extraction(
                     "buyer_raw": buyer,
                     "seller_raw": seller,
                     "excerpt": stored_excerpt[:2000],
-                    "parser_version": "llm-v3",
+                    "parser_version": "llm-v4-multiform",
                     "confidence": confidence,
                     "retrieved_at": datetime.utcnow(),
                     "created_at": datetime.utcnow(),
@@ -328,6 +328,203 @@ async def run_llm_extraction(
     await session.commit()
     return {
         "fetched": fetched,
+        "stored": stored,
+        "skipped": skipped,
+        "classifier_rejected": classifier_rejected,
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# AC1 (Phase 2): 10-K + 10-Q multi-form runner with per-chunk classify+merge.
+# ---------------------------------------------------------------------------
+
+def _merge_chunk_results(chunk_results: list[dict]) -> dict:
+    """Merge per-chunk LLM extraction outputs into a single per-filing record.
+
+    Rules:
+      * is_power_related = OR across chunks (any true → true).
+      * Numeric (capacity_mw): max of non-null values.
+      * Categorical (energy_source, buyer, seller, site_name, headline,
+        signing_date, counterparty): first non-null value wins.
+      * relevance_reason: the first reason from a chunk where
+        is_power_related=true; else the first reason at all.
+    """
+    merged = {
+        "is_power_related": False,
+        "relevance_reason": None,
+        "headline": None,
+        "site_name": None,
+        "capacity_mw": None,
+        "counterparty": None,
+        "signing_date": None,
+        "energy_source": None,
+        "buyer": None,
+        "seller": None,
+    }
+    positive_reason = None
+    fallback_reason = None
+    for r in chunk_results:
+        if not r:
+            continue
+        if r.get("is_power_related"):
+            merged["is_power_related"] = True
+            if positive_reason is None and r.get("relevance_reason"):
+                positive_reason = r["relevance_reason"]
+        else:
+            if fallback_reason is None and r.get("relevance_reason"):
+                fallback_reason = r["relevance_reason"]
+        # Numeric max
+        cm = r.get("capacity_mw")
+        if cm is not None:
+            if merged["capacity_mw"] is None or cm > merged["capacity_mw"]:
+                merged["capacity_mw"] = cm
+        # Categorical first-non-null
+        for k in ("headline", "site_name", "counterparty", "signing_date",
+                 "energy_source", "buyer", "seller"):
+            if merged[k] is None and r.get(k):
+                merged[k] = r[k]
+    merged["relevance_reason"] = positive_reason or fallback_reason
+    return merged
+
+
+async def run_llm_extraction_quarterly(
+    session,
+    since: str = "2024-01-01",
+    limit: int = 10,
+) -> dict:
+    """Fetch 10-K + 10-Q filings, run classify+extract per chunk, merge,
+    and upsert one row per accession into edgar_extractions.
+
+    `limit` bounds the number of distinct accessions processed (NOT chunks);
+    a 10-K split into 12 chunks counts as 1 accession.
+    """
+    all_chunks = await fetch_real_quarterly_filings_async(since)
+    fetched = len(all_chunks)
+
+    # Group chunks by edgar_url so we run the LLM per-chunk, then merge.
+    by_acc: dict[str, list[dict]] = {}
+    for c in all_chunks:
+        by_acc.setdefault(c["edgar_url"], []).append(c)
+
+    selected_urls = list(by_acc.keys())[:limit]
+
+    stored = 0
+    skipped = 0
+    classifier_rejected = 0
+    errors = 0
+
+    for url in selected_urls:
+        chunks = by_acc[url]
+        cik_padded, accession = _parse_url(url)
+        if not accession:
+            skipped += 1
+            continue
+
+        # Run LLM on each chunk
+        chunk_results: list[dict] = []
+        for chunk in chunks:
+            excerpt = chunk.get("excerpt") or ""
+            if not excerpt.strip():
+                continue
+            try:
+                extraction = await llm_client.extract(
+                    model=MODELS["extraction"],
+                    prompt_version="edgar_8k_v3",  # same prompt; works for any form
+                    input_text=SYSTEM_PREAMBLE + excerpt,
+                    schema=EDGAR_SCHEMA,
+                )
+            except Exception as exc:
+                errors += 1
+                logger.error(
+                    "edgar_extractor_quarterly.llm_call_failed",
+                    extra={"accession": accession, "chunk_index": chunk.get("chunk_index"),
+                           "error": str(exc)},
+                )
+                continue
+            chunk_results.append(extraction.result or {})
+
+        if not chunk_results:
+            skipped += 1
+            continue
+
+        merged = _merge_chunk_results(chunk_results)
+        if not merged["is_power_related"]:
+            classifier_rejected += 1
+            logger.info(
+                "edgar_extractor_quarterly.classifier_rejected",
+                extra={"accession": accession,
+                       "filer": chunks[0].get("source_company"),
+                       "form": chunks[0].get("form"),
+                       "reason": (merged.get("relevance_reason") or "")[:200]},
+            )
+            continue
+
+        filing_date = _parse_date(chunks[0].get("date"))
+        form_type = chunks[0].get("form") or "10-K"
+        buyer = merged.get("buyer") or merged.get("counterparty")
+        seller = merged.get("seller")
+        capacity_mw = merged.get("capacity_mw")
+        energy_source = merged.get("energy_source")
+        headline = (merged.get("headline") or "").strip()
+        stored_excerpt = headline if headline else (chunks[0].get("excerpt") or "")[:600]
+
+        try:
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO edgar_extractions (
+                        cik, accession_number, form_type, filing_date,
+                        edgar_url, capacity_mw, energy_source, buyer_raw,
+                        seller_raw, excerpt, parser_version, confidence,
+                        retrieved_at, created_at
+                    ) VALUES (
+                        :cik, :accession_number, :form_type, :filing_date,
+                        :edgar_url, :capacity_mw, :energy_source, :buyer_raw,
+                        :seller_raw, :excerpt, :parser_version, :confidence,
+                        :retrieved_at, :created_at
+                    )
+                    ON CONFLICT (accession_number) DO UPDATE SET
+                        form_type      = EXCLUDED.form_type,
+                        capacity_mw    = EXCLUDED.capacity_mw,
+                        energy_source  = EXCLUDED.energy_source,
+                        buyer_raw      = EXCLUDED.buyer_raw,
+                        seller_raw     = EXCLUDED.seller_raw,
+                        excerpt        = EXCLUDED.excerpt,
+                        parser_version = EXCLUDED.parser_version,
+                        confidence     = EXCLUDED.confidence,
+                        retrieved_at   = EXCLUDED.retrieved_at
+                    """
+                ),
+                {
+                    "cik": cik_padded or "",
+                    "accession_number": accession,
+                    "form_type": form_type,
+                    "filing_date": filing_date,
+                    "edgar_url": url,
+                    "capacity_mw": capacity_mw,
+                    "energy_source": energy_source,
+                    "buyer_raw": buyer,
+                    "seller_raw": seller,
+                    "excerpt": stored_excerpt[:2000],
+                    "parser_version": "llm-v4-multiform",
+                    "confidence": 0.85,
+                    "retrieved_at": datetime.utcnow(),
+                    "created_at": datetime.utcnow(),
+                },
+            )
+            stored += 1
+        except Exception as exc:
+            errors += 1
+            logger.error(
+                "edgar_extractor_quarterly.upsert_failed",
+                extra={"accession": accession, "error": str(exc)},
+            )
+
+    await session.commit()
+    return {
+        "fetched": fetched,
+        "accessions_selected": len(selected_urls),
         "stored": stored,
         "skipped": skipped,
         "classifier_rejected": classifier_rejected,

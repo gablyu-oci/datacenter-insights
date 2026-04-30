@@ -116,8 +116,80 @@ curl http://localhost:8000/api/health
 
 ## Phase Roadmap
 
-- **Phase 0** (current): Infrastructure foundation -- DB, migrations, routers, envelopes
-- **Phase 1**: Real data ingestion adapters (Aterio, EIA, RCRA, ECHO)
-- **Phase 2**: Company resolution + entity linking
-- **Phase 3**: LLM extraction agents (EDGAR, transcripts)
-- **Phase 4**: Triangulation engine + executive brief
+- **Phase 0**: Infrastructure foundation -- DB, migrations, routers, envelopes ✅
+- **Phase 1**: Real data ingestion adapters (EIA, RCRA, ECHO, PJM queue, VA / TX / NY permits) ✅
+- **Phase 1.5**: LLM extraction agents (EDGAR 8-K, weekly brief) ✅
+- **Phase 2** (April 2026, current): Multi-form EDGAR (10-K + 10-Q), expanded vendor coverage,
+  IR press-release scraper, anomaly detection, bulk PDF parsing, ERCOT + MISO + Iowa + Ohio
+  adapters, L1 triangulation UI ✅
+- **Phase 3** (planned): Paid-source integrations (Aterio, NVIDIA shipments, Coherent/Lumentum
+  order books, Shovels.ai, Planet/Maxar imagery, Bloomberg/NewsAPI)
+
+## Phase 2 — What's Ingested
+
+See `docs/planning/PHASE2_RESEARCH.md` for the canonical endpoint catalog (URLs,
+formats, env-var overrides). Highlights:
+
+### SEC EDGAR (LLM extraction)
+- **Forms**: 10-K and 10-Q (chunked on Item-section markers, `parser_version='llm-v4-multiform'`)
+- **Filers tracked** (`TRACKED_FILERS`): Microsoft, Amazon, Alphabet, Meta, Oracle, Apple,
+  Constellation, Talen, NuScale, Oklo, Vistra, NextEra, AES, Dominion, plus 5 vendor adds
+  for Phase 2: Broadcom, Coherent, Lumentum, NVIDIA, TSMC
+- **Cron**: weekly Wed 06:00 UTC (`quarterly_filings_weekly`)
+
+### IR press releases (19 companies)
+- RSS-first where available (Microsoft, Meta, Oracle, NVIDIA); Q4 Inc. / GCS-Web
+  HTML scraping otherwise. See `backend/ingestion/press_releases.py::IR_TARGETS`.
+- Filtered to releases matching `{datacenter, hyperscale, GW, MW, PPA, interconnect,
+  nuclear, SMR, colo, GPU}` keyword regex.
+- Endpoint: `GET /api/press-releases/recent?company=...&days=30&limit=50`
+- Cron: nightly (registered in `pipeline/runner.py`)
+
+### ISO / RTO interconnection queues
+- **PJM** (Phase 1.5): bulk XML feed
+- **ERCOT** (new): GIS Report — JSON listing → `doclookupId` → XLSX
+- **MISO** (new): GI Queue landing-page scrape → CDN-hosted XLSX
+
+### State permit feeds
+- **VA / TX / NY** (Phase 1.5): CKAN, TCEQ, Socrata
+- **IA** (new): Iowa SPARS Construction Permits, Socrata `8bwn-bk39`
+- **OH** (new): placeholder Socrata adapter; production Ohio EPA path requires ArcGIS Hub
+  or HTML scrape (see PHASE2_RESEARCH.md §B)
+
+### Triangulation (L1 only)
+- L1 = sites + curated_deals + edgar_extractions, computed live via `/api/triangulation/l1`
+- L2 (NVIDIA shipments), L3 (Coherent/Lumentum order books), L4 (Shovels permits) shown
+  as greyed-out "Paid data required" tiles in the UI — no fabricated numbers
+
+### Anomaly detection
+- 7 weekly time-series (PJM queue MW, per-state permits, EDGAR-extracted MW)
+- Trailing-12-week mean ± 2σ flag
+- Endpoint: `GET /api/anomalies/recent?days=30&limit=50`
+- Cron: nightly 02:30 UTC (`anomaly_detection_nightly`)
+
+### Bulk permit PDF parsing
+- 3-stage cascade: pdfplumber → tesseract OCR → Claude vision
+- 200 LLM-call cap per run, SHA-1 cache at `backend/data/cache/permit_pdf_*.json`
+- CLI: `.venv/bin/python cli.py ingest --source parse_permits --limit 500 --llm-cap 200`
+
+### Manual CLI sources
+```bash
+.venv/bin/python cli.py ingest --source <name>
+# names: edgar_quarterly, ercot, miso, iowa_permits, ohio_permits,
+#        press_releases, anomaly_detect, parse_permits
+```
+
+## Paid-source gaps (NOT in Phase 2)
+
+These are blocked on commercial procurement; surfaced in the UI with explicit
+"Paid data required" labeling rather than mock-filled:
+
+| Gap | Source | Use case |
+|---|---|---|
+| L2 triangulation | NVIDIA GPU shipments | Site-level GPU density inference |
+| L3 triangulation | Coherent / Lumentum order books | Optical interconnect demand signal |
+| L4 triangulation | Shovels.ai county building permits | Site civil-works lead indicator |
+| Licensed sites | Aterio | Authoritative datacenter inventory |
+| Entity resolution | FMP / OpenCorporates | Company canonical IDs |
+| Imagery | Planet / Maxar | Construction-progress detection |
+| News | Bloomberg / NewsAPI | Structured deal/news feed |

@@ -36,11 +36,19 @@ def cli():
     type=click.Choice([
         "aterio",
         "edgar",
+        "edgar_quarterly",
         "epa_echo",
         "tceq",
         "va_permits",
+        "iowa_permits",
+        "ohio_permits",
         "socrata_ny",
         "pjm",
+        "ercot",
+        "miso",
+        "press_releases",
+        "anomaly_detect",
+        "parse_permits",
         "seed",
         "seed_companies",
         "seed_coverage",
@@ -48,12 +56,14 @@ def cli():
     ]),
 )
 @click.option("--days-back", default=90, help="For EDGAR: how many days back to fetch")
-def ingest(source: str, days_back: int):
+@click.option("--limit", default=500, help="For parse_permits: max permits to process")
+@click.option("--llm-cap", default=200, help="For parse_permits: max LLM calls")
+def ingest(source: str, days_back: int, limit: int, llm_cap: int):
     """Run a one-time ingestion for the specified source."""
-    asyncio.run(_run_ingest(source, days_back))
+    asyncio.run(_run_ingest(source, days_back, limit, llm_cap))
 
 
-async def _run_ingest(source: str, days_back: int):
+async def _run_ingest(source: str, days_back: int, limit: int = 500, llm_cap: int = 200):
     from db.session import async_session_factory
 
     async with async_session_factory() as session:
@@ -161,6 +171,99 @@ async def _run_ingest(source: str, days_back: int):
             result = await adapter.run(session)
             await session.commit()
             logger.info("PJM ingestion complete: %s", result)
+
+        elif source == "ercot":
+            from ingestion.iso.ercot import ErcotIsoAdapter
+            adapter = ErcotIsoAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("ERCOT ingestion complete: %s", result)
+
+        elif source == "miso":
+            from ingestion.iso.miso import MisoIsoAdapter
+            adapter = MisoIsoAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("MISO ingestion complete: %s", result)
+
+        elif source == "iowa_permits":
+            from ingestion.permits_state.iowa import IowaPermitAdapter
+            adapter = IowaPermitAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("Iowa permits ingestion complete: %s", result)
+
+        elif source == "ohio_permits":
+            from ingestion.permits_state.ohio import OhioPermitAdapter
+            adapter = OhioPermitAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("Ohio permits ingestion complete: %s", result)
+
+        elif source == "edgar_quarterly":
+            from agents.edgar_extractor import run_llm_extraction_quarterly
+            result = await run_llm_extraction_quarterly(session, days_back=days_back)
+            await session.commit()
+            logger.info("EDGAR quarterly (10-K + 10-Q) ingestion complete: %s", result)
+
+        elif source == "press_releases":
+            from ingestion.press_releases import PressReleaseAdapter
+            adapter = PressReleaseAdapter()
+            result = await adapter.run(session)
+            await session.commit()
+            logger.info("Press release ingestion complete: %s", result)
+
+        elif source == "anomaly_detect":
+            from agents.anomaly_detector import detect_anomalies
+            result = await detect_anomalies(session)
+            await session.commit()
+            logger.info("Anomaly detection complete: %s", result)
+
+        elif source == "parse_permits":
+            from ingestion.bulk_pdf_runner import run_bulk_pdf_parse
+            result = await run_bulk_pdf_parse(session, limit=limit, llm_call_cap=llm_cap)
+            await session.commit()
+            logger.info("Bulk PDF parse complete: %s", result)
+
+
+# ---------------------------------------------------------------------------
+# vendor-supply-extract command (Phase 2 — Supplier Insights AC3 + AC5)
+#
+# Runs the parallel vendor-supply LLM extractor over EDGAR-eligible vendors
+# (the curated registry in agents/edgar_agent.py::VENDOR_FILERS, restricted
+# to entries with a CIK and non-empty form_types). Distinct from the power
+# extractor (`ingest --source edgar_quarterly`): rows land with
+# pillar='vendor_supply' and parser_version='vendor_supply_v1'.
+# ---------------------------------------------------------------------------
+
+@cli.command(name="vendor-supply-extract")
+@click.option(
+    "--since",
+    default="2024-01-01",
+    help="ISO date floor for filings (default 2024-01-01).",
+)
+@click.option(
+    "--limit",
+    default=None,
+    type=int,
+    help="Cap on distinct accessions across all vendors (default no cap).",
+)
+def vendor_supply_extract(since: str, limit: int | None):
+    """Run the LLM vendor-supply extractor over EDGAR-eligible vendors."""
+    asyncio.run(_run_vendor_supply_extract(since, limit))
+
+
+async def _run_vendor_supply_extract(since: str, limit: int | None):
+    from db.session import async_session_factory
+    from agents.vendor_supply_extractor import run_vendor_supply_extraction
+
+    async with async_session_factory() as session:
+        counters = await run_vendor_supply_extraction(
+            session, since=since, limit=limit
+        )
+    print("vendor-supply-extract counters:")
+    for k, v in counters.items():
+        print(f"  {k}: {v}")
 
 
 # ---------------------------------------------------------------------------

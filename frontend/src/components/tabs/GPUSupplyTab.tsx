@@ -1,10 +1,10 @@
 import {
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
-import type { GPUSupplyResponse } from "../../types";
-import { ExternalLink, TrendingUp } from "lucide-react";
+import type { GPUSupplyResponse, VendorTimeseriesPoint } from "../../types";
+import { ExternalLink, AlertTriangle } from "lucide-react";
 import ErrorPanel from "../shared/ErrorPanel";
 import NoDataPanel from "../shared/NoDataPanel";
 import CitationFooter from "../shared/CitationFooter";
@@ -16,142 +16,224 @@ const CARD_STYLE = {
   padding: "20px",
 };
 
+const VENDOR_COLOR: Record<string, string> = {
+  NVIDIA: "#76b900",
+  AMD: "#ed1c24",
+  "Intel-DCAI": "#0071c5",
+};
+
+function formatBillions(usd: number | null | undefined) {
+  if (usd == null) return "--";
+  return `$${(usd / 1e9).toFixed(1)}B`;
+}
+
+function buildChartData(timeseries: Record<string, VendorTimeseriesPoint[]>) {
+  const periodSet = new Set<string>();
+  for (const series of Object.values(timeseries)) {
+    for (const p of series) {
+      const key = p.period_end || p.filing_date;
+      if (key) periodSet.add(key);
+    }
+  }
+  const periods = Array.from(periodSet).sort();
+  return periods.map((period) => {
+    const row: Record<string, number | string> = { period };
+    for (const [vendor, series] of Object.entries(timeseries)) {
+      const pt = series.find((p) => (p.period_end || p.filing_date) === period);
+      if (pt && pt.revenue_usd != null) {
+        row[vendor] = pt.revenue_usd / 1e9;  // billions
+      }
+    }
+    return row;
+  });
+}
+
 export default function GPUSupplyTab() {
-  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<GPUSupplyResponse>("/api/gpu/supply");
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage, coverage } =
+    useApi<GPUSupplyResponse>("/api/gpu/supply");
 
   if (loading) return <Loader />;
-
   if (error) {
     return (
       <div style={{ padding: "24px" }}>
-        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+        <ErrorPanel
+          title={errorInfo?.title}
+          message={errorInfo?.message}
+          onRetry={retry}
+          lastAttempt={lastFetchedAt}
+        />
       </div>
     );
   }
 
-  const shipped = data?.shipped ?? [];
-  const deployed = data?.deployed ?? [];
-  const inventory = data?.inventory ?? [];
-  const revenue = data?.revenue_estimates ?? [];
+  const timeseries = data?.timeseries ?? {};
+  const vendors = Object.keys(timeseries);
+  const filingsAudited = data?.filings_audited ?? 0;
+  const vendorsAudited = data?.vendors_audited ?? [];
+  const excluded = coverage?.states_excluded_with_reason ?? {};
 
-  // Check if there is actually any data
-  const hasData = shipped.length > 0 || deployed.length > 0 || revenue.length > 0;
-
-  if (!hasData) {
+  if (vendors.length === 0) {
     return (
-      <div style={{ padding: "24px" }}>
-        <NoDataPanel pillar="GPU Supply" reason="GPU supply chain data will be integrated in Phase 2. This will include NVIDIA earnings-derived shipment estimates and deployment proxies." />
+      <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "16px" }}>
+        <NoDataPanel
+          pillar="GPU Supply"
+          reason={
+            filingsAudited > 0
+              ? `${filingsAudited} vendor filings audited but no extractable Data Center segment-revenue figures landed.`
+              : "Vendor-supply ingestion has not produced any extracted rows yet. Backend command: python3 -m cli vendor-supply-extract --since 2024-01-01"
+          }
+        />
+        {Object.keys(excluded).length > 0 && (
+          <CoverageGapsPanel excluded={excluded} />
+        )}
       </div>
     );
   }
 
-  // Merge shipped/deployed/inventory for area chart
-  const combined = shipped.map((s, i) => ({
-    quarter: s.quarter,
-    Shipped: s.units,
-    Deployed: deployed[i]?.units ?? 0,
-    Inventory: inventory[i]?.units ?? 0,
-  }));
+  const chartData = buildChartData(timeseries);
 
-  const latestShipped = (shipped[shipped.length - 1]?.units ?? 0).toLocaleString();
-  const latestDeployed = (deployed[deployed.length - 1]?.units ?? 0).toLocaleString();
-  const latestGap = ((shipped[shipped.length - 1]?.units ?? 0) - (deployed[deployed.length - 1]?.units ?? 0)).toLocaleString();
-  const latestRev = revenue[revenue.length - 1]?.revenue_b ?? 0;
+  // KPIs: latest revenue per vendor
+  const kpis = vendors.map((v) => {
+    const series = timeseries[v];
+    const latest = series.length > 0 ? series[series.length - 1] : null;
+    return {
+      vendor: v,
+      latestRev: latest?.revenue_usd,
+      latestPeriod: latest?.period_end || latest?.filing_date,
+      pointCount: series.length,
+    };
+  });
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
       {/* KPIs */}
       <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
-        {[
-          { label: "GPUs Shipped (cumulative)", value: latestShipped, sub: "Q4 2024 estimate" },
-          { label: "GPUs Deployed (active)", value: latestDeployed, sub: "Via NIC/optics proxy" },
-          { label: "Inventory Gap", value: latestGap, sub: "Shipped - deployed" },
-          { label: "NVIDIA AI Revenue", value: `$${latestRev}B`, sub: "Latest quarter" },
-        ].map(({ label, value, sub }) => (
-          <div key={label} style={{ ...CARD_STYLE, flex: 1, minWidth: 150 }}>
-            <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>{label}</div>
-            <div style={{ color: "white", fontSize: "24px", fontWeight: 700 }}>{value}</div>
-            <div style={{ color: "#22c55e", fontSize: "11px", marginTop: "2px" }}>{sub}</div>
+        {kpis.map(({ vendor, latestRev, latestPeriod, pointCount }) => (
+          <div
+            key={vendor}
+            style={{
+              ...CARD_STYLE,
+              flex: 1,
+              minWidth: 180,
+              borderLeft: `4px solid ${VENDOR_COLOR[vendor] || "#3b82f6"}`,
+            }}
+          >
+            <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>
+              {vendor} Data Center segment
+            </div>
+            <div style={{ color: "white", fontSize: "24px", fontWeight: 700 }}>
+              {formatBillions(latestRev)}
+            </div>
+            <div style={{ color: "#94a3b8", fontSize: "11px", marginTop: "2px" }}>
+              {latestPeriod ?? "--"} -- {pointCount} quarter{pointCount !== 1 ? "s" : ""} on file
+            </div>
           </div>
         ))}
       </div>
 
-      {/* Shipped vs Deployed area chart */}
+      {/* Per-vendor revenue timeseries */}
       <div style={CARD_STYLE}>
         <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 4px" }}>
-          GPU Shipments vs Deployments
+          Data Center Segment Revenue by Vendor
         </h3>
         <p style={{ color: "#64748b", fontSize: "12px", margin: "0 0 16px" }}>
-          Cumulative units -- inventory gap represents shipped but not yet active GPUs
+          Extracted from SEC EDGAR 10-K / 10-Q quarterly filings. Y axis: $-billions.
         </p>
-        <ResponsiveContainer width="100%" height={280}>
-          <AreaChart data={combined}>
+        <ResponsiveContainer width="100%" height={320}>
+          <LineChart data={chartData}>
             <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
-            <XAxis dataKey="quarter" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-            <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
+            <XAxis dataKey="period" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+            <YAxis
+              tick={{ fill: "#94a3b8", fontSize: 11 }}
+              tickFormatter={(v) => `$${v}B`}
+            />
             <Tooltip
-              contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-              formatter={(v) => Number(v).toLocaleString()}
+              contentStyle={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: "8px",
+              }}
+              formatter={(v: number) => `$${v.toFixed(2)}B`}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
-            <Area type="monotone" dataKey="Shipped" stroke="#3b82f6" fill="#3b82f620" strokeWidth={2} />
-            <Area type="monotone" dataKey="Deployed" stroke="#22c55e" fill="#22c55e20" strokeWidth={2} />
-            <Area type="monotone" dataKey="Inventory" stroke="#f59e0b" fill="#f59e0b20" strokeWidth={2} strokeDasharray="5 5" />
-          </AreaChart>
+            {vendors.map((v) => (
+              <Line
+                key={v}
+                type="monotone"
+                dataKey={v}
+                stroke={VENDOR_COLOR[v] || "#3b82f6"}
+                strokeWidth={2}
+                dot={{ r: 3 }}
+                connectNulls
+              />
+            ))}
+          </LineChart>
         </ResponsiveContainer>
         <CitationFooter
-          sources={["NVIDIA Earnings Transcripts"]}
+          sources={["SEC EDGAR — vendor 10-K / 10-Q filings"]}
           retrievedAt={lineage?.retrieved_at}
           confidence={lineage?.confidence}
           sourceUrl={lineage?.source_url}
         />
       </div>
 
-      {/* Revenue to unit inference */}
-      <div style={CARD_STYLE}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "16px" }}>
-          <div>
-            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
-              Revenue to Unit Inference (NVIDIA AI Data Center)
-            </h3>
-            <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              Implied GPU units derived from revenue / estimated ASP -- Earnings Parsing Agent
-            </p>
-          </div>
-          <TrendingUp size={18} color="#f59e0b" />
-        </div>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={revenue}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" />
-            <XAxis dataKey="quarter" tick={{ fill: "#94a3b8", fontSize: 11 }} />
-            <YAxis yAxisId="left" tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `$${v}B`} />
-            <YAxis yAxisId="right" orientation="right" tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `${(v / 1000).toFixed(0)}k`} />
-            <Tooltip
-              contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-            />
-            <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
-            <Bar yAxisId="left" dataKey="revenue_b" name="Revenue ($B)" fill="#f59e0b" radius={[4, 4, 0, 0]} />
-            <Bar yAxisId="right" dataKey="units_implied" name="Implied Units" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
-        <CitationFooter
-          sources={["NVIDIA Financial Filings"]}
-          retrievedAt={lineage?.retrieved_at}
-          confidence={lineage?.confidence}
-          sourceUrl={lineage?.source_url}
-        />
-      </div>
+      {/* Coverage gaps */}
+      {Object.keys(excluded).length > 0 && (
+        <CoverageGapsPanel excluded={excluded} />
+      )}
 
-      <div style={{ ...CARD_STYLE, padding: "12px 20px", display: "flex", alignItems: "center", gap: "8px" }}>
+      {/* Audit footer */}
+      <div
+        style={{
+          ...CARD_STYLE,
+          padding: "12px 20px",
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+        }}
+      >
         <ExternalLink size={14} color="#64748b" />
         <span style={{ color: "#64748b", fontSize: "12px" }}>
-          GPU shipment data inferred from NVIDIA earnings transcripts and financial filings. Unit estimates use avg ASP model. Confidence: 0.91.
+          {filingsAudited} vendor filings audited via SEC EDGAR. Vendors:{" "}
+          {vendorsAudited.join(", ") || "--"}.
         </span>
       </div>
     </div>
   );
 }
 
+function CoverageGapsPanel({ excluded }: { excluded: Record<string, string> }) {
+  return (
+    <div style={CARD_STYLE}>
+      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "12px" }}>
+        <AlertTriangle size={16} color="#f59e0b" />
+        <h4 style={{ color: "white", fontWeight: 600, fontSize: "14px", margin: 0 }}>
+          Coverage gaps
+        </h4>
+      </div>
+      <ul style={{ margin: 0, paddingLeft: "20px", color: "#cbd5e1", fontSize: "12px", lineHeight: 1.6 }}>
+        {Object.entries(excluded).map(([vendor, reason]) => (
+          <li key={vendor}>
+            <strong style={{ color: "#e2e8f0" }}>{vendor}:</strong> {reason}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "center",
+        alignItems: "center",
+        height: "400px",
+        color: "#3b82f6",
+      }}
+    >
+      Loading...
+    </div>
+  );
 }

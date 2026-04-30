@@ -56,6 +56,16 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=6, minute=0),              # 0 6 * * *
         "phase": 1,
     },
+    "quarterly_filings_weekly": {
+        "adapter": "edgar_quarterly",
+        "trigger": CronTrigger(day_of_week="wed", hour=6, minute=0),  # 0 6 * * 3
+        "phase": 2,
+    },
+    "anomaly_detection_nightly": {
+        "adapter": "_anomaly_detection",
+        "trigger": CronTrigger(hour=2, minute=30),              # 30 2 * * *
+        "phase": 2,
+    },
     "permits_state_daily": {
         "adapter": "permits_state",
         "trigger": CronTrigger(hour=7, minute=0),                # 0 7 * * *
@@ -98,6 +108,16 @@ JOB_CONFIG: dict[str, dict] = {
 async def run_edgar_job() -> None:
     """Scheduled job: fetch recent EDGAR filings."""
     await _run_adapter_job("edgar", _invoke_edgar)
+
+
+async def run_edgar_quarterly_job() -> None:
+    """Scheduled job: fetch recent 10-K + 10-Q filings (chunked, multi-form)."""
+    await _run_adapter_job("edgar_quarterly", _invoke_edgar_quarterly)
+
+
+async def run_anomaly_detection_job() -> None:
+    """Scheduled job: detect WoW anomalies (±2σ) and persist into anomalies table."""
+    await _run_adapter_job("_anomaly_detection", _invoke_anomaly_detection)
 
 
 async def run_permits_weekly_job() -> None:
@@ -180,6 +200,30 @@ async def _invoke_edgar(session) -> dict:
     return result
 
 
+async def _invoke_edgar_quarterly(session) -> dict:
+    """Fetch 10-K + 10-Q filings across all TRACKED_FILERS, chunked, with merge."""
+    from agents.edgar_extractor import run_llm_extraction_quarterly
+    result = await run_llm_extraction_quarterly(session, days_back=14)
+    await session.commit()
+    return {
+        "fetched": result.get("fetched", 0),
+        "stored": result.get("stored", 0),
+        "skipped": result.get("skipped", 0),
+    }
+
+
+async def _invoke_anomaly_detection(session) -> dict:
+    """Run trailing-12-week ±2σ anomaly detector."""
+    from agents.anomaly_detector import detect_anomalies
+    result = await detect_anomalies(session)
+    await session.commit()
+    return {
+        "fetched": result.get("metrics_evaluated", 0),
+        "stored": result.get("anomalies_recorded", 0),
+        "skipped": 0,
+    }
+
+
 async def _invoke_permits_state(session) -> dict:
     # Phase 1A only has VA; future phases add more states
     try:
@@ -260,6 +304,8 @@ async def _invoke_weekly_brief(session) -> dict:
 
 _JOB_FUNCTIONS: dict[str, callable] = {
     "edgar_daily": run_edgar_job,
+    "quarterly_filings_weekly": run_edgar_quarterly_job,
+    "anomaly_detection_nightly": run_anomaly_detection_job,
     "permits_state_daily": run_permits_weekly_job,
     "permits_air_daily": run_epa_echo_job,
     "coverage_refresh": run_coverage_refresh_job,
@@ -298,12 +344,24 @@ def create_scheduler() -> AsyncIOScheduler:
         if fn is None:
             logger.warning("No function registered for job '%s', skipping", job_id)
             continue
+        # Weekly + quarterly jobs need a far longer grace window: if the
+        # backend was down on a Sunday or Wednesday morning, a 1-hour grace
+        # would silently drop the run forever (this is the AC7 weekly_brief
+        # bug). 24h grace + coalesce=True means we still fire once at the
+        # next opportunity.
+        if job_id in ("weekly_brief", "quarterly_filings_weekly"):
+            grace = 86400
+            coalesce = True
+        else:
+            grace = 3600
+            coalesce = True
         sched.add_job(
             fn,
             trigger=config["trigger"],
             id=job_id,
             replace_existing=True,
-            misfire_grace_time=3600,  # 1-hour grace for misfired jobs
+            misfire_grace_time=grace,
+            coalesce=coalesce,
         )
 
     return sched
