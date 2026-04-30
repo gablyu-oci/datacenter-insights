@@ -110,7 +110,7 @@ export default function TabNav({ active, onChange }: TabNavProps) {
         >
           <Package size={14} />
           Supplier Insights
-          {BADGE(false)}
+          {BADGE(SUPPLIER_TABS.every(t => t.real))}
           <ChevronDown
             size={12}
             style={{ marginLeft: 2, transition: "transform 0.15s", transform: supplierOpen ? "rotate(180deg)" : "rotate(0deg)" }}
