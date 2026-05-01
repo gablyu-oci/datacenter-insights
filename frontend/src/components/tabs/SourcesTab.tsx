@@ -334,10 +334,12 @@ export default function SourcesTab() {
 
   // Map source-name -> total_records_stored so per-agent cards can show
   // a useful "records" count even though /api/sources/ doesn't put it on
-  // the agent rows directly.
-  const recordsByAgentName = new Map<string, number>(
-    sources.map(r => [r.name, r.total_records_stored ?? 0]),
-  );
+  // the agent rows directly. Source rows can repeat the same name across
+  // multiple versions (epa_echo v1.0/v1.1/v1.2), so SUM by name.
+  const recordsByAgentName = sources.reduce<Map<string, number>>((acc, r) => {
+    acc.set(r.name, (acc.get(r.name) ?? 0) + (r.total_records_stored ?? 0));
+    return acc;
+  }, new Map<string, number>());
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -445,7 +447,7 @@ export default function SourcesTab() {
               const lastRunStr = lastRun ? lastRun.split("T")[0] : "--";
               const runCount = s.run_count ?? null;
               return (
-                <div key={s.name} style={{
+                <div key={`${s.name}@${s.version ?? "unversioned"}`} style={{
                   background: "#0f172a",
                   borderRadius: "8px",
                   padding: "14px 16px",
