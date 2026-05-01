@@ -146,11 +146,24 @@ async def get_company(id: int, db: AsyncSession = Depends(get_db)):
 
 @router.get("/{id}/role-summary")
 async def company_role_summary(id: int, db: AsyncSession = Depends(get_db)):
-    """Group associations by role, per role return site_count and mw_total."""
+    """Group associations by role, per role return site_count and mw_total.
+
+    Rolls up child companies (parent_company_id == id) into the parent's
+    view so e.g. Amazon (id=2) reflects Amazon Web Services (id=23) in
+    addition to its own associations. Walks one level of parent_company_id
+    -- depth=1 covers the actual parent/child relationships in the DB
+    today (Amazon/AWS, Alphabet/Google Cloud, etc.).
+    """
     # Verify company exists
     exists = (await db.execute(select(Company.id).where(Company.id == id))).scalar_one_or_none()
     if exists is None:
         raise HTTPException(status_code=404, detail=f"Company {id} not found")
+
+    # Resolve self + child company ids (depth=1)
+    child_ids = (await db.execute(
+        select(Company.id).where(Company.parent_company_id == id)
+    )).scalars().all()
+    company_ids = [id] + list(child_ids)
 
     stmt = (
         select(
@@ -159,7 +172,7 @@ async def company_role_summary(id: int, db: AsyncSession = Depends(get_db)):
             func.coalesce(func.sum(Site.power_capacity_mw), 0).label("mw_total"),
         )
         .outerjoin(Site, SiteCompanyAssociation.site_id == Site.id)
-        .where(SiteCompanyAssociation.company_id == id)
+        .where(SiteCompanyAssociation.company_id.in_(company_ids))
         .group_by(SiteCompanyAssociation.role)
         .order_by(SiteCompanyAssociation.role)
     )
@@ -190,8 +203,15 @@ async def company_sites(
     if exists is None:
         raise HTTPException(status_code=404, detail=f"Company {id} not found")
 
+    # Resolve self + child company ids (depth=1) so /sites rolls up child
+    # companies into the parent view -- mirrors the role-summary fix.
+    child_ids = (await db.execute(
+        select(Company.id).where(Company.parent_company_id == id)
+    )).scalars().all()
+    company_ids = [id] + list(child_ids)
+
     sub = select(SiteCompanyAssociation.site_id).where(
-        SiteCompanyAssociation.company_id == id
+        SiteCompanyAssociation.company_id.in_(company_ids)
     )
     if role:
         sub = sub.where(SiteCompanyAssociation.role == role)
@@ -202,7 +222,7 @@ async def company_sites(
     # de-duplicates via `Site.id.in_(sub)`; the count must match.
     count_query = (
         select(func.count(func.distinct(SiteCompanyAssociation.site_id)))
-        .where(SiteCompanyAssociation.company_id == id)
+        .where(SiteCompanyAssociation.company_id.in_(company_ids))
     )
     if role:
         count_query = count_query.where(SiteCompanyAssociation.role == role)

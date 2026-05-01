@@ -56,9 +56,9 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=6, minute=0),              # 0 6 * * *
         "phase": 1,
     },
-    "quarterly_filings_weekly": {
+    "quarterly_filings_daily": {
         "adapter": "edgar_quarterly",
-        "trigger": CronTrigger(day_of_week="wed", hour=6, minute=0),  # 0 6 * * 3
+        "trigger": CronTrigger(hour=6, minute=15),               # 15 6 * * *
         "phase": 2,
     },
     "anomaly_detection_nightly": {
@@ -71,13 +71,13 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=7, minute=0),                # 0 7 * * *
         "phase": 1,
     },
-    # Karan-fixes AC3 -- county-level US building-permit ingestion
-    # (Loudoun VA + Mesa AZ + Grant County WA placeholder). Runs Mondays
-    # 06:00 UTC; each adapter is independent so one failure does not
-    # block the others.
-    "county_permits_weekly": {
+    # Karan round-2: daily county-level US building-permit ingestion
+    # (Loudoun VA + Mesa AZ + Grant County WA placeholder + Tier-1
+    # expansion). Each adapter is independent so one failure does not
+    # block the others. Daily so new permits are picked up within ~24h.
+    "county_permits_daily": {
         "adapter": "permits_county",
-        "trigger": CronTrigger(day_of_week="mon", hour=6, minute=0),  # 0 6 * * 1
+        "trigger": CronTrigger(hour=6, minute=30),               # 30 6 * * *
         "phase": 2,
     },
     "permits_air_daily": {

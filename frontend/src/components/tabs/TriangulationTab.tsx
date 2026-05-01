@@ -10,6 +10,7 @@
  *
  * Endpoints: GET /api/triangulation/l1, GET /api/triangulation/l2
  */
+import { useMemo, useState } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   ResponsiveContainer,
@@ -69,12 +70,19 @@ const CARD_STYLE = {
   padding: "20px",
 } as const;
 
-const LAYERS = [
-  { layer: "L1", label: "Contracted Power",     desc: "GW signed with utilities (sites + curated deals + EDGAR)",   status: "live"    },
-  { layer: "L2", label: "GPU Compute Demand",   desc: "NVIDIA DC revenue × unit economics (modelled — see assumptions)", status: "modelled" },
-  { layer: "L3", label: "NIC/Optics Signals",   desc: "Coherent / Lumentum order books — paid data",                  status: "blocked" },
-  { layer: "L4", label: "Permit Ground Truth",  desc: "County-level construction permits — paid data",                status: "blocked" },
+const LAYERS: Array<{
+  layer: string; label: string; desc: string; status: "live" | "modelled" | "blocked"; anchor?: string;
+}> = [
+  { layer: "L1", label: "Contracted Power",     desc: "GW signed with utilities (sites + curated deals + EDGAR)",         status: "live",     anchor: "l1-section" },
+  { layer: "L2", label: "GPU Compute Demand",   desc: "NVIDIA DC revenue × unit economics (modelled — see assumptions)",  status: "modelled", anchor: "l2-section" },
+  { layer: "L3", label: "NIC/Optics Signals",   desc: "Coherent / Lumentum order books — paid data",                      status: "blocked" },
+  { layer: "L4", label: "Permit Ground Truth",  desc: "County-level construction permits — paid data",                    status: "blocked" },
 ];
+
+function scrollToAnchor(id: string) {
+  const el = document.getElementById(id);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
 export default function TriangulationTab() {
   const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } =
@@ -125,7 +133,7 @@ export default function TriangulationTab() {
             "Layer 1 (Contracted Power) is computed from sites.power_capacity_mw + curated_deals.capacity_mw + edgar_extractions.capacity_mw, deduplicated by (company, state). Layers 2–4 require paid data sources not yet procured."}
         </p>
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
-          {LAYERS.map(({ layer, label, desc, status }) => {
+          {LAYERS.map(({ layer, label, desc, status, anchor }) => {
             const isLive = status === "live";
             const isModelled = status === "modelled";
             const accent = isLive ? "#22c55e" : isModelled ? "#eab308" : "#334155";
@@ -135,16 +143,29 @@ export default function TriangulationTab() {
                 : isModelled
                   ? "live (modelled — see assumptions)"
                   : "Paid data required";
+            const clickable = !!anchor;
             return (
-              <div key={layer} style={{
-                background: "#0f172a",
-                border: `1px solid ${accent}`,
-                borderRadius: "8px",
-                padding: "12px 16px",
-                flex: 1,
-                minWidth: 180,
-                opacity: isLive || isModelled ? 1 : 0.55,
-              }}>
+              <div
+                key={layer}
+                onClick={clickable ? () => scrollToAnchor(anchor!) : undefined}
+                title={clickable ? `Scroll to ${label}` : undefined}
+                role={clickable ? "button" : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onKeyDown={clickable ? (e) => { if (e.key === "Enter" || e.key === " ") scrollToAnchor(anchor!); } : undefined}
+                style={{
+                  background: "#0f172a",
+                  border: `1px solid ${accent}`,
+                  borderRadius: "8px",
+                  padding: "12px 16px",
+                  flex: 1,
+                  minWidth: 180,
+                  opacity: isLive || isModelled ? 1 : 0.55,
+                  cursor: clickable ? "pointer" : "default",
+                  transition: "transform 0.1s, box-shadow 0.1s",
+                }}
+                onMouseEnter={clickable ? (e) => { (e.currentTarget as HTMLDivElement).style.transform = "translateY(-1px)"; (e.currentTarget as HTMLDivElement).style.boxShadow = `0 4px 12px ${accent}33`; } : undefined}
+                onMouseLeave={clickable ? (e) => { (e.currentTarget as HTMLDivElement).style.transform = ""; (e.currentTarget as HTMLDivElement).style.boxShadow = ""; } : undefined}
+              >
                 <div style={{
                   display: "flex", alignItems: "center", gap: "6px", marginBottom: "4px",
                 }}>
@@ -161,6 +182,9 @@ export default function TriangulationTab() {
                   }}>
                     {labelText}
                   </span>
+                  {clickable && (
+                    <span style={{ color: "#64748b", fontSize: "10px", marginLeft: "auto" }}>↓ click</span>
+                  )}
                 </div>
                 <div style={{ color: "white", fontSize: "13px", fontWeight: 600 }}>{label}</div>
                 <div style={{ color: "#64748b", fontSize: "11px", marginTop: "2px" }}>{desc}</div>
@@ -176,16 +200,17 @@ export default function TriangulationTab() {
           reason="No company × state contracted-power signals are populated yet. Run `python cli.py ingest --source edgar_quarterly` and `--source aterio` to land L1 inputs."
         />
       ) : (
-        <>
+        <div id="l1-section" style={{ display: "flex", flexDirection: "column", gap: "20px" }}>
           {/* L1 grouped bar chart: total GW per company, top 10 */}
           <L1Chart records={records} />
 
-          {/* L1 detail table */}
+          {/* L1 detail table — paginated/sortable/filterable */}
           <L1Table records={records} />
-        </>
+        </div>
       )}
 
       {/* L2 — Compute Demand vs. Contracted Power */}
+      <div id="l2-section" />
       <L2Section
         loading={l2Loading}
         error={l2Error}
@@ -255,26 +280,79 @@ function L1Chart({ records }: { records: L1Record[] }) {
 // L1 detail table
 // ---------------------------------------------------------------------------
 
+type L1SortField = "company" | "state" | "gw_total" | "confidence";
+
 function L1Table({ records }: { records: L1Record[] }) {
+  const [filter, setFilter] = useState("");
+  const [sortField, setSortField] = useState<L1SortField>("gw_total");
+  const [sortAsc, setSortAsc] = useState(false);
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 25;
+
+  const filtered = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return records;
+    return records.filter(
+      r => r.company.toLowerCase().includes(q) || r.state.toLowerCase().includes(q),
+    );
+  }, [records, filter]);
+
+  const sorted = useMemo(() => {
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === "gw_total") cmp = a.gw_total - b.gw_total;
+      else if (sortField === "confidence") cmp = a.confidence - b.confidence;
+      else if (sortField === "company") cmp = a.company.localeCompare(b.company);
+      else cmp = a.state.localeCompare(b.state);
+      return sortAsc ? cmp : -cmp;
+    });
+    return arr;
+  }, [filtered, sortField, sortAsc]);
+
+  const total = sorted.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount);
+  const startIdx = (safePage - 1) * PAGE_SIZE;
+  const pageRows = sorted.slice(startIdx, startIdx + PAGE_SIZE);
+
+  const toggleSort = (f: L1SortField) => {
+    if (sortField === f) setSortAsc(v => !v);
+    else { setSortField(f); setSortAsc(false); }
+    setPage(1);
+  };
+
   return (
     <div style={CARD_STYLE}>
-      <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 12px" }}>
-        L1 Detail — Company × State
-      </h3>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
+          L1 Detail — Company × State
+        </h3>
+        <input
+          type="text"
+          placeholder="Filter by company or state..."
+          value={filter}
+          onChange={e => { setFilter(e.target.value); setPage(1); }}
+          style={{
+            background: "#0f172a", border: "1px solid #334155", borderRadius: 6,
+            color: "white", padding: "6px 10px", fontSize: 12, minWidth: 220,
+          }}
+        />
+      </div>
       <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
           <thead>
             <tr style={{ borderBottom: "1px solid #334155" }}>
-              <Th>Company</Th>
-              <Th>State</Th>
-              <Th align="right">GW Total</Th>
+              <SortableTh active={sortField === "company"} asc={sortAsc} onClick={() => toggleSort("company")}>Company</SortableTh>
+              <SortableTh active={sortField === "state"} asc={sortAsc} onClick={() => toggleSort("state")}>State</SortableTh>
+              <SortableTh active={sortField === "gw_total"} asc={sortAsc} onClick={() => toggleSort("gw_total")} align="right">GW Total</SortableTh>
               <Th>Sources</Th>
-              <Th align="right">Confidence</Th>
+              <SortableTh active={sortField === "confidence"} asc={sortAsc} onClick={() => toggleSort("confidence")} align="right">Confidence</SortableTh>
             </tr>
           </thead>
           <tbody>
-            {records.map((r, i) => (
-              <tr key={`${r.company}-${r.state}-${i}`}
+            {pageRows.map((r, i) => (
+              <tr key={`${r.company}-${r.state}-${startIdx + i}`}
                   style={{ borderBottom: "1px solid #1f2937" }}>
                 <Td><span style={{ color: "white", fontWeight: 600 }}>{r.company}</span></Td>
                 <Td><span style={{ color: "#94a3b8" }}>{r.state}</span></Td>
@@ -302,14 +380,76 @@ function L1Table({ records }: { records: L1Record[] }) {
                 </Td>
               </tr>
             ))}
+            {pageRows.length === 0 && (
+              <tr>
+                <td colSpan={5} style={{ padding: 16, textAlign: "center", color: "#64748b" }}>
+                  No rows match this filter.
+                </td>
+              </tr>
+            )}
           </tbody>
         </table>
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 12, color: "#94a3b8", fontSize: 11 }}>
+        <span>
+          Showing {total === 0 ? 0 : startIdx + 1}–{Math.min(startIdx + PAGE_SIZE, total)} of {total}
+          {filter && ` (filtered from ${records.length})`}
+        </span>
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <PagerButton disabled={safePage === 1} onClick={() => setPage(1)}>«</PagerButton>
+          <PagerButton disabled={safePage === 1} onClick={() => setPage(p => Math.max(1, p - 1))}>‹</PagerButton>
+          <span style={{ padding: "0 6px" }}>Page {safePage} / {pageCount}</span>
+          <PagerButton disabled={safePage >= pageCount} onClick={() => setPage(p => Math.min(pageCount, p + 1))}>›</PagerButton>
+          <PagerButton disabled={safePage >= pageCount} onClick={() => setPage(pageCount)}>»</PagerButton>
+        </div>
       </div>
       <p style={{ color: "#64748b", fontSize: "11px", marginTop: "12px" }}>
         Confidence rises with the number of corroborating sources (0.50 base
         +0.15 if ≥2 sources +0.10 if ≥3 sources, capped at 0.85).
       </p>
     </div>
+  );
+}
+
+function SortableTh({ children, active, asc, onClick, align }: { children: React.ReactNode; active: boolean; asc: boolean; onClick: () => void; align?: "right" | "left" }) {
+  return (
+    <th
+      onClick={onClick}
+      style={{
+        textAlign: align ?? "left",
+        padding: "8px 12px",
+        color: active ? "#60a5fa" : "#94a3b8",
+        fontWeight: 600,
+        fontSize: "11px",
+        textTransform: "uppercase",
+        letterSpacing: "0.05em",
+        cursor: "pointer",
+        userSelect: "none",
+      }}
+    >
+      {children}
+      {active && <span style={{ marginLeft: 4, fontSize: 10 }}>{asc ? "▲" : "▼"}</span>}
+    </th>
+  );
+}
+
+function PagerButton({ children, onClick, disabled }: { children: React.ReactNode; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        background: disabled ? "transparent" : "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: 4,
+        color: disabled ? "#475569" : "#cbd5e1",
+        padding: "2px 8px",
+        cursor: disabled ? "not-allowed" : "pointer",
+        fontSize: 12,
+      }}
+    >
+      {children}
+    </button>
   );
 }
 
