@@ -354,10 +354,11 @@ async def _invoke_weekly_brief(session) -> dict:
 
 _JOB_FUNCTIONS: dict[str, callable] = {
     "edgar_daily": run_edgar_job,
-    "quarterly_filings_weekly": run_edgar_quarterly_job,
+    # Renamed weekly -> daily per Karan round-2 AC6.
+    "quarterly_filings_daily": run_edgar_quarterly_job,
     "anomaly_detection_nightly": run_anomaly_detection_job,
     "permits_state_daily": run_permits_weekly_job,
-    "county_permits_weekly": run_county_permits_weekly_job,
+    "county_permits_daily": run_county_permits_weekly_job,
     "permits_air_daily": run_epa_echo_job,
     "coverage_refresh": run_coverage_refresh_job,
     "cache_cleanup": run_cache_cleanup_job,
@@ -395,12 +396,12 @@ def create_scheduler() -> AsyncIOScheduler:
         if fn is None:
             logger.warning("No function registered for job '%s', skipping", job_id)
             continue
-        # Weekly + quarterly jobs need a far longer grace window: if the
-        # backend was down on a Sunday or Wednesday morning, a 1-hour grace
-        # would silently drop the run forever (this is the AC7 weekly_brief
-        # bug). 24h grace + coalesce=True means we still fire once at the
-        # next opportunity.
-        if job_id in ("weekly_brief", "quarterly_filings_weekly"):
+        # Weekly jobs need a far longer grace window: if the backend was
+        # down on a Sunday morning, a 1-hour grace would silently drop the
+        # run forever (this is the AC7 weekly_brief bug). 24h grace +
+        # coalesce=True means we still fire once at the next opportunity.
+        # Daily jobs are fine with 1h.
+        if job_id == "weekly_brief":
             grace = 86400
             coalesce = True
         else:
