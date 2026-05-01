@@ -30,20 +30,96 @@ router = APIRouter(prefix="/api/permits", tags=["permits"])
 
 
 def _permit_to_dict(p: GeneratorPermit, parent_name: Optional[str] = None) -> dict:
-    """Convert GeneratorPermit model to dict, optionally with joined parent name."""
+    """Convert GeneratorPermit model to dict, optionally with joined parent name.
+
+    Two enrichments happen here at read-time so the UI doesn't show a wall
+    of bare LLC names + null source links:
+
+      1. source_url fallback. The parent_resolver agent stores it in
+         raw_payload.source_url for the sources that have a row-level
+         deep link (TCEQ, VA Open Data). For the others we construct a
+         deterministic URL from the row's identifiers:
+           epa_echo  -> https://echo.epa.gov/detailed-facility-report?fid={frs_id}
+           pjm       -> the PJM new-services queue main page (queue is
+                         not row-addressable, but better than null)
+
+      2. resolved_company_name fallback. The parent_resolver hasn't run
+         against the PJM dataset (3,631 rows = 87% of the table), so most
+         PJM rows have no canonical. As a quick visible win, do a
+         keyword match on the raw permittee name -- if it contains a
+         hyperscaler / OCI / known-canonical token, surface that.
+    """
     d = {}
     for col in GeneratorPermit.__table__.columns:
         val = getattr(p, col.name, None)
         if isinstance(val, (datetime, date)):
             val = val.isoformat()
         d[col.name] = val
-    d["resolved_company_name"] = parent_name
-    # Surface a clickable source URL (raw_payload may carry one)
+
+    # ── 1. resolved_company_name with keyword fallback ────────────────
+    if parent_name:
+        d["resolved_company_name"] = parent_name
+    else:
+        d["resolved_company_name"] = _keyword_canonical(p.permittee_raw_name)
+
+    # ── 2. source_url with per-source fallback ────────────────────────
     raw = d.get("raw_payload") or {}
-    d["source_url"] = (
-        raw.get("source_url") if isinstance(raw, dict) else None
-    ) or d.get("source_url")
+    raw_url = raw.get("source_url") if isinstance(raw, dict) else None
+    fallback_url: Optional[str] = None
+    src = (p.source or "").lower()
+    if not raw_url:
+        if src == "epa_echo" and p.frs_id:
+            fallback_url = f"https://echo.epa.gov/detailed-facility-report?fid={p.frs_id}"
+        elif src == "pjm":
+            # PJM new-services queue page; not row-addressable but clickable.
+            fallback_url = "https://www.pjm.com/planning/services-requests/services-queue"
+        elif src == "tceq" and p.source_permit_id:
+            fallback_url = (
+                f"https://www.tceq.texas.gov/permitting/air/newsourcereview/"
+                f"airpermits-pendingpermit-apps#{p.source_permit_id}"
+            )
+    d["source_url"] = raw_url or fallback_url or d.get("source_url")
     return d
+
+
+# Quick canonical-keyword lookup so rows without a parent_resolver match
+# still surface the obvious hyperscaler / OCI affiliation. Order matters
+# (most-specific first); first match wins.
+_CANONICAL_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("microsoft", "Microsoft"),
+    ("amazon",    "Amazon"),
+    (" aws ",     "Amazon"),  # space-padded so we don't catch "AWSON"
+    ("vadata",    "Amazon"),       # AWS shell company
+    ("google",    "Google"),
+    ("alphabet",  "Google"),
+    ("meta ",     "Meta"),
+    ("facebook",  "Meta"),
+    ("oracle",    "Oracle"),
+    ("apple",     "Apple"),
+    ("dominion",  "Dominion Energy"),
+    ("vistra",    "Vistra"),
+    ("nextera",   "NextEra"),
+    ("constellation", "Constellation Energy"),
+    ("talen",     "Talen Energy"),
+    ("entergy",   "Entergy"),
+    ("duke ener", "Duke Energy"),
+    ("nuscale",   "NuScale Power"),
+    ("oklo",      "Oklo"),
+)
+
+
+def _keyword_canonical(raw: Optional[str]) -> Optional[str]:
+    """Best-effort canonical name when the parent_resolver agent hasn't
+    matched the row. Returns None if no keyword hits, so the UI keeps
+    showing the raw name unmolested in that case.
+    """
+    if not raw:
+        return None
+    s = f" {raw.lower()} "  # pad for whole-word matching of "aws"/"meta"
+    for needle, canon in _CANONICAL_KEYWORDS:
+        if needle in s:
+            return canon
+    return None
 
 
 @router.get("/")
