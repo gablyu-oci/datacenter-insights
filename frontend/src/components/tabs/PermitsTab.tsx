@@ -364,6 +364,8 @@ export default function PermitsTab() {
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
+  // Free-text search across permittee / facility / state / county / source / fuel / status
+  const [searchGenerator, setSearchGenerator] = useState<string>("");
 
   // Building-permit table sort
   const [buildingSortField, setBuildingSortField] = useState<
@@ -371,6 +373,8 @@ export default function PermitsTab() {
   >("issued_date");
   const [buildingSortAsc, setBuildingSortAsc] = useState(false);
   const [selectedBuildingId, setSelectedBuildingId] = useState<number | null>(null);
+  // Free-text search across source / county / state / permit_type / status / applicant / address
+  const [searchBuilding, setSearchBuilding] = useState<string>("");
 
   // Generator fetch (kept identical to prior behavior).
   const generatorPath = `/api/permits/?page=1&page_size=10000`;
@@ -440,22 +444,33 @@ export default function PermitsTab() {
   }), [permits, filterState, filterSource]);
 
   const sorted = useMemo(() => {
-    return [...filtered].sort((a, b) => {
-      if (sortField === "permittee") {
-        const av = permittee(a);
-        const bv = permittee(b);
-        return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-      }
-      if (sortField === "issued_date") {
-        const av = a.issued_date ?? "";
-        const bv = b.issued_date ?? "";
-        return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
-      }
-      const av = a.rated_mw_total ?? 0;
-      const bv = b.rated_mw_total ?? 0;
-      return sortAsc ? av - bv : bv - av;
-    });
-  }, [filtered, sortField, sortAsc]);
+    const q = searchGenerator.trim().toLowerCase();
+    const matches = (p: GeneratorPermitDto) => {
+      if (!q) return true;
+      const fields = [
+        p.resolved_company_name, p.permittee_raw_name, p.facility_name,
+        p.state_code, p.county_fips, p.source, p.fuel_type, p.permit_status,
+      ];
+      return fields.some(v => v && v.toLowerCase().includes(q));
+    };
+    return [...filtered]
+      .filter(matches)
+      .sort((a, b) => {
+        if (sortField === "permittee") {
+          const av = permittee(a);
+          const bv = permittee(b);
+          return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+        }
+        if (sortField === "issued_date") {
+          const av = a.issued_date ?? "";
+          const bv = b.issued_date ?? "";
+          return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+        }
+        const av = a.rated_mw_total ?? 0;
+        const bv = b.rated_mw_total ?? 0;
+        return sortAsc ? av - bv : bv - av;
+      });
+  }, [filtered, sortField, sortAsc, searchGenerator]);
 
   // Aggregate MW by state (top 8)
   const byState = useMemo(() => {
@@ -500,32 +515,43 @@ export default function PermitsTab() {
   }, [buildingPermits]);
 
   const sortedBuildings = useMemo(() => {
-    return [...buildingPermits].sort((a, b) => {
-      const dir = buildingSortAsc ? 1 : -1;
-      switch (buildingSortField) {
-        case "issued_date": {
-          const av = a.issued_date ?? "";
-          const bv = b.issued_date ?? "";
-          return av.localeCompare(bv) * dir;
+    const q = searchBuilding.trim().toLowerCase();
+    const matches = (p: BuildingPermitDto) => {
+      if (!q) return true;
+      const fields = [
+        p.source, p.county, p.state, p.permit_type, p.permit_status,
+        p.applicant_name, p.address, p.jurisdiction, p.source_permit_id,
+      ];
+      return fields.some(v => v && v.toLowerCase().includes(q));
+    };
+    return [...buildingPermits]
+      .filter(matches)
+      .sort((a, b) => {
+        const dir = buildingSortAsc ? 1 : -1;
+        switch (buildingSortField) {
+          case "issued_date": {
+            const av = a.issued_date ?? "";
+            const bv = b.issued_date ?? "";
+            return av.localeCompare(bv) * dir;
+          }
+          case "valuation_usd": {
+            const av = a.valuation_usd ?? 0;
+            const bv = b.valuation_usd ?? 0;
+            return (av - bv) * dir;
+          }
+          case "applicant_name": {
+            const av = a.applicant_name ?? "";
+            const bv = b.applicant_name ?? "";
+            return av.localeCompare(bv) * dir;
+          }
+          case "permit_status": {
+            const av = a.permit_status ?? "";
+            const bv = b.permit_status ?? "";
+            return av.localeCompare(bv) * dir;
+          }
         }
-        case "valuation_usd": {
-          const av = a.valuation_usd ?? 0;
-          const bv = b.valuation_usd ?? 0;
-          return (av - bv) * dir;
-        }
-        case "applicant_name": {
-          const av = a.applicant_name ?? "";
-          const bv = b.applicant_name ?? "";
-          return av.localeCompare(bv) * dir;
-        }
-        case "permit_status": {
-          const av = a.permit_status ?? "";
-          const bv = b.permit_status ?? "";
-          return av.localeCompare(bv) * dir;
-        }
-      }
-    });
-  }, [buildingPermits, buildingSortField, buildingSortAsc]);
+      });
+  }, [buildingPermits, buildingSortField, buildingSortAsc, searchBuilding]);
 
   // Generator KPIs
   const totalMW = filtered.reduce((s, p) => s + (p.rated_mw_total ?? 0), 0);
@@ -701,6 +727,9 @@ export default function PermitsTab() {
           expandedId={expandedId}
           setExpandedId={setExpandedId}
           filterSelectStyle={filterSelectStyle}
+          search={searchGenerator}
+          setSearch={setSearchGenerator}
+          unfilteredCount={filtered.length}
         />
       ) : (
         <BuildingView
@@ -727,6 +756,9 @@ export default function PermitsTab() {
           buildingCoverageNote={buildingCoverageNote}
           buildingSourceLabels={buildingSourceLabels}
           lineage={bldLineage}
+          search={searchBuilding}
+          setSearch={setSearchBuilding}
+          unfilteredCount={buildingPermits.length}
         />
       )}
     </div>
@@ -767,6 +799,9 @@ function GeneratorView(props: {
   expandedId: number | null;
   setExpandedId: (id: number | null) => void;
   filterSelectStyle: React.CSSProperties;
+  search: string;
+  setSearch: (s: string) => void;
+  unfilteredCount: number;
 }) {
   const {
     permits, filtered, sorted, mapFiltered, byState, byFuel,
@@ -774,6 +809,7 @@ function GeneratorView(props: {
     states, sources, filterState, setFilterState, filterSource, setFilterSource,
     activeFuels, setActiveFuels, toggleFuel, sortField, sortAsc, toggleSort,
     selectedId, setSelectedId, expandedId, setExpandedId, filterSelectStyle,
+    search, setSearch, unfilteredCount,
   } = props;
 
   return (
@@ -976,8 +1012,46 @@ function GeneratorView(props: {
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Permit Records</h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              {sorted.length} permits -- click column headers to sort -- click row to expand raw filing
+              {sorted.length} permit{sorted.length === 1 ? "" : "s"}
+              {search.trim() && unfilteredCount !== sorted.length && ` (filtered from ${unfilteredCount})`}
+              {" "}-- click column headers to sort -- click row to expand raw filing
             </p>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="text"
+              placeholder="Search permittee, facility, state, source..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 6,
+                color: "white",
+                padding: "6px 10px",
+                fontSize: 12,
+                minWidth: 260,
+              }}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                style={{
+                  background: "transparent",
+                  border: "1px solid #334155",
+                  borderRadius: 6,
+                  color: "#94a3b8",
+                  padding: "5px 8px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <X size={11} /> Clear
+              </button>
+            )}
           </div>
         </div>
         <div style={{ overflowX: "auto" }}>
@@ -1148,6 +1222,9 @@ function BuildingView(props: {
   buildingCoverageNote: string | null;
   buildingSourceLabels: string[];
   lineage: { source_url?: string; retrieved_at?: string; confidence?: number } | null;
+  search: string;
+  setSearch: (s: string) => void;
+  unfilteredCount: number;
 }) {
   const {
     loading, error, errorInfo, retry, lastFetchedAt,
@@ -1157,6 +1234,7 @@ function BuildingView(props: {
     buildingSortField, buildingSortAsc, toggleBuildingSort,
     selectedBuildingId, setSelectedBuildingId,
     buildingStatesIncluded, buildingCoverageNote, buildingSourceLabels, lineage,
+    search, setSearch, unfilteredCount,
   } = props;
 
   if (loading) return <Loader />;
@@ -1334,8 +1412,46 @@ function BuildingView(props: {
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Building Permit Records</h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              {sortedBuildings.length} permits -- click column headers to sort
+              {sortedBuildings.length} permit{sortedBuildings.length === 1 ? "" : "s"}
+              {search.trim() && unfilteredCount !== sortedBuildings.length && ` (filtered from ${unfilteredCount})`}
+              {" "}-- click column headers to sort
             </p>
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              type="text"
+              placeholder="Search county, applicant, address..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{
+                background: "#0f172a",
+                border: "1px solid #334155",
+                borderRadius: 6,
+                color: "white",
+                padding: "6px 10px",
+                fontSize: 12,
+                minWidth: 260,
+              }}
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                style={{
+                  background: "transparent",
+                  border: "1px solid #334155",
+                  borderRadius: 6,
+                  color: "#94a3b8",
+                  padding: "5px 8px",
+                  cursor: "pointer",
+                  fontSize: 11,
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                }}
+              >
+                <X size={11} /> Clear
+              </button>
+            )}
           </div>
         </div>
         <div style={{ overflowX: "auto" }}>
