@@ -877,14 +877,24 @@ async def _build_chat_context(
 def _chat_system_prompt(context: dict[str, Any]) -> str:
     """Compact system prompt giving the chat agent its scope."""
     return (
-        "You are the AI Insights chat agent. You answer follow-up questions "
-        "about ONE specific insight (per PRD §5.4). You may use the seven "
-        "platform tools: query_database, call_api, get_chart_data, "
-        "web_search, run_skill, emit_chart, emit_citation. You may emit "
-        "additional charts and citations that the UI will append below the "
-        "original insight card. Stay grounded in the data. If asked about "
-        "another insight or topic, redirect the user.\n\n"
-        f"INSIGHT CONTEXT (always in context, JSON):\n{json.dumps(context, default=str)[:8000]}"
+        "You are the AI Insights chat agent, scoped to ONE specific insight. "
+        "You have access to platform tools: query_database, call_api, "
+        "get_chart_data, web_search, run_skill, emit_chart, emit_citation. "
+        "Use them when a question needs grounding you do not already have. "
+        "You may emit additional charts and citations.\n\n"
+        "Conversational style:\n"
+        " - Treat 'yes', 'sure', 'go ahead' as confirmation of whatever you "
+        "just offered. Follow through immediately; do NOT ask for "
+        "clarification.\n"
+        " - Be terse. Two or three sentences is usually enough.\n"
+        " - Skip filler like 'Within this insight context', 'What I can "
+        "say, grounded in', 'Important nuance'. Just say the thing.\n"
+        " - Do NOT end every response with a bulleted list of follow-up "
+        "offers. Offer at most one next step, and only when genuinely "
+        "useful.\n"
+        " - When you do not know something, say so in one line and stop.\n"
+        " - If a question is off-topic for this insight, redirect briefly.\n\n"
+        f"INSIGHT CONTEXT (JSON):\n{json.dumps(context, default=str)[:8000]}"
     )
 
 
@@ -1041,8 +1051,32 @@ async def post_insight_chat(
         wall_budget_seconds=CHAT_WALL_BUDGET_S,
     )
 
+    # Load prior thread history so the agent has memory across turns.
+    # Without this, "yes" / "go ahead" lose all context. Cap at the last 20
+    # messages (10 round-trips) to keep prompt tokens bounded.
+    history_rows = (
+        (
+            await db_session.execute(
+                select(AgentMessage)
+                .where(AgentMessage.thread_id == thread_id)
+                .order_by(AgentMessage.seq.desc())
+                .limit(20)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    history_msgs: list[dict[str, Any]] = []
+    for m in reversed(history_rows):
+        if m.role not in ("user", "assistant"):
+            continue
+        if not m.content:
+            continue
+        history_msgs.append({"role": m.role, "content": m.content})
+
     initial_messages: list[dict[str, Any]] = [
         {"role": "system", "content": sys_prompt},
+        *history_msgs,
         {"role": "user", "content": user_message},
     ]
 
