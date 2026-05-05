@@ -177,7 +177,7 @@ export default function NICsOpticsTab() {
               <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `$${v}B`} />
               <Tooltip
                 contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-                formatter={(v: number) => `$${v.toFixed(2)}B`}
+                formatter={(v) => `$${Number(v).toFixed(2)}B`}
               />
               <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
               {nicVendors.map((v) => (
@@ -217,7 +217,7 @@ export default function NICsOpticsTab() {
               <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={(v) => `$${v}B`} />
               <Tooltip
                 contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: "8px" }}
-                formatter={(v: number) => `$${v.toFixed(2)}B`}
+                formatter={(v) => `$${Number(v).toFixed(2)}B`}
               />
               <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
               {opticsVendors.map((v) => (

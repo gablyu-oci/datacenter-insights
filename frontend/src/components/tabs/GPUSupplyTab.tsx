@@ -153,7 +153,7 @@ export default function GPUSupplyTab() {
                 border: "1px solid #334155",
                 borderRadius: "8px",
               }}
-              formatter={(v: number) => `$${v.toFixed(2)}B`}
+              formatter={(v) => `$${Number(v).toFixed(2)}B`}
             />
             <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
             {vendors.map((v) => (

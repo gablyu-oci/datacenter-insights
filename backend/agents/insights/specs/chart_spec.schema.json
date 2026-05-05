@@ -1,0 +1,298 @@
+{
+  "$defs": {
+    "Annotation": {
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": ["line", "band", "point"],
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {"type": "string"},
+            {"type": "number"}
+          ],
+          "title": "Value"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": ["type", "value", "label"],
+      "title": "Annotation",
+      "type": "object"
+    },
+    "ColorEncoding": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Field"
+        },
+        "scheme": {
+          "anyOf": [
+            {"enum": ["categorical", "sequential"], "type": "string"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "title": "Scheme"
+        }
+      },
+      "title": "ColorEncoding",
+      "type": "object"
+    },
+    "DataSource": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "enum": ["db_query", "router_call", "chart_data"],
+          "title": "Kind",
+          "type": "string"
+        },
+        "spec": {
+          "additionalProperties": true,
+          "title": "Spec",
+          "type": "object"
+        },
+        "rows": {
+          "minimum": 0,
+          "title": "Rows",
+          "type": "integer"
+        },
+        "fetched_at": {
+          "format": "date-time",
+          "title": "Fetched At",
+          "type": "string"
+        },
+        "row_hash": {
+          "maxLength": 64,
+          "minLength": 64,
+          "title": "Row Hash",
+          "type": "string"
+        }
+      },
+      "required": ["kind", "spec", "rows", "fetched_at", "row_hash"],
+      "title": "DataSource",
+      "type": "object"
+    },
+    "Encoding": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {"$ref": "#/$defs/XEncoding"},
+        "y": {"$ref": "#/$defs/YEncoding"},
+        "series": {
+          "anyOf": [
+            {"$ref": "#/$defs/SeriesEncoding"},
+            {"type": "null"}
+          ],
+          "default": null
+        },
+        "color": {
+          "anyOf": [
+            {"$ref": "#/$defs/ColorEncoding"},
+            {"type": "null"}
+          ],
+          "default": null
+        },
+        "size": {
+          "anyOf": [
+            {"$ref": "#/$defs/SizeEncoding"},
+            {"type": "null"}
+          ],
+          "default": null
+        }
+      },
+      "required": ["x", "y"],
+      "title": "Encoding",
+      "type": "object"
+    },
+    "SeriesEncoding": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": ["field"],
+      "title": "SeriesEncoding",
+      "type": "object"
+    },
+    "SizeEncoding": {
+      "additionalProperties": false,
+      "description": "Scatter-only size channel.",
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        }
+      },
+      "required": ["field"],
+      "title": "SizeEncoding",
+      "type": "object"
+    },
+    "Styling": {
+      "additionalProperties": false,
+      "description": "Formatting / palette block.",
+      "properties": {
+        "palette": {
+          "default": "oci_brand",
+          "enum": ["oci_brand"],
+          "title": "Palette",
+          "type": "string"
+        },
+        "y_unit": {
+          "anyOf": [
+            {"enum": ["GW", "MW", "USD", "count", "%"], "type": "string"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "title": "Y Unit"
+        },
+        "y_precision": {
+          "anyOf": [
+            {"maximum": 6, "minimum": 0, "type": "integer"},
+            {"type": "null"}
+          ],
+          "default": null,
+          "title": "Y Precision"
+        }
+      },
+      "title": "Styling",
+      "type": "object"
+    },
+    "XEncoding": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "type": {
+          "enum": ["category", "time", "quantitative"],
+          "title": "Type",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Label"
+        },
+        "tick_format": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Tick Format"
+        }
+      },
+      "required": ["field", "type"],
+      "title": "XEncoding",
+      "type": "object"
+    },
+    "YEncoding": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "title": "Field",
+          "type": "string"
+        },
+        "type": {
+          "default": "quantitative",
+          "enum": ["quantitative"],
+          "title": "Type",
+          "type": "string"
+        },
+        "label": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Label"
+        },
+        "tick_format": {
+          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "default": null,
+          "title": "Tick Format"
+        }
+      },
+      "required": ["field"],
+      "title": "YEncoding",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "ChartSpec v1 -- see ARCHITECTURE.md A4.",
+  "properties": {
+    "chart_id": {
+      "title": "Chart Id",
+      "type": "string",
+      "pattern": "^c_[0-9a-f]{8}$"
+    },
+    "chart_type": {
+      "enum": [
+        "line",
+        "bar",
+        "stacked_bar",
+        "grouped_bar",
+        "area",
+        "stacked_area",
+        "scatter",
+        "pie",
+        "sparkline",
+        "kpi_tile"
+      ],
+      "title": "Chart Type",
+      "type": "string"
+    },
+    "title": {
+      "maxLength": 200,
+      "minLength": 1,
+      "title": "Title",
+      "type": "string"
+    },
+    "subtitle": {
+      "anyOf": [
+        {"maxLength": 300, "type": "string"},
+        {"type": "null"}
+      ],
+      "default": null,
+      "title": "Subtitle"
+    },
+    "data_source": {"$ref": "#/$defs/DataSource"},
+    "data": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "maxItems": 500,
+      "title": "Data",
+      "type": "array"
+    },
+    "encoding": {"$ref": "#/$defs/Encoding"},
+    "annotations": {
+      "anyOf": [
+        {"items": {"$ref": "#/$defs/Annotation"}, "type": "array"},
+        {"type": "null"}
+      ],
+      "default": null,
+      "title": "Annotations"
+    },
+    "styling": {
+      "anyOf": [
+        {"$ref": "#/$defs/Styling"},
+        {"type": "null"}
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "chart_id",
+    "chart_type",
+    "title",
+    "data_source",
+    "data",
+    "encoding"
+  ],
+  "title": "ChartSpec",
+  "type": "object"
+}

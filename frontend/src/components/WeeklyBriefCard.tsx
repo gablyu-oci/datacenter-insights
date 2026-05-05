@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, ReactNode } from "react";
+import { useEffect, useState, useCallback } from "react";
+import type { ReactNode } from "react";
 
 interface BriefResponse {
   markdown: string | null;

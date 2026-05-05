@@ -159,7 +159,9 @@ function GeneratorMap({
       scrollWheelZoom={true}
     >
       {GMAPS_KEY ? (
-        <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
+        <ReactLeafletGoogleLayer
+          {...({ apiKey: GMAPS_KEY, type: "satellite" } as React.ComponentProps<typeof ReactLeafletGoogleLayer>)}
+        />
       ) : (
         <TileLayer
           attribution='&copy; <a href="https://carto.com/">CARTO</a>'
@@ -252,7 +254,9 @@ function BuildingMap({
       scrollWheelZoom={true}
     >
       {GMAPS_KEY ? (
-        <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
+        <ReactLeafletGoogleLayer
+          {...({ apiKey: GMAPS_KEY, type: "satellite" } as React.ComponentProps<typeof ReactLeafletGoogleLayer>)}
+        />
       ) : (
         <TileLayer
           attribution='&copy; <a href="https://carto.com/">CARTO</a>'
@@ -986,7 +990,10 @@ function GeneratorView(props: {
                   formatter={(v, _n, props) => [
                     `${Number(v).toLocaleString()} MW (${(props as { payload?: { count?: number } })?.payload?.count ?? 0} permits)`, "Capacity",
                   ]}
-                  labelFormatter={(v: string) => FUEL_LABEL[v] ?? v}
+                  labelFormatter={(v) => {
+                    const key = String(v);
+                    return FUEL_LABEL[key] ?? key;
+                  }}
                 />
                 <Bar dataKey="mw" radius={[0, 4, 4, 0]}>
                   {byFuel.map((entry, i) => (

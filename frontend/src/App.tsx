@@ -11,6 +11,7 @@ import PermitsTab from "./components/tabs/PermitsTab";
 import TriangulationTab from "./components/tabs/TriangulationTab";
 import SourcesTab from "./components/tabs/SourcesTab";
 import CompaniesTab from "./components/tabs/CompaniesTab";
+import AIInsightsTab from "./components/tabs/ai-insights";
 import ChatPanel from "./components/ChatPanel";
 
 const TAB_CONFIG: Record<string, { element: React.ReactNode; pillar: string }> = {
@@ -23,6 +24,7 @@ const TAB_CONFIG: Record<string, { element: React.ReactNode; pillar: string }> =
   triangulation: { element: <TriangulationTab />, pillar: "Triangulation" },
   companies: { element: <CompaniesTab />, pillar: "Companies" },
   sources: { element: <SourcesTab />, pillar: "Sources" },
+  ai_insights: { element: <AIInsightsTab />, pillar: "AI Insights" },
 };
 
 export default function App() {

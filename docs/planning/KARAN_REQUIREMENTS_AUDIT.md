@@ -24,7 +24,7 @@ Karan's brief contains **~30 discrete asks** across three pillars (Power, GPU Su
 | # | Requirement (one-line) | Status | Evidence (file:line or endpoint) | Gap |
 |---|---|---|---|---|
 | **§1 Power Contracting & Geographic Expansion** | | | | |
-| 1.1 | Who is contracting power, how much, where (public-filings source-of-truth) | PASS | `/api/power/announcements` returns curated 8-K/10-K deals incl. Amazon `35B OpenAI` (2026-02-27) + 200 M MWh (~12.5 GW) clean-energy disclosure with `source_url` to SEC | Curated, not auto-extracted — a human still authors `curated_deals` rows |
+| 1.1 | Who is contracting power, how much, where (public-filings source-of-truth) | PASS | `/api/power/announcements` returns curated 8-K/10-K deals incl. Amazon `35B OpenAI` (2026-02-27) + 200 M MWh (~1.43 GW continuous-eq) clean-energy disclosure with `source_url` to SEC | Curated, not auto-extracted — a human still authors `curated_deals` rows |
 | 1.2 | Side-by-side GW view: MSFT vs AWS vs GCP vs Meta vs others | PASS | `/api/power/gw-summary`: Amazon 17.9 / Google 12.75 / Oracle 11.6 / Microsoft 10.47 / Meta 7.0 / Constellation 16.0 / Talen 2.57 / Vistra 2.3 | Oracle is in the comparison (per Karan's "OCI sits relative to hyperscalers") — good |
 | 1.3 | Dashboard tab with satellite imagery tied to permits | FAIL | `frontend/src/App.tsx:5-26` — TAB_CONFIG has 9 tabs, **none labeled "Satellite"**; `TabNav.tsx:7-23` confirms. `/api/satellite/sites` exists but only returns site lat/lon, not imagery | No imagery layer rendered. DataCenters tab has a Leaflet map (`DataCentersTab.tsx:14-22`) with Google Maps tile but no Sentinel-2 / time-series overlay |
 | 1.4 | US county-level building-permit weekly feed (construction-start signal) | FAIL | `/api/permits/datacenter` total=667. **All rows are *generator* permits** (PJM interconnection, EPA ECHO, TCEQ, NY DEC) — `routers/permits.py:25` `DATACENTER_FUEL_TYPES = {diesel, natural_gas, dual_fuel}`. Coverage row: `building_permits` = 10 rows across 51 states | County building-permit ingestion is what Karan named (Shovels.ai equivalent). Not built. PRD §5 lists VA/NY/WA/CO/OR as MVP states |
@@ -75,7 +75,7 @@ Karan's brief contains **~30 discrete asks** across three pillars (Power, GPU Su
 - **Aterio site canonical**: `Site` table = 6973 rows (`/api/sites/?page_size=1` → `total: 6973`), 73 cols, national + Canada (sample row Wetaskiwin, AB). Ingest ledger: `aterio_csv v1.0.0 stored=40722` total records.
 - **Power capacity per provider**: `/api/power/capacity` aggregates `sum(power_capacity_mw)` by `provider_name` (`routers/power.py:55-92`). 51-state coverage per `coverage` table (`power_sites` pillar, 6611 rows).
 - **GW summary**: `/api/power/gw-summary` returns the side-by-side competitive view Karan asked for in §1.2: Amazon 17.9 GW, Constellation 16.0 GW, Google 12.75 GW, Oracle 11.6 GW, Microsoft 10.47 GW, Meta 7.0 GW, Talen 2.57 GW, Vistra 2.3 GW.
-- **Curated 8-K deals**: `/api/power/announcements.curated` includes Amazon's $35 B OpenAI investment (2026-02-27, 8-K), Amazon's 200 M MWh / ~12.5 GW disclosure (FY25 10-K), all with `source_url → sec.gov/Archives/edgar/...`.
+- **Curated 8-K deals**: `/api/power/announcements.curated` includes Amazon's $35 B OpenAI investment (2026-02-27, 8-K), Amazon's 200 M MWh / ~1.43 GW continuous-equivalent disclosure (FY25 10-K; 200 TWh ÷ 16 yr ÷ 8,760 hr), all with `source_url → sec.gov/Archives/edgar/...`.
 - **EDGAR pipeline**: `agents/edgar_agent.py` (958 LOC), `agents/edgar_extractor.py` (532 LOC), `agents/parent_resolver.py` (982 LOC for LLC→parent resolution). `edgar v2.0.0` pipeline `stored=15, run_count=5`.
 - **Generator permits**: `/api/permits/datacenter` total=667 (PJM AJ-series, EPA ECHO, NY DEC, TCEQ, VA Open Data). Coverage `generator_permits` = 500 rows × 58 states.
 
@@ -138,7 +138,7 @@ Open **Supplier Insights → GPU Supply** tab. Show NVIDIA quarterly revenue tre
 
 **What's partial**
 
-- L1 is sums-of-MW, not yet adjusted for double-counting between `sites` and `deals` (e.g., Amazon's 200 M MWh disclosure shows up under deals; Amazon-named sites also show up). The agent uses `(buyer, state)` dedup; collisions in mixed-state deals route to `state="GLOBAL"` or `"US"` (visible in payload: Amazon GLOBAL 12.5 GW; Constellation US 16.0 GW). Confidence flagged low (0.5) for these.
+- L1 is sums-of-MW, not yet adjusted for double-counting between `sites` and `deals` (e.g., Amazon's 200 M MWh disclosure shows up under deals; Amazon-named sites also show up). The agent uses `(buyer, state)` dedup; collisions in mixed-state deals route to `state="GLOBAL"` or `"US"` (visible in payload: Amazon GLOBAL 1.43 GW continuous-eq; Constellation US 16.0 GW). Confidence flagged low (0.5) for these.
 - Constellation's 144.35 GW row is suspiciously large — likely an extraction or unit issue worth a sanity check.
 
 **What's missing**

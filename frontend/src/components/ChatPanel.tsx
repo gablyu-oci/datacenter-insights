@@ -113,7 +113,8 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
   const data = allRows.length > TRUNCATE_AT
     ? [...allRows].sort((a, b) => b.y - a.y).slice(0, TRUNCATE_AT)
     : allRows;
-  const truncatedFrom = allRows.length > TRUNCATE_AT ? allRows.length : null;
+  const _truncatedFrom = allRows.length > TRUNCATE_AT ? allRows.length : null;
+  void _truncatedFrom;
   const ySeriesLabel = (spec.y as string) || "value";
   const xLabel = spec.x || "Category";
 
@@ -182,9 +183,10 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
           </Pie>
           <Tooltip
             {...TOOLTIP_STYLES}
-            formatter={(v: number, _n, props) => {
+            formatter={(v, _n, props) => {
+              const num = Number(v);
               const x = (props as { payload?: { x?: string } })?.payload?.x ?? "";
-              return [`${fmt(v)} ${ySeriesLabel}`, x];
+              return [`${fmt(num)} ${ySeriesLabel}`, x];
             }}
           />
           <Legend
@@ -206,10 +208,10 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
           <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
-          <Tooltip {...TOOLTIP_STYLES} formatter={(v: number) => [fmt(v), ySeriesLabel]} />
+          <Tooltip {...TOOLTIP_STYLES} formatter={(v) => [fmt(Number(v)), ySeriesLabel]} />
           <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
           <Line type="monotone" dataKey="y" name={ySeriesLabel} stroke="#3b82f6" strokeWidth={2} dot={{ r: 3 }}>
-            <LabelList dataKey="y" position="top" formatter={fmt} fill="#cbd5e1" fontSize={10} />
+            <LabelList dataKey="y" position="top" formatter={(v) => fmt(Number(v))} fill="#cbd5e1" fontSize={10} />
           </Line>
         </LineChart>
       </ResponsiveContainer>
@@ -224,7 +226,7 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
           <XAxis type="number" dataKey="x" name={xLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
           <YAxis type="number" dataKey="y" name={ySeriesLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
           <ZAxis range={[60, 60]} />
-          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} formatter={(v: number) => fmt(v)} />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} formatter={(v) => fmt(Number(v))} />
           <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
           <Scatter data={sd} name={ySeriesLabel} fill="#3b82f6" />
         </ScatterChart>
@@ -237,10 +239,10 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
         <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
         <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} interval={0} angle={data.length > 6 ? -25 : 0} textAnchor={data.length > 6 ? "end" : "middle"} height={data.length > 6 ? 50 : 30} label={data.length > 6 ? undefined : { value: xLabel, position: "insideBottom", offset: -2, fill: "#64748b", fontSize: 10 }} />
         <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
-        <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} formatter={(v: number) => [fmt(v), ySeriesLabel]} />
+        <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} formatter={(v) => [fmt(Number(v)), ySeriesLabel]} />
         <Legend wrapperStyle={{ color: "#94a3b8", fontSize: 12 }} />
         <Bar dataKey="y" fill="#3b82f6" name={ySeriesLabel} radius={[4,4,0,0]}>
-          <LabelList dataKey="y" position="top" formatter={fmt} fill="#cbd5e1" fontSize={10} />
+          <LabelList dataKey="y" position="top" formatter={(v) => fmt(Number(v))} fill="#cbd5e1" fontSize={10} />
         </Bar>
       </BarChart>
     </ResponsiveContainer>

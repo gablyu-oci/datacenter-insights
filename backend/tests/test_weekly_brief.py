@@ -48,13 +48,14 @@ def test_weekly_brief_cron_grace_window():
 
 
 def test_quarterly_filings_cron_grace_window():
-    """AC1: the quarterly_filings_weekly Wed cron must also have 24h grace."""
+    """The quarterly_filings_daily cron is registered with at least the daily
+    1h grace (post-Karan-round-2 weekly→daily rename in pipeline/runner.py)."""
     from pipeline.runner import create_scheduler
 
     sched = create_scheduler()
-    job = sched.get_job("quarterly_filings_weekly")
+    job = sched.get_job("quarterly_filings_daily")
     assert job is not None
-    assert job.misfire_grace_time >= 86400
+    assert job.misfire_grace_time >= 3600
 
 
 @pytest.mark.asyncio

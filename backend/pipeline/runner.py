@@ -107,6 +107,17 @@ JOB_CONFIG: dict[str, dict] = {
         "phase": 1,
         "enabled": True,
     },
+    # Phase 3 (AI Insights automation): fires once per UTC day at 09:00,
+    # one hour after the morning EPA ECHO ingest at 08:00. The headless
+    # job drains InsightOrchestrator and writes IngestionRun audit. App-
+    # level idempotency guard inside _invoke_insights_daily makes a
+    # repeat fire on the same UTC day a no-op (D5).
+    "insights_daily": {
+        "adapter": "_insights_daily",
+        "trigger": CronTrigger(hour=9, minute=0),                      # 0 9 * * *
+        "phase": 2,
+        "enabled": True,
+    },
 }
 
 
@@ -168,6 +179,17 @@ async def run_stale_check_job() -> None:
 async def run_weekly_brief_job() -> None:
     """Scheduled job: weekly LLM-generated intelligence brief."""
     await _run_adapter_job("_weekly_brief", _invoke_weekly_brief)
+
+
+async def run_insights_daily_job() -> None:
+    """Scheduled job: generate today's AI Insights set headlessly.
+
+    Wraps _invoke_insights_daily in the standard IngestionRun audit
+    bracket. Idempotency, retry, and wall-clock guard live inside the
+    invoke helper, NOT here, so a repeat-fire on the same UTC day is a
+    successful no-op rather than a failure.
+    """
+    await _run_adapter_job("_insights_daily", _invoke_insights_daily)
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +371,190 @@ async def _invoke_weekly_brief(session) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Phase 3: insights_daily — daily AI Insights cron
+# ---------------------------------------------------------------------------
+
+# Per-attempt outer wall-clock guard (D11). Belt-and-suspenders against the
+# orchestrator's internal V1_WALL_CLOCK_S=480 — if the iterator hangs on a
+# stuck embed call before the internal check fires, this terminates cleanly.
+INSIGHTS_DAILY_TIMEOUT_S = 600
+
+# Retry policy (user override of arch §10 D13). Up to 2 retries (3 total
+# attempts) with a 60-second linear sleep between attempts. After the third
+# consecutive failure: AISession.status='failed', exception re-raised so
+# the APScheduler EVENT_JOB_ERROR listener fires.
+INSIGHTS_DAILY_MAX_RETRIES = 2
+INSIGHTS_DAILY_RETRY_SLEEP_S = 60
+
+
+async def _invoke_insights_daily(session) -> dict:
+    """Drain InsightOrchestrator headlessly with idempotency + retry.
+
+    Behaviour:
+      1. Idempotency guard: if an AISession already exists today with
+         created_by='scheduler' and status in (running, complete), skip.
+      2. Otherwise instantiate InsightOrchestrator with max_insights=5,
+         created_by='scheduler', cron_run_date=today, anonymous filters
+         (no user focus), and drain its iterator under
+         asyncio.wait_for(timeout=600).
+      3. Count InsightCompleteEvent frames as `stored`. The orchestrator
+         persists frames itself; we are NOT consuming the SSE wire.
+      4. On exception during the drain, retry up to 2 more times with a
+         60s sleep. After the 3rd failure: flip the session row to
+         status='failed' and re-raise so EVENT_JOB_ERROR fires.
+
+    Returns the IngestionRun summary dict expected by _run_adapter_job
+    ({"fetched": N, "stored": M, ...}). On idempotency-skip we return
+    `skipped=1` so the audit row reflects the no-op truthfully.
+    """
+    import asyncio
+    import logging
+    import traceback
+    import uuid as _uuid
+    from datetime import date
+
+    from sqlalchemy import select, update
+
+    from agents.insights.db.models import AISession
+    from agents.insights.specs.sse_events import InsightCompleteEvent
+
+    log = logging.getLogger(__name__)
+    today = date.today()
+
+    # ---------- 1) Idempotency guard ----------
+    existing = await session.execute(
+        select(AISession.id).where(
+            AISession.created_by == "scheduler",
+            AISession.cron_run_date == today,
+            AISession.status.in_(("running", "complete")),
+        )
+    )
+    if existing.first() is not None:
+        log.info(
+            "insights_daily.idempotency_skip",
+            extra={"cron_run_date": today.isoformat()},
+        )
+        return {
+            "fetched": 0,
+            "stored": 0,
+            "skipped": 1,
+            "reason": "idempotency_guard",
+        }
+
+    # ---------- 2) Run with retry ----------
+    last_exc: BaseException | None = None
+    sid: _uuid.UUID | None = None
+    insights_emitted = 0
+    fact_pack_rows = 0
+
+    for attempt in range(INSIGHTS_DAILY_MAX_RETRIES + 1):
+        # Lazy-import inside the loop so a transient import failure is also
+        # retried (e.g. circular import during process startup race).
+        from agents.insights.orchestrator import InsightOrchestrator
+
+        sid = _uuid.uuid4()
+        # Tag the session as scheduler-originated; the persistence helper
+        # picks created_by + cron_run_date out of `filters`.
+        filters: dict = {
+            "focus": "daily-cron",
+            "created_by": "scheduler",
+            "cron_run_date": today,
+        }
+
+        orch = InsightOrchestrator(
+            session_id=sid,
+            db=session,
+            max_insights=5,
+        )
+
+        try:
+            local_emitted = 0
+
+            async def _drain() -> None:
+                nonlocal local_emitted
+                async for ev in orch.run_session(filters=filters):
+                    if isinstance(ev, InsightCompleteEvent):
+                        local_emitted += 1
+
+            await asyncio.wait_for(
+                _drain(),
+                timeout=INSIGHTS_DAILY_TIMEOUT_S,
+            )
+            insights_emitted = local_emitted
+            fact_pack = getattr(orch, "_fact_pack", None)
+            fact_pack_rows = fact_pack.total_rows() if fact_pack is not None else 0
+            last_exc = None
+            log.info(
+                "insights_daily.success",
+                extra={
+                    "attempt": attempt + 1,
+                    "session_id": str(sid),
+                    "insights_emitted": insights_emitted,
+                    "fact_pack_rows": fact_pack_rows,
+                },
+            )
+            break  # success — leave retry loop
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "insights_daily.attempt_failed",
+                extra={
+                    "attempt": attempt + 1,
+                    "max_attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                    "session_id": str(sid),
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            # Best-effort: mark this attempt's session row as failed so a
+            # repeat fire within the same day still hits the idempotency
+            # guard (failed rows are intentionally NOT in the in-clause,
+            # but a row with status='running' would mask a real subsequent
+            # success; we flip running->failed on every failed attempt).
+            try:
+                await session.execute(
+                    update(AISession)
+                    .where(
+                        AISession.id == sid,
+                        AISession.status == "running",
+                    )
+                    .values(status="failed")
+                )
+                await session.commit()
+            except Exception as flip_exc:  # pragma: no cover - defensive
+                log.warning(
+                    "insights_daily.attempt_status_flip_failed",
+                    extra={"err": str(flip_exc)},
+                )
+
+            if attempt < INSIGHTS_DAILY_MAX_RETRIES:
+                await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
+                continue
+            # Out of retries. Re-raise so _run_adapter_job records
+            # status='failure' AND APScheduler's EVENT_JOB_ERROR listener
+            # (D11) fires.
+            log.error(
+                "insights_daily.exhausted_retries",
+                extra={
+                    "session_id": str(sid),
+                    "attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                    "final_error": str(exc),
+                },
+            )
+            raise
+
+    if last_exc is not None:  # pragma: no cover - defensive
+        raise last_exc
+
+    return {
+        "fetched": fact_pack_rows,
+        "stored": insights_emitted,
+        "skipped": 0,
+        "session_id": str(sid) if sid else None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Map job IDs to their async functions
 # ---------------------------------------------------------------------------
 
@@ -364,6 +570,7 @@ _JOB_FUNCTIONS: dict[str, callable] = {
     "cache_cleanup": run_cache_cleanup_job,
     "stale_check": run_stale_check_job,
     "weekly_brief": run_weekly_brief_job,
+    "insights_daily": run_insights_daily_job,
 }
 
 

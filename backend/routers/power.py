@@ -11,7 +11,7 @@ import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import get_db
@@ -162,7 +162,13 @@ def _canonicalize_buyer(buyer: str | None) -> str:
 
 
 def _curated_row_to_dict(d: CuratedDeal) -> dict:
-    """Surface a CuratedDeal ORM row in the legacy dict shape the frontend expects."""
+    """Surface a CuratedDeal ORM row in the legacy dict shape the frontend expects.
+
+    `archived=True` + `source='curated_archived'` are stamped here so the FE
+    can render a visual "archived" state without changing the underlying DB
+    table. Track A keeps curated_deals as a frozen historical reference;
+    the live feed is now edgar_extractions.
+    """
     return {
         "id": d.legacy_id,
         "buyer": d.buyer,
@@ -185,15 +191,25 @@ def _curated_row_to_dict(d: CuratedDeal) -> dict:
         "confidence": float(d.confidence) if d.confidence is not None else None,
         "data_source": d.data_source,
         "energy_contract_mwh_million": d.energy_contract_mwh_million,
+        "archived": True,
+        "source": "curated_archived",
     }
 
 
 def _edgar_row_to_dict(e: EdgarExtraction) -> dict:
-    """Surface an EdgarExtraction ORM row in the same dict shape (where it overlaps)."""
+    """Surface an EdgarExtraction ORM row in the same dict shape.
+
+    Prefers buyer_canonical / seller_canonical when present (entity-
+    resolved or validated raw value); falls back to the raw column.
+    Surfaces `flagged_capacity`, `methodology`, `canonical_deal_id`,
+    `appearance_count`, and `last_extracted` for the FE drill modal.
+    """
+    buyer = getattr(e, "buyer_canonical", None) or e.buyer_raw
+    seller = getattr(e, "seller_canonical", None) or e.seller_raw
     return {
         "id": f"edgar-{e.id}",
-        "buyer": e.buyer_raw,
-        "seller": e.seller_raw,
+        "buyer": buyer,
+        "seller": seller,
         "deal_type": "8-K disclosure",
         "energy_source": e.energy_source,
         "capacity_mw": int(e.capacity_mw) if e.capacity_mw is not None else None,
@@ -205,6 +221,16 @@ def _edgar_row_to_dict(e: EdgarExtraction) -> dict:
         "edgar_url": e.edgar_url,
         "confidence": float(e.confidence) if e.confidence is not None else None,
         "data_source": f"SEC EDGAR ({e.form_type})",
+        "source": "live",
+        "flagged_capacity": bool(getattr(e, "flagged_capacity", False)),
+        "methodology": getattr(e, "methodology", None),
+        "canonical_deal_id": getattr(e, "canonical_deal_id", None),
+        "appearance_count": getattr(e, "appearance_count", 1),
+        "last_extracted": e.retrieved_at.isoformat() if e.retrieved_at else None,
+        # Track C fields
+        "is_power_related": bool(getattr(e, "is_power_related", False)),
+        "signing_date": e.signing_date.isoformat() if getattr(e, "signing_date", None) else None,
+        "deal_index": int(getattr(e, "deal_index", 0)),
     }
 
 
@@ -240,15 +266,18 @@ async def power_announcements(
     # rows are visual noise in the dashboard).
     edgar_deals: list[dict] = []
     if include_edgar:
+        # Track C: filter on is_power_related rather than "any non-null
+        # extracted field". User requirement (2026-05-04): "keep rows even
+        # without capacity or buyer, but only if power-contract or datacenter
+        # related". The extractor's STEP-1 classifier sets this flag.
         ee_stmt = select(EdgarExtraction).where(
-            (EdgarExtraction.capacity_mw.isnot(None))
-            | (EdgarExtraction.buyer_raw.isnot(None))
-            | (EdgarExtraction.seller_raw.isnot(None))
+            EdgarExtraction.is_power_related.is_(True)
         )
         if company and company != "All":
             ee_stmt = ee_stmt.where(
                 (EdgarExtraction.buyer_raw.ilike(f"%{company}%"))
                 | (EdgarExtraction.seller_raw.ilike(f"%{company}%"))
+                | (EdgarExtraction.buyer_canonical.ilike(f"%{company}%"))
             )
         ee_stmt = ee_stmt.order_by(EdgarExtraction.filing_date.desc().nullslast()).limit(50)
         edgar_rows = (await db.execute(ee_stmt)).scalars().all()
@@ -297,24 +326,76 @@ async def power_announcements(
 
 
 async def _gw_summary_from_db(db: AsyncSession) -> dict:
-    """Aggregate contracted GW per canonical buyer from curated_deals."""
-    rows = (
-        await db.execute(
-            select(
-                CuratedDeal.buyer,
-                CuratedDeal.energy_source,
-                CuratedDeal.capacity_mw,
-            ).where(CuratedDeal.capacity_mw.isnot(None))
+    """Aggregate contracted GW per canonical buyer from edgar_extractions.
+
+    Dedup strategy:
+      * SELECT DISTINCT ON (canonical_deal_id) latest filing_date — so a
+        deal that appears in 8-K, 10-Q, and 10-K reports once-and-only-once.
+      * Rows with NULL canonical_deal_id are NOT deduped (they're individual
+        ungrouped observations).
+      * GROUP BY COALESCE(buyer_canonical, buyer_raw) — replaces the old
+        Python _canonicalize_buyer pass.
+
+    NULL capacity_mw rows are filtered out (no contribution to GW total).
+    """
+    sql = text(
+        """
+        WITH latest AS (
+            SELECT DISTINCT ON (canonical_deal_id)
+                   canonical_deal_id,
+                   COALESCE(buyer_canonical, buyer_raw) AS buyer,
+                   energy_source,
+                   capacity_mw,
+                   filing_date
+            FROM edgar_extractions
+            WHERE canonical_deal_id IS NOT NULL
+              AND capacity_mw IS NOT NULL
+            ORDER BY canonical_deal_id, filing_date DESC NULLS LAST
+        ),
+        ungrouped AS (
+            -- Rows without canonical_deal_id (older / pre-pipeline rows).
+            -- They're treated as individual observations.
+            SELECT NULL::text AS canonical_deal_id,
+                   COALESCE(buyer_canonical, buyer_raw) AS buyer,
+                   energy_source,
+                   capacity_mw,
+                   filing_date
+            FROM edgar_extractions
+            WHERE canonical_deal_id IS NULL
+              AND capacity_mw IS NOT NULL
         )
-    ).all()
+        SELECT buyer, energy_source, capacity_mw FROM latest
+        UNION ALL
+        SELECT buyer, energy_source, capacity_mw FROM ungrouped
+        """
+    )
+    try:
+        rows = (await db.execute(sql)).all()
+    except Exception:
+        # Fallback path — schema may not yet have buyer_canonical /
+        # canonical_deal_id (pre-migration environment). Use the
+        # legacy curated_deals aggregate so /api/power/gw-summary keeps
+        # responding rather than 500-ing.
+        legacy = (
+            await db.execute(
+                select(
+                    CuratedDeal.buyer,
+                    CuratedDeal.energy_source,
+                    CuratedDeal.capacity_mw,
+                ).where(CuratedDeal.capacity_mw.isnot(None))
+            )
+        ).all()
+        rows = [(_canonicalize_buyer(b), es, mw) for (b, es, mw) in legacy]
 
     totals: dict[str, dict] = {}
     for buyer, energy_source, mw in rows:
-        canon = _canonicalize_buyer(buyer)
+        # Group by COALESCE(buyer_canonical, buyer_raw); skip empties.
+        if not buyer:
+            continue
         bucket = totals.setdefault(
-            canon, {"gw_total": 0.0, "deals": 0, "nuclear_gw": 0.0, "renewable_gw": 0.0}
+            buyer, {"gw_total": 0.0, "deals": 0, "nuclear_gw": 0.0, "renewable_gw": 0.0}
         )
-        gw = (mw or 0) / 1000.0
+        gw = float(mw or 0) / 1000.0
         bucket["gw_total"] += gw
         bucket["deals"] += 1
         src = (energy_source or "").lower()
@@ -335,7 +416,7 @@ async def gw_summary(db: AsyncSession = Depends(get_db)):
     return LineageEnvelope(
         data={"data": gw, "colors": colors},
         lineage=LineageMeta(
-            source_url="db://curated_deals",
+            source_url="db://edgar_extractions",
             retrieved_at=datetime.utcnow(),
             parser_version="db-v1.0.0",
             confidence=0.95,

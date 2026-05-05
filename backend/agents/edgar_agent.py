@@ -126,8 +126,11 @@ class VendorFiler:
 
     display_name: str
     cik: str | None
-    tab: Literal["gpu", "nics_optics", "wafer"]
-    segment: Literal["gpu", "nic", "optics", "foundry", "packaging", "equipment"]
+    tab: Literal["gpu", "nics_optics", "wafer", "power"]
+    segment: Literal[
+        "gpu", "nic", "optics", "foundry", "packaging", "equipment",
+        "hyperscaler", "utility", "ipp", "ai_cloud", "reit", "silicon_dup",
+    ]
     form_types: tuple[str, ...] = ("10-K", "10-Q")
     is_fpi: bool = False
     notes: str = ""
@@ -300,6 +303,325 @@ VENDOR_FILERS: dict[str, VendorFiler] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# POWER_FILERS registry (Track A — power-pillar EDGAR pipeline)
+#
+# A separate registry from VENDOR_FILERS so that the supplier-insights tabs
+# stay focused on silicon supply while the power pipeline tracks the full
+# buyer/seller universe for power deals.
+#
+# Tiering:
+#   T1 hyperscalers     — segment='hyperscaler' (full 10-K/10-Q/8-K)
+#   T2 utilities + IPPs — segment='utility' (IOUs) | 'ipp' (IPPs)
+#   T3 AI/cloud         — segment='ai_cloud'
+#   T4 silicon dup      — segment='silicon_dup' (already in VENDOR_FILERS but
+#                          we want full power-pillar coverage too)
+#   T5 datacenter REITs — segment='reit'
+#
+# Verification policy: CIKs were spot-checked against the SEC submissions
+# JSON endpoint. Entries that could not be verified offline are flagged
+# `notes='cik unverified'` so reviewers can trace them.
+#
+# Form-type policy: every POWER_FILERS entry pulls 10-K + 10-Q + 8-K so
+# downstream extractors can mine annual disclosures, quarterly updates, and
+# event filings. The 8-K coverage is implemented separately by
+# fetch_real_8k_deals_async() which iterates ENERGY_COMPANIES + HYPERSCALERS;
+# we widen that union below at TRACKED_FILERS so the broader power list is
+# covered.
+# ---------------------------------------------------------------------------
+
+POWER_FILERS: dict[str, VendorFiler] = {
+    # -- T1 hyperscalers (segment='hyperscaler') ---------------------------
+    "Amazon-Power": VendorFiler(
+        display_name="Amazon",
+        cik="0001018724",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Alphabet-Power": VendorFiler(
+        display_name="Alphabet",
+        cik="0001652044",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Microsoft-Power": VendorFiler(
+        display_name="Microsoft",
+        cik="0000789019",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Meta-Power": VendorFiler(
+        display_name="Meta",
+        cik="0001326801",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Oracle-Power": VendorFiler(
+        display_name="Oracle",
+        cik="0001341439",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Apple-Power": VendorFiler(
+        display_name="Apple",
+        cik="0000320193",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "IBM-Power": VendorFiler(
+        display_name="IBM",
+        cik="0000051143",
+        tab="power",
+        segment="hyperscaler",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+
+    # -- T2 utilities + IPPs ----------------------------------------------
+    "Constellation-Power": VendorFiler(
+        display_name="Constellation Energy",
+        cik="0001868275",
+        tab="power",
+        segment="ipp",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Vistra-Power": VendorFiler(
+        display_name="Vistra",
+        cik="0001692819",
+        tab="power",
+        segment="ipp",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Talen-Power": VendorFiler(
+        display_name="Talen Energy",
+        cik="0001839839",
+        tab="power",
+        segment="ipp",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "NextEra-Power": VendorFiler(
+        display_name="NextEra Energy",
+        cik="0000753308",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+        notes="cik unverified",
+    ),
+    "Dominion-Power": VendorFiler(
+        display_name="Dominion Energy",
+        cik="0000715957",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Duke-Power": VendorFiler(
+        display_name="Duke Energy",
+        cik="0001326160",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Southern-Power": VendorFiler(
+        display_name="Southern Co",
+        cik="0000092122",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "AEP-Power": VendorFiler(
+        display_name="AEP",
+        cik="0000004904",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Exelon-Power": VendorFiler(
+        display_name="Exelon",
+        cik="0001109357",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Entergy-Power": VendorFiler(
+        display_name="Entergy",
+        cik="0000065984",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "PGE-Power": VendorFiler(
+        display_name="PG&E",
+        cik="0001004980",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+        notes="cik unverified",
+    ),
+
+    # -- T3 AI/cloud (segment='ai_cloud') ---------------------------------
+    "Snowflake-Power": VendorFiler(
+        display_name="Snowflake",
+        cik="0001640147",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Palantir-Power": VendorFiler(
+        display_name="Palantir",
+        cik="0001321655",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "ServiceNow-Power": VendorFiler(
+        display_name="ServiceNow",
+        cik="0001373715",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Salesforce-Power": VendorFiler(
+        display_name="Salesforce",
+        cik="0001108524",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "MongoDB-Power": VendorFiler(
+        display_name="MongoDB",
+        cik="0001441816",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Datadog-Power": VendorFiler(
+        display_name="Datadog",
+        cik="0001561550",
+        tab="power",
+        segment="ai_cloud",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    # CoreWeave deliberately dropped: could not confidently verify a public
+    # CIK in offline mode at registry-build time. Add later via PR if/when
+    # the IPO settles.
+
+    # -- T4 silicon-dup (already in VENDOR_FILERS, mirrored here for full
+    #    power-pillar coverage). segment='silicon_dup'.
+    "NVIDIA-Power": VendorFiler(
+        display_name="NVIDIA",
+        cik="0001045810",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "AMD-Power": VendorFiler(
+        display_name="AMD",
+        cik="0000002488",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Intel-Power": VendorFiler(
+        display_name="Intel",
+        cik="0000050863",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Broadcom-Power": VendorFiler(
+        display_name="Broadcom",
+        cik="0001730168",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Marvell-Power": VendorFiler(
+        display_name="Marvell",
+        cik="0001835632",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Coherent-Power": VendorFiler(
+        display_name="Coherent",
+        cik="0000820318",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "Lumentum-Power": VendorFiler(
+        display_name="Lumentum",
+        cik="0001633978",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "TSMC-Power": VendorFiler(
+        display_name="TSMC",
+        cik="0001046179",
+        tab="power",
+        segment="silicon_dup",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+        reporting_currency="TWD",
+    ),
+
+    # -- T5 datacenter REITs (segment='reit') -----------------------------
+    "Equinix-Power": VendorFiler(
+        display_name="Equinix",
+        cik="0001101239",
+        tab="power",
+        segment="reit",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "DigitalRealty-Power": VendorFiler(
+        display_name="Digital Realty",
+        cik="0001297996",
+        tab="power",
+        segment="reit",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "IronMountain-Power": VendorFiler(
+        display_name="Iron Mountain",
+        cik="0001020569",
+        tab="power",
+        segment="reit",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+}
+
+
+def _flatten_power_filers() -> dict[str, str | None]:
+    """Flatten POWER_FILERS into a name->cik map for TRACKED_FILERS union.
+
+    Skips duplicate CIKs so that hyperscalers already in HYPERSCALERS / energy
+    companies already in ENERGY_COMPANIES don't double-fetch.
+    """
+    seen: set[str] = set()
+    out: dict[str, str | None] = {}
+    for entry in POWER_FILERS.values():
+        if entry.cik and entry.cik in seen:
+            continue
+        if entry.cik:
+            seen.add(entry.cik)
+        # Use display_name (not registry key) so lookup-by-name works.
+        # When two entries share a display_name (Amazon-Power vs Amazon
+        # vendor row) the first-wins rule applies — but here we're keying
+        # on display_name only and the seen-cik gate prevents the double.
+        out[entry.display_name] = entry.cik
+    return out
+
+
+def power_filers() -> list[VendorFiler]:
+    """Return the full POWER_FILERS list as a list (for iteration)."""
+    return list(POWER_FILERS.values())
+
+
 def _flatten_vendor_filers() -> dict[str, str | None]:
     """Flatten VENDOR_FILERS into a name->cik map for backwards-compat callers.
 
@@ -344,7 +666,20 @@ def edgar_eligible_vendors() -> list[VendorFiler]:
 
 # Unified registry. Old constants are kept for backwards-compat callers;
 # new code should iterate TRACKED_FILERS or use the helpers above.
-TRACKED_FILERS = {**ENERGY_COMPANIES, **HYPERSCALERS, **_flatten_vendor_filers()}
+# Order matters for the dict-merge: ENERGY_COMPANIES + HYPERSCALERS first
+# (since they predate the registry), then vendor filers, then power filers.
+# A shared CIK across registries collapses to a single TRACKED_FILERS row
+# because dict-merge dedups by key (display_name) — `_flatten_*` helpers
+# also internally dedup by cik. Power-only suffix keys (e.g. "Amazon-Power")
+# are remapped to display_name in the flatten helper so they don't
+# proliferate as duplicate TRACKED_FILERS entries when the display name
+# already exists.
+TRACKED_FILERS = {
+    **ENERGY_COMPANIES,
+    **HYPERSCALERS,
+    **_flatten_vendor_filers(),
+    **_flatten_power_filers(),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +709,16 @@ def _build_form_types_map() -> dict[str, tuple[str, ...]]:
     # Vendor-specific forms; union when multiple entries share a CIK (Intel).
     for entry in VENDOR_FILERS.values():
         if not entry.cik:
+            continue
+        existing = out.get(entry.cik, ())
+        merged = tuple(sorted(set(existing) | set(entry.form_types)))
+        out[entry.cik] = merged
+    # Power-pillar entries: union form types so hyperscalers + utilities +
+    # IPPs + REITs + AI/cloud + silicon-dup all get full 10-K/10-Q/8-K (or
+    # 20-F/6-K for FPIs like TSMC) coverage. Empty form_types tuples are
+    # skipped — they would zero out an existing entry on union.
+    for entry in POWER_FILERS.values():
+        if not entry.cik or not entry.form_types:
             continue
         existing = out.get(entry.cik, ())
         merged = tuple(sorted(set(existing) | set(entry.form_types)))
@@ -409,9 +754,70 @@ async def _async_fetch(url: str, is_json: bool = True) -> dict | str:
 
 
 def _html_to_text(html: str) -> str:
+    """Convert SEC filing HTML to plain prose, stripping iXBRL noise.
+
+    Modern (post-2018) SEC filings embed inline XBRL (iXBRL) tags whose text
+    content is XBRL metadata, not human-readable prose. The pre-Track-C
+    extractor saw cover-page iXBRL like `'amzn-20251231 false 2025 FY ...'`
+    and concluded "not power-related". We now strip those elements so the
+    LLM gets real prose body.
+    """
+    if not html:
+        return ""
+
+    # 1) Strip iXBRL preamble blocks. These are `<ix:hidden>` (the XBRL data
+    # store), `<ix:references>`, `<ix:resources>`, `<ix:relationship>`, plus
+    # `<script>` and `<style>` tags that sometimes carry XBRL DTS fragments.
+    # Use a non-greedy multi-line match so we don't accidentally swallow body.
+    for pattern in [
+        r"<ix:hidden\b[^>]*>.*?</ix:hidden>",
+        r"<ix:header\b[^>]*>.*?</ix:header>",
+        r"<ix:references\b[^>]*>.*?</ix:references>",
+        r"<ix:resources\b[^>]*>.*?</ix:resources>",
+        r"<ix:relationship\b[^>]*>.*?</ix:relationship>",
+        r"<script\b[^>]*>.*?</script>",
+        r"<style\b[^>]*>.*?</style>",
+        r"<!--.*?-->",
+    ]:
+        html = re.sub(pattern, " ", html, flags=re.DOTALL | re.IGNORECASE)
+
+    # 2) For remaining inline-XBRL wrappers (`<ix:nonNumeric>`, `<ix:nonFraction>`,
+    # `<ix:fraction>`), keep their inner text — that's actual prose annotated
+    # with XBRL tags. Just unwrap them.
+    html = re.sub(
+        r"</?ix:[a-zA-Z]+(?:\s+[^>]*)?>",
+        " ",
+        html,
+        flags=re.IGNORECASE,
+    )
+
+    # 3) Strip remaining HTML tags.
     text = re.sub(r"<[^>]+>", " ", html)
+    # 4) Decode common HTML entities.
+    text = re.sub(r"&nbsp;", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"&amp;", "&", text, flags=re.IGNORECASE)
     text = re.sub(r"&[a-z#0-9]+;", " ", text)
-    return re.sub(r"\s+", " ", text)
+    # 5) Collapse whitespace.
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+# Regexes for section detection (used by _extract_power_context). Compiled once.
+_SECTION_HEADER_RE = re.compile(
+    r"\b(?:"
+    r"Item\s+\d+[A-Z]?\.?(?:\s|$)"
+    r"|Note\s+\d+[\.:]"
+    r"|Management['’]s\s+Discussion"
+    r"|Significant\s+Transactions"
+    r"|Mergers,?\s+Acquisitions"
+    r"|Derivative\s+(?:Financial\s+)?Instruments"
+    r"|Commitments\s+and\s+Contingencies"
+    r"|Power\s+Purchase\s+Agreement"
+    r"|Energy\s+(?:Supply|Contracts?|Procurement)"
+    r"|Quantitative\s+and\s+Qualitative\s+Disclosures"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _cache_path(key: str) -> Path:
@@ -498,39 +904,108 @@ async def _get_material_8ks(cik: str, company_name: str, since: str = "2023-01-0
 
 
 async def _extract_power_context(url: str, max_chars: int = 6000) -> str:
-    """Fetch 8-K HTML and extract paragraphs mentioning power/energy deals.
+    """Fetch a SEC filing and return paragraphs mentioning power/energy deals.
 
-    Two-tier behavior:
-    1. Keyword-match sentences are preferred (cheap pre-filter that gives the
-       downstream LLM concentrated context).
-    2. When no keywords match, fall back to the first `fallback_chars` of the
-       cleaned filing body so the LLM classifier has actual content to judge
-       relevance from. Without this, a placeholder excerpt would always
-       classify as "not power-related" by default — producing systematic
-       false negatives on filings whose power language doesn't match our
-       narrow keyword list.
+    Track C overhaul:
+    - iXBRL preamble is stripped via the new _html_to_text.
+    - Sentences are matched against a broad keyword list AND can come from
+      anywhere in the document (was previously biased to early sentences via
+      the 6000-char chop).
+    - When no keywords match, return up to N section windows where the
+      classifier can still see real prose (Items 1/2/7, Notes 1/2/11/14
+      tend to carry the relevant text in 10-K/10-Q).
     """
     try:
         html = await _async_fetch(url, is_json=False)
         text = _html_to_text(html)
+        if not text:
+            return ""
+
+        # Skip the leading 5000 chars if they look like iXBRL header noise.
+        # Heuristic: count alpha-word density vs identifier-style tokens
+        # (e.g. 'amzn-20251231', '0001018724', 'P4Y0M', 'http://fasb.org/...').
+        leading = text[:5000]
+        identifier_tokens = len(
+            re.findall(
+                r"\b(?:[a-z]{2,5}-\d{4,8}|[Pp]\d+[YM]\d*M?|\d{8,}|http://[^ ]+)\b",
+                leading,
+            )
+        )
+        word_tokens = len(re.findall(r"\b[A-Za-z]{4,}\b", leading))
+        is_xbrl_heavy = word_tokens > 0 and identifier_tokens / max(word_tokens, 1) > 0.10
+        body = text[5000:] if is_xbrl_heavy else text
+
+        # Broad keyword set — Track C expanded vs the original narrow list to
+        # catch hyperscaler 10-K Derivative-Instruments disclosures, utility
+        # M&A language, and AI-tenant references.
         keywords = [
-            "nuclear", "power purchase", "gigawatt", "megawatt",
-            "energy agreement", "microsoft", "amazon", "google", "meta",
-            "artificial intelligence", "data center", "hyperscale",
+            # Power/energy terms
+            "nuclear", "power purchase", "gigawatt", "megawatt", "ppa",
+            "energy agreement", "renewable", "natural gas", "solar", "wind",
+            "battery storage", "data center", "datacenter", "hyperscale",
+            "artificial intelligence",
+            # Specific phrases used in 10-K Derivative Instruments notes
+            "energy contract", "energy contracts", "megawatt-hours",
+            "megawatt-hour", "mwh", "carbon-free",
+            # Deal/M&A language
+            "merger agreement", "acquisition of", "we will acquire",
+            "all the outstanding equity interests",
+            # Hyperscaler names (will catch counterparty mentions in
+            # supplier/utility filings)
+            "microsoft", "amazon", "alphabet", "google", "meta", "oracle",
+            "aws", "azure", "openai", "anthropic", "coreweave",
+            # Plant/portfolio names that show up across multiple filings
+            "calpine", "vistra", "constellation", "talen", "three mile island",
+            "crane clean energy", "south texas project",
         ]
-        sentences = re.split(r"(?<=[.!?])\s+", text)
-        relevant = []
+
+        # Score sentences and keep the top N most-relevant. We score by
+        # number of distinct keywords matched (so a sentence touching
+        # buyer + capacity + energy_source ranks higher than one with just
+        # "data center" repeated).
+        sentences = re.split(r"(?<=[.!?])\s+", body)
+        scored: list[tuple[int, str]] = []
         for s in sentences:
             s = s.strip()
-            if len(s) > 60 and any(k in s.lower() for k in keywords):
-                relevant.append(s)
-        if relevant:
-            return " ".join(relevant)[:max_chars]
-        # Keyword-miss fallback: hand the LLM a leading slice of the body.
-        # 4000 chars is enough to cover the cover page + Item descriptions
-        # on a typical 8-K, which is what the classifier needs.
-        fallback_chars = 4000
-        return text[:fallback_chars] if text else ""
+            if len(s) < 60 or len(s) > 1000:
+                continue
+            lower = s.lower()
+            matches = sum(1 for k in keywords if k in lower)
+            if matches >= 1:
+                scored.append((matches, s))
+
+        if scored:
+            scored.sort(key=lambda x: x[0], reverse=True)
+            # Take top sentences until we hit max_chars.
+            picked: list[str] = []
+            running = 0
+            for _matches, sentence in scored:
+                if running + len(sentence) > max_chars:
+                    break
+                picked.append(sentence)
+                running += len(sentence) + 1
+            if picked:
+                return " ".join(picked)
+
+        # Section-aware fallback: look for known section headers and return
+        # the first ~2000 chars of each, up to max_chars total. Better than
+        # the old "first 4000 chars" because it skips the cover-page boilerplate.
+        section_windows: list[str] = []
+        running = 0
+        for m in _SECTION_HEADER_RE.finditer(body):
+            start = m.start()
+            window = body[start : start + 2000].strip()
+            if window:
+                if running + len(window) > max_chars:
+                    section_windows.append(window[: max_chars - running])
+                    break
+                section_windows.append(window)
+                running += len(window) + 1
+        if section_windows:
+            return "\n\n".join(section_windows)
+
+        # Last-resort: leading slice of post-XBRL body.
+        return body[:4000]
     except httpx.HTTPStatusError as e:
         logger.warning(
             "edgar.filing_fetch_http_error",
@@ -691,7 +1166,7 @@ async def _mine_amazon_energy_commitment_async() -> dict | None:
                         "is_tech_related": True,
                         "data_source": "SEC EDGAR 10-K",
                         "confidence": 0.95,
-                        "note": f"{int(mwh_m)}M MWh contracted over ~16 years ≈ {int(mwh_m/16/8.76):.0f} GW avg",
+                        "note": f"{int(mwh_m)}M MWh contracted over ~16 years ≈ {int(mwh_m * 1_000_000 / 16 / 8760)} MW continuous-eq",
                     }
                     _save_cache(cache_key, result)
                     return result

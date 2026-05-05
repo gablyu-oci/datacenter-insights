@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server, Building2 } from "lucide-react";
+import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDown, Package, Server, Building2, Sparkles } from "lucide-react";
 
 // Top-level tabs rendered before the Supplier Insights dropdown.
 // Data Centers is first (the primary entry point — Aterio site map + table).
@@ -20,6 +20,7 @@ const AFTER_SUPPLIER = [
   { id: "companies",     label: "Companies",       icon: Building2,  real: true  },
   { id: "triangulation", label: "Triangulation",   icon: GitBranch,  real: false },
   { id: "sources",       label: "Data Sources",    icon: BookOpen,   real: true  },
+  { id: "ai_insights",   label: "AI Insights",     icon: Sparkles,   real: true  },
 ];
 
 const SUPPLIER_IDS = new Set(SUPPLIER_TABS.map(t => t.id));

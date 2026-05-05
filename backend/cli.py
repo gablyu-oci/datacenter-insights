@@ -202,7 +202,13 @@ async def _run_ingest(source: str, days_back: int, limit: int = 500, llm_cap: in
 
         elif source == "edgar_quarterly":
             from agents.edgar_extractor import run_llm_extraction_quarterly
-            result = await run_llm_extraction_quarterly(session, days_back=days_back)
+            # Limit raised to 50 (was 10 default) so the hyperscaler quarterly
+            # slate actually gets processed in one pass — Track C body
+            # extractor + classifier needs to see Amazon/Google/MSFT/Meta/Oracle
+            # 10-Ks to populate capacity_mw for those filers.
+            result = await run_llm_extraction_quarterly(
+                session, days_back=days_back, limit=50,
+            )
             await session.commit()
             logger.info("EDGAR quarterly (10-K + 10-Q) ingestion complete: %s", result)
 
@@ -264,6 +270,75 @@ async def _run_vendor_supply_extract(since: str, limit: int | None):
     print("vendor-supply-extract counters:")
     for k, v in counters.items():
         print(f"  {k}: {v}")
+
+
+# ---------------------------------------------------------------------------
+# edgar-reprocess command (Track A — EDGAR-7)
+#
+# Re-runs the validate_buyer + canonicalize + dedup-id + capacity-flag
+# pipeline against EVERY existing edgar_extractions row WITHOUT calling
+# the LLM again. Useful when the validator or canonicalizer logic
+# changes and you want to re-stamp all existing rows through the new
+# code path.
+#
+# Flags:
+#   --dry-run  : compute deltas but skip the actual UPDATE.
+#   --limit N  : process at most N rows (default: no cap).
+# ---------------------------------------------------------------------------
+
+
+@cli.command(name="edgar-reprocess")
+@click.option("--dry-run", is_flag=True, default=False, help="Compute deltas but skip UPDATE.")
+@click.option("--limit", default=None, type=int, help="Process at most N rows.")
+def edgar_reprocess(dry_run: bool, limit: int | None):
+    """Re-run validation + canonicalization on every edgar_extractions row."""
+    asyncio.run(_run_edgar_reprocess(dry_run, limit))
+
+
+async def _run_edgar_reprocess(dry_run: bool, limit: int | None):
+    from db.session import async_session_factory
+    from db.models import EdgarExtraction
+    from sqlalchemy import select, func
+    from agents.edgar_extractor import reprocess_one, _load_known_company_names
+
+    async with async_session_factory() as session:
+        before_count = (
+            await session.execute(select(func.count(EdgarExtraction.id)))
+        ).scalar() or 0
+
+        known_company_names = await _load_known_company_names(session)
+
+        stmt = select(EdgarExtraction).order_by(EdgarExtraction.id)
+        if limit:
+            stmt = stmt.limit(limit)
+        rows = (await session.execute(stmt)).scalars().all()
+
+        deduped = 0
+        flagged = 0
+        changed = 0
+        for row in rows:
+            delta = await reprocess_one(
+                session, row, known_company_names=known_company_names,
+            )
+            if delta.get("changed"):
+                changed += 1
+            after = delta.get("after") or {}
+            if after.get("flagged_capacity"):
+                flagged += 1
+            if after.get("canonical_deal_id") and not (delta.get("before") or {}).get("canonical_deal_id"):
+                deduped += 1
+
+        if dry_run:
+            await session.rollback()
+        else:
+            await session.commit()
+
+        after_count = (
+            await session.execute(select(func.count(EdgarExtraction.id)))
+        ).scalar() or 0
+
+    print(f"EDGAR rows before: {before_count}, after: {after_count}, deduped: {deduped}, flagged: {flagged}")
+    print(f"  rows changed: {changed} (dry_run={dry_run})")
 
 
 # ---------------------------------------------------------------------------

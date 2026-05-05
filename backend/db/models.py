@@ -21,7 +21,7 @@ from sqlmodel import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy import BigInteger, Boolean, Column as SAColumn, Numeric, text
+from sqlalchemy import BigInteger, Boolean, Column as SAColumn, Integer, Numeric, text
 from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
 
 
@@ -592,9 +592,10 @@ class EdgarExtraction(SQLModel, table=True):
     here too.
     """
     __tablename__ = "edgar_extractions"
-    __table_args__ = (
-        UniqueConstraint("accession_number", name="uq_edgar_extraction_accession"),
-    )
+    # NOTE: Track C migration 012 dropped the UNIQUE(accession_number)
+    # constraint so multi-deal filings (e.g. Constellation Q3 10-Q with 3
+    # power-related items) can produce N rows sharing one accession_number.
+    # Disambiguated by `deal_index`. A non-unique index replaces it.
 
     id: Optional[int] = Field(default=None, sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True))
     cik: str = Field(max_length=20, index=True)
@@ -618,6 +619,41 @@ class EdgarExtraction(SQLModel, table=True):
     # 'vendor_supply' (Phase 2 supplier-insights extractor). Plain VARCHAR
     # rather than enum to keep migrations simple; routers filter on this.
     pillar: Optional[str] = Field(default=None, max_length=32, index=True)
+    # --- Power-pipeline columns (migration 010) -------------------------
+    # Originals preserved when validate_buyer rejects the LLM's output.
+    rejected_buyer_raw: Optional[str] = Field(default=None)
+    rejected_seller_raw: Optional[str] = Field(default=None)
+    # Canonical names from entity_resolution (when confidence >= 0.90 and
+    # not auto-created); falls back to validated raw value otherwise.
+    buyer_canonical: Optional[str] = Field(default=None, index=True)
+    seller_canonical: Optional[str] = Field(default=None)
+    # MWh→MW derivation methodology (≤200 chars).
+    methodology: Optional[str] = Field(default=None, sa_column=SAColumn(Text))
+    # Stable 16-char hash for deal-level dedup (buyer | seller | 100 MW
+    # bucket | calendar quarter).
+    canonical_deal_id: Optional[str] = Field(default=None, max_length=20, index=True)
+    # Sanity guard: True when capacity_mw > 100,000 MW.
+    flagged_capacity: bool = Field(default=False, sa_column=SAColumn(Boolean, nullable=False, server_default=text("FALSE")))
+    # How many distinct rows share this canonical_deal_id (≥1).
+    appearance_count: int = Field(default=1)
+    # --- Track C columns (migration 012) -------------------------------
+    # True when the LLM extractor classifies the filing as power/datacenter
+    # related, regardless of whether buyer/capacity got extracted. Lets the UI
+    # show rows even when individual fields are null (per user requirement
+    # 2026-05-04: "keep rows even without capacity or buyer, but only if
+    # power-contract or datacenter related").
+    is_power_related: bool = Field(
+        default=False,
+        sa_column=SAColumn(Boolean, nullable=False, server_default=text("FALSE"), index=True),
+    )
+    # Body-extracted signing date (e.g. "On January 10, 2025…"). Distinct from
+    # filing_date which is when the filing was submitted to SEC.
+    signing_date: Optional[date] = Field(default=None)
+    # Disambiguates rows from a single filing that yielded multiple deals.
+    deal_index: int = Field(
+        default=0,
+        sa_column=SAColumn(Integer, nullable=False, server_default=text("0")),
+    )
     created_at: datetime = Field(default_factory=_ts_now)
 
 

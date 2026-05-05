@@ -4,7 +4,7 @@ import {
   LineChart, Line, ResponsiveContainer,
 } from "recharts";
 import { useApi } from "../../hooks/useApi";
-import type { PowerCapacityResponse, PowerTimeseriesResponse } from "../../types";
+import type { PowerCapacityResponse } from "../../types";
 import ErrorPanel from "../shared/ErrorPanel";
 import CitationFooter from "../shared/CitationFooter";
 import {
@@ -17,23 +17,41 @@ import {
 
 interface CuratedDeal {
   id: string;
-  buyer: string;
-  seller: string;
+  // Track C: buyer/seller/energy_source can be null on edgar rows that were
+  // classified as power-related but failed individual-field extraction. The
+  // table renders `—` for null values rather than hiding the row.
+  buyer: string | null;
+  seller: string | null;
   deal_type: string;
-  energy_source: string;
+  energy_source: string | null;
   capacity_mw: number | null;
-  location: string;
-  state: string;
-  announced_date: string;
-  status: string;
-  duration_years: number | null;
-  headline: string;
+  location?: string;
+  state?: string;
+  announced_date: string | null;
+  status?: string;
+  duration_years?: number | null;
+  headline: string | null;
   source_type: string;
   source_url: string;
   edgar_url: string | null;
-  excerpt: string;
-  confidence: number;
+  excerpt: string | null;
+  confidence: number | null;
   data_source: string;
+  // Optional fields populated by the live EDGAR extraction pipeline.
+  // Curated/archived rows may omit these.
+  source?: "live" | "curated_archived";
+  archived?: boolean;
+  flagged_capacity?: boolean;
+  methodology?: string | null;
+  canonical_deal_id?: string | null;
+  appearance_count?: number;
+  last_extracted?: string;
+  // Track C — true when the LLM extractor classified the underlying filing
+  // as power/datacenter related, even when buyer/capacity couldn't be
+  // pulled. The dashboard uses this as the visibility filter.
+  is_power_related?: boolean;
+  signing_date?: string | null;
+  deal_index?: number;
 }
 
 interface GWSummaryEntry {
@@ -45,7 +63,7 @@ interface GWSummaryEntry {
 
 interface AnnouncementsResponse {
   curated: CuratedDeal[];
-  edgar: unknown[];
+  edgar: CuratedDeal[];
   gw_summary: Record<string, GWSummaryEntry>;
   total_deals: number;
   last_updated: string;
@@ -132,10 +150,13 @@ function SourceBadge({ type, url }: { type: string; url: string }) {
 function DealRow({ deal, expanded, onToggle }: {
   deal: CuratedDeal; expanded: boolean; onToggle: () => void;
 }) {
-  const EIcon = ENERGY_ICONS[deal.energy_source] ?? Zap;
-  const buyerName = deal.buyer.split(" / ")[0];
+  // Track C: tolerate null buyer / energy_source / status on edgar rows that
+  // were classified power-related but the LLM extractor couldn't pull
+  // individual fields from. Display `—` placeholders rather than crashing.
+  const EIcon = ENERGY_ICONS[deal.energy_source ?? ""] ?? Zap;
+  const buyerName = (deal.buyer ?? "—").split(" / ")[0];
   const buyerColor = COMPANY_COLORS[buyerName] ?? "#64748b";
-  const statusColor = STATUS_COLOR[deal.status] ?? "#94a3b8";
+  const statusColor = STATUS_COLOR[deal.status ?? ""] ?? "#94a3b8";
   return (
     <>
       <tr onClick={onToggle} style={{
@@ -146,21 +167,85 @@ function DealRow({ deal, expanded, onToggle }: {
           {expanded ? <ChevronUp size={14} color="#64748b" /> : <ChevronDown size={14} color="#64748b" />}
         </td>
         <td style={{ padding: "10px 12px" }}>
-          <span style={{ padding: "2px 8px", borderRadius: "4px", background: `${buyerColor}22`, color: buyerColor, fontSize: "11px", fontWeight: 600 }}>
-            {buyerName}
-          </span>
-        </td>
-        <td style={{ padding: "10px 12px", color: "#e2e8f0", fontSize: "12px", maxWidth: "340px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <EIcon size={12} color="#64748b" />
-            <span style={{ lineHeight: "1.4" }}>{deal.headline}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+            <span style={{ padding: "2px 8px", borderRadius: "4px", background: `${buyerColor}22`, color: buyerColor, fontSize: "11px", fontWeight: 600 }}>
+              {buyerName}
+            </span>
+            {/* FE3: live provenance pill */}
+            {(deal.source ?? "live") === "live" && (
+              <span
+                style={{
+                  padding: "2px 6px", borderRadius: 4,
+                  background: "#16a34a", color: "white",
+                  fontSize: 10, fontWeight: 700, letterSpacing: 0.3,
+                }}
+                title="Sourced from live SEC EDGAR extraction"
+              >
+                LIVE
+              </span>
+            )}
           </div>
         </td>
-        <td style={{ padding: "10px 12px", color: "white", fontWeight: 600, fontSize: "13px", whiteSpace: "nowrap" }}>{fmtMW(deal.capacity_mw)}</td>
-        <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px" }}>{deal.energy_source}</td>
-        <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px", whiteSpace: "nowrap" }}>{deal.announced_date}</td>
+        <td style={{ padding: "10px 12px", color: "#e2e8f0", fontSize: "12px", maxWidth: "340px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+            <EIcon size={12} color="#64748b" />
+            <span style={{ lineHeight: "1.4" }}>{deal.headline ?? <span style={{ color: "#64748b", fontStyle: "italic" }}>(power-related — body not yet parsed)</span>}</span>
+            {/* FE3: appearance-count badge */}
+            {deal.appearance_count != null && deal.appearance_count > 1 && (
+              <span
+                style={{
+                  padding: "2px 6px", borderRadius: 4,
+                  background: "#334155", color: "#cbd5e1",
+                  fontSize: 10, fontWeight: 600, whiteSpace: "nowrap",
+                }}
+                title={`This deal has been mentioned in ${deal.appearance_count} filings`}
+              >
+                mentioned in {deal.appearance_count} filings
+              </span>
+            )}
+          </div>
+        </td>
+        <td
+          style={{ padding: "10px 12px", color: "white", fontWeight: 600, fontSize: "13px", whiteSpace: "nowrap" }}
+          title={deal.methodology ?? undefined}
+        >
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+            {fmtMW(deal.capacity_mw)}
+            {/* FE3: methodology info icon */}
+            {deal.methodology && (
+              <span
+                style={{
+                  display: "inline-flex", alignItems: "center", justifyContent: "center",
+                  width: 13, height: 13, borderRadius: "50%",
+                  background: "#1e293b", border: "1px solid #475569",
+                  color: "#94a3b8", fontSize: 9, fontWeight: 700,
+                  cursor: "help",
+                }}
+                title={deal.methodology}
+              >
+                i
+              </span>
+            )}
+            {/* FE3: flagged-capacity warning */}
+            {deal.flagged_capacity && (
+              <span
+                style={{
+                  padding: "1px 5px", borderRadius: 4,
+                  background: "#78350f", color: "#fde68a",
+                  border: "1px solid #b45309",
+                  fontSize: 10, fontWeight: 700,
+                }}
+                title="Capacity > 100 GW — flagged for review"
+              >
+                ⚠
+              </span>
+            )}
+          </span>
+        </td>
+        <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px" }}>{deal.energy_source ?? "—"}</td>
+        <td style={{ padding: "10px 12px", color: "#94a3b8", fontSize: "11px", whiteSpace: "nowrap" }}>{deal.announced_date ?? "—"}</td>
         <td style={{ padding: "10px 12px" }}>
-          <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status}</span>
+          <span style={{ color: statusColor, fontSize: "11px" }}>&#x25CF; {deal.status ?? "—"}</span>
         </td>
         <td style={{ padding: "10px 12px" }}>
           <SourceBadge type={deal.source_type} url={deal.source_url} />
@@ -173,7 +258,7 @@ function DealRow({ deal, expanded, onToggle }: {
               <div><div style={{ color: "#64748b", fontSize: "10px" }}>Seller</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{deal.seller}</div></div>
               <div><div style={{ color: "#64748b", fontSize: "10px" }}>Location</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{deal.location}</div></div>
               {deal.duration_years && <div><div style={{ color: "#64748b", fontSize: "10px" }}>Duration</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{deal.duration_years} yr</div></div>}
-              <div><div style={{ color: "#64748b", fontSize: "10px" }}>Confidence</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{(deal.confidence * 100).toFixed(0)}%</div></div>
+              <div><div style={{ color: "#64748b", fontSize: "10px" }}>Confidence</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{((deal.confidence ?? 0) * 100).toFixed(0)}%</div></div>
               <div><div style={{ color: "#64748b", fontSize: "10px" }}>Data Source</div><div style={{ color: "#e2e8f0", fontSize: "12px" }}>{deal.data_source}</div></div>
             </div>
             <div style={{ background: "#0f172a", borderRadius: "6px", padding: "10px 12px", color: "#94a3b8", fontSize: "12px", lineHeight: "1.6", borderLeft: "3px solid #3b82f6" }}>
@@ -216,6 +301,19 @@ function ModalDealCard({ deal }: { deal: CuratedDeal }) {
           }}>
             {isEdgar ? "SEC EDGAR" : "Press"}
           </div>
+          {/* FE2: live-vs-archived provenance pill */}
+          {deal.source && (
+            <div style={{
+              marginTop: 4,
+              padding: "2px 6px", borderRadius: "4px",
+              fontSize: "9px", fontWeight: 700, textAlign: "center",
+              background: deal.source === "live" ? "#052e1a" : "#1f1a0a",
+              border: `1px solid ${deal.source === "live" ? "#16a34a" : "#92400e"}`,
+              color: deal.source === "live" ? "#4ade80" : "#fbbf24",
+            }}>
+              {deal.source === "live" ? "LIVE" : "ARCHIVED"}
+            </div>
+          )}
         </div>
 
         {/* Content */}
@@ -310,7 +408,7 @@ function DealsModal({
   onClose: () => void;
 }) {
   const color = COMPANY_COLORS[company] ?? "#6366f1";
-  const sorted = [...deals].sort((a, b) => b.announced_date.localeCompare(a.announced_date));
+  const sorted = [...deals].sort((a, b) => (b.announced_date ?? "").localeCompare(a.announced_date ?? ""));
 
   return (
     // Backdrop
@@ -460,7 +558,25 @@ export default function PowerTab() {
   // and shadowed the local palette → every line rendered as the #ccc fallback.
   const colors = { ...COMPANY_COLORS, ...(capData?.colors ?? {}) };
   const gwSummary = annData?.gw_summary ?? {};
-  const deals = annData?.curated ?? [];
+  // FE1: Main table now renders ONLY live EDGAR extractions. Curated rows are
+  // still shipped in the payload (flagged archived: true) but are partitioned
+  // server-side and surfaced only inside the per-company drill-down modal.
+  // Defensive: explicitly skip any row that arrives with archived === true.
+  // Track C: render any edgar row classified as power/datacenter related,
+  // even if buyer or capacity_mw couldn't be extracted. The extractor's
+  // STEP-1 sets `is_power_related` on every row; the dashboard filter trusts
+  // that classification and shows the row with `—` placeholders for missing
+  // fields. Per-user requirement (2026-05-04): "keep the rows even without
+  // capacity or buyer, but it has to be power contracts and data center
+  // related."
+  const deals = (annData?.edgar ?? []).filter(
+    d => d.archived !== true && (
+      d.is_power_related === true ||
+      // Backward-compat: a row with both buyer + capacity is by definition
+      // power-related even if the flag wasn't set by the older extractor.
+      (d.buyer && d.capacity_mw)
+    )
+  );
 
   const realGWData = Object.entries(gwSummary).map(([company, v]) => ({
     company,
@@ -470,8 +586,9 @@ export default function PowerTab() {
   })).sort((a, b) => b["Total GW"] - a["Total GW"]);
 
   const filteredDeals = deals.filter(d => {
-    const buyerMatch = filterCompany === "All" || d.buyer.includes(filterCompany);
-    const typeMatch = filterType === "All" || d.energy_source.includes(filterType);
+    // Defensive: edgar rows may have null buyer/energy_source post-Track-C.
+    const buyerMatch = filterCompany === "All" || (d.buyer ?? "").includes(filterCompany);
+    const typeMatch = filterType === "All" || (d.energy_source ?? "").includes(filterType);
     return buyerMatch && typeMatch;
   });
 
@@ -580,20 +697,48 @@ export default function PowerTab() {
   const totalAnnGW = Object.values(gwSummary).reduce((s, v) => s + v.gw_total, 0).toFixed(1);
   const totalNuclearGW = Object.values(gwSummary).reduce((s, v) => s + v.nuclear_gw, 0).toFixed(1);
 
+  // FE3: compute most-recent extraction timestamp across edgar rows.
+  // Rendered as a chip in the announcements-table section header. If no row
+  // carries a `last_extracted` value the chip is hidden.
+  const lastExtractedLabel = (() => {
+    const stamps = (annData?.edgar ?? [])
+      .map(d => d.last_extracted)
+      .filter((s): s is string => typeof s === "string" && !!s)
+      .map(s => Date.parse(s))
+      .filter(n => !Number.isNaN(n));
+    if (stamps.length === 0) return null;
+    const latest = new Date(Math.max(...stamps));
+    const yyyy = latest.getUTCFullYear();
+    const mm = String(latest.getUTCMonth() + 1).padStart(2, "0");
+    const dd = String(latest.getUTCDate()).padStart(2, "0");
+    const hh = String(latest.getUTCHours()).padStart(2, "0");
+    const min = String(latest.getUTCMinutes()).padStart(2, "0");
+    return `${yyyy}-${mm}-${dd} ${hh}:${min} UTC`;
+  })();
+
   // Drill-down union: curated (historical hand-verified) + edgar (live LLM
   // extractions). Both arrays come from /api/power/announcements which already
   // canonicalises buyer names; we additionally accept seller-side matches so a
   // utility-side filing (e.g. Talen 8-K naming Meta as the buyer) shows up
   // when the user drills on "Meta". Sorted newest-first by announced_date.
+  // FE2: Drill-down union preserves historical context — curated archived
+  // rows are merged with live edgar rows, each tagged with `source` so the
+  // modal can render a small badge ("LIVE" vs "ARCHIVED"). If the backend
+  // already stamps a source tag on a row we trust it; otherwise we infer
+  // from which array the row came in on, defaulting to "live".
   const drillDeals = (() => {
     if (!drillCompany) return [];
     const matches = (s: string | null | undefined) =>
       !!s && s.toLowerCase().includes(drillCompany.toLowerCase());
-    type RawDeal = { announced_date?: string | null; buyer?: string | null; seller?: string | null };
-    const all: RawDeal[] = [
-      ...((annData?.curated ?? []) as RawDeal[]),
-      ...((annData?.edgar ?? []) as RawDeal[]),
-    ];
+    const curatedTagged = (annData?.curated ?? []).map(d => ({
+      ...d,
+      source: (d.source ?? "curated_archived") as "live" | "curated_archived",
+    }));
+    const edgarTagged = (annData?.edgar ?? []).map(d => ({
+      ...d,
+      source: (d.source ?? "live") as "live" | "curated_archived",
+    }));
+    const all: CuratedDeal[] = [...curatedTagged, ...edgarTagged];
     return all
       .filter(d => matches(d.buyer) || matches(d.seller))
       .sort((a, b) => (b.announced_date ?? "").localeCompare(a.announced_date ?? ""));
@@ -720,7 +865,23 @@ export default function PowerTab() {
       <div style={CARD_STYLE}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 10 }}>
           <div>
-            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Power Contract Announcements -- Live Data</h3>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Power Contract Announcements -- Live Data</h3>
+              {/* FE3: last-extracted chip — only shown if any edgar row has a timestamp */}
+              {lastExtractedLabel && (
+                <span
+                  style={{
+                    padding: "2px 8px", borderRadius: 12,
+                    background: "#0b1220", border: "1px solid #1e3a5f",
+                    color: "#60a5fa", fontSize: 10, fontWeight: 600,
+                    whiteSpace: "nowrap",
+                  }}
+                  title="Most recent EDGAR extraction timestamp across visible deals"
+                >
+                  Last extracted: {lastExtractedLabel}
+                </span>
+              )}
+            </div>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
               {displayedDeals.length} of {filteredDeals.length} matching · click column headers to sort · type or pick from each filter dropdown to narrow
             </p>

@@ -171,7 +171,9 @@ function SiteMap({
     >
       {/* Basemap: Google Satellite when API key works; CARTO dark fallback. */}
       {GMAPS_KEY ? (
-        <ReactLeafletGoogleLayer apiKey={GMAPS_KEY} type="satellite" />
+        <ReactLeafletGoogleLayer
+          {...({ apiKey: GMAPS_KEY, type: "satellite" } as React.ComponentProps<typeof ReactLeafletGoogleLayer>)}
+        />
       ) : (
         <TileLayer
           attribution='&copy; <a href="https://carto.com/">CARTO</a>'
@@ -571,7 +573,7 @@ export default function DataCentersTab() {
           </span>
         </div>
         <div style={{ color: "#64748b", fontSize: "11px" }}>
-          Showing {filtered.length} of {totalInDb.toLocaleString()} sites (first 500 loaded)
+          Showing {filtered.length} of {totalInDb.toLocaleString()} sites
         </div>
       </div>
 
@@ -687,7 +689,7 @@ export default function DataCentersTab() {
                     {byProvider.map((entry, i) => (
                       <Cell key={i} fill={getProviderColor(entry.provider)} />
                     ))}
-                    <LabelList dataKey="mw" position="right" fill="#e2e8f0" fontSize={10} formatter={(v: number) => v.toLocaleString()} />
+                    <LabelList dataKey="mw" position="right" fill="#e2e8f0" fontSize={10} formatter={(v) => Number(v).toLocaleString()} />
                   </Bar>
                 </BarChart>
               ) : (
@@ -710,8 +712,8 @@ export default function DataCentersTab() {
                   </Pie>
                   <Tooltip
                     {...TOOLTIP_STYLES}
-                    formatter={(v: number, name: string) => [
-                      `${v.toLocaleString()} MW`, name,
+                    formatter={(v, name) => [
+                      `${Number(v).toLocaleString()} MW`, String(name),
                     ]}
                   />
                 </PieChart>
@@ -754,7 +756,7 @@ export default function DataCentersTab() {
                     {byState.map((_, i) => (
                       <Cell key={i} fill={`hsl(${210 + i * 12}, 80%, ${60 - i * 3}%)`} />
                     ))}
-                    <LabelList dataKey="mw" position="right" fill="#e2e8f0" fontSize={10} formatter={(v: number) => v.toLocaleString()} />
+                    <LabelList dataKey="mw" position="right" fill="#e2e8f0" fontSize={10} formatter={(v) => Number(v).toLocaleString()} />
                   </Bar>
                 </BarChart>
               ) : (
@@ -777,7 +779,7 @@ export default function DataCentersTab() {
                   </Pie>
                   <Tooltip
                     {...TOOLTIP_STYLES}
-                    formatter={(v: number, name: string) => [`${v.toLocaleString()} MW`, name]}
+                    formatter={(v, name) => [`${Number(v).toLocaleString()} MW`, String(name)]}
                   />
                 </PieChart>
               )}
@@ -830,8 +832,8 @@ export default function DataCentersTab() {
               <YAxis tick={{ fill: "#64748b", fontSize: 10 }} unit={yearStageMetric === "mw" ? " MW" : ""} />
               <Tooltip
                 {...TOOLTIP_STYLES}
-                formatter={(v: number) => [
-                  yearStageMetric === "mw" ? `${v.toLocaleString()} MW` : `${v.toLocaleString()} sites`,
+                formatter={(v) => [
+                  yearStageMetric === "mw" ? `${Number(v).toLocaleString()} MW` : `${Number(v).toLocaleString()} sites`,
                 ]}
               />
               <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} />
@@ -851,7 +853,7 @@ export default function DataCentersTab() {
                       position="top"
                       fill="#cbd5e1"
                       fontSize={9}
-                      formatter={(v: number) => (v > 0 ? v.toLocaleString() : "")}
+                      formatter={(v) => (Number(v) > 0 ? Number(v).toLocaleString() : "")}
                     />
                   </Bar>
                 );

@@ -8,7 +8,13 @@ import json
 from pathlib import Path
 from typing import List
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Pydantic-settings only exposes declared fields. Loading .env into os.environ
+# too lets ad-hoc os.environ.get() lookups (e.g. tools/web_search.py reading
+# BRAVE_SEARCH_API_KEY) see secrets without us declaring every key here.
+load_dotenv(Path(__file__).parent / ".env", override=False)
 
 
 class Settings(BaseSettings):
