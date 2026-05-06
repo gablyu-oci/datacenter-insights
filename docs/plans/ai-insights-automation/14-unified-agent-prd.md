@@ -1,7 +1,7 @@
 # PRD 14 — Unified Agent (OpenClaw Phases 2–5)
 
 **Status:** Draft for architect / backend / QA handoff
-**Owner (PM):** Karan (analyst) + platform team
+**Owner (PM):** the user (analyst) + platform team
 **Date:** 2026-05-06
 **Predecessors:** PRD/ADR-13 (MCP migration, shipped), `11-openclaw-deployment.md`, `11b-openclaw-migration-architecture.md`, `11c-openclaw-migration-addendum.md`
 **Successor docs:** `14-unified-agent-architecture.md` (architect), `14-unified-agent-test-evidence.md` (QA)
@@ -75,10 +75,10 @@ ETL crons (`edgar_daily`, `permits_*`, `anomaly_detection_nightly`, etc.) do not
 
 > Format: As a [persona], I want [capability] so that [benefit].
 
-- **US-1 (Analyst — Karan).** As an analyst, I want the **"Run again"** button on the AI Insights tab to still produce 3–5 fresh insights with charts and citations, so that my day-of-week briefing flow is unaffected.
-- **US-2 (Analyst — Karan).** As an analyst, I want the **daily 09:00 UTC cron** to publish today's insights via the same agentic path, so that what I see on Monday morning matches what I'd get if I clicked "Run again" myself.
-- **US-3 (Analyst — Karan).** As an analyst, I want the **weekly brief on Sunday 23:00 UTC** to come out of the same agent (not a separate prompt), so that the brief's voice and citation style match the daily insights.
-- **US-4 (Analyst — Karan).** As an analyst, I want to **drill into any insight via chat** with the same memory context the synthesis agent had, so that follow-up questions don't lose the synthesis-time evidence.
+- **US-1 (Analyst — the user).** As an analyst, I want the **"Run again"** button on the AI Insights tab to still produce 3–5 fresh insights with charts and citations, so that my day-of-week briefing flow is unaffected.
+- **US-2 (Analyst — the user).** As an analyst, I want the **daily 09:00 UTC cron** to publish today's insights via the same agentic path, so that what I see on Monday morning matches what I'd get if I clicked "Run again" myself.
+- **US-3 (Analyst — the user).** As an analyst, I want the **weekly brief on Sunday 23:00 UTC** to come out of the same agent (not a separate prompt), so that the brief's voice and citation style match the daily insights.
+- **US-4 (Analyst — the user).** As an analyst, I want to **drill into any insight via chat** with the same memory context the synthesis agent had, so that follow-up questions don't lose the synthesis-time evidence.
 - **US-5 (Operator).** As an operator, I want a **rolling 7-day cost dashboard** at `/api/insights/cost-summary` showing token usage per session class (synthesis / brief / chat), so that I can spot a runaway cron before it blows the budget.
 - **US-6 (Operator).** As an operator, I want every synthesis run to leave a **trail of `agent_tool_call` rows** (`query_database`, `web_search`, `run_skill`, `persist_insight`), so that I can audit what evidence each insight was built on.
 - **US-7 (Developer).** As a developer, I want **one chat handler, one system prompt, one toolbelt**, so that bug fixes don't have to be applied twice (once to legacy, once to OpenClaw).
@@ -330,7 +330,7 @@ Each phase is a single PR (or small PR series) gated on its closing ACs. Each ro
 ### R-4. Brave free-tier RPS exceeded across simultaneous synthesis + chat sessions
 
 **Severity:** Medium
-**Likelihood:** Medium (Monday morning: cron 09:00 UTC + Karan opens chat at 09:01 UTC)
+**Likelihood:** Medium (Monday morning: cron 09:00 UTC + the user opens chat at 09:01 UTC)
 **Mitigation:**
 - Existing `WEB_SEARCH_PER_RUN=8` cap is **per session**, not global. Two concurrent sessions can each spend 8.
 - For Phase 5+, consider a global token-bucket on `web_search` (not in scope for this PRD; logged as future work).

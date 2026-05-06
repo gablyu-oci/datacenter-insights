@@ -4,7 +4,7 @@ Revision ID: c9d3e4f5a6b7
 Revises: b8c2d3e4f5a6
 Create Date: 2026-04-30 18:00:00.000000
 
-Karan-fixes batch (AC3) -- county-level US BUILDING permit ingestion.
+the user-fixes batch (AC3) -- county-level US BUILDING permit ingestion.
 
 Adds the `building_permits` table to hold raw county-issued building
 permit rows (Loudoun VA, Mesa AZ, Grant County WA, etc.). This is

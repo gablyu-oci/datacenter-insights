@@ -1,5 +1,5 @@
 # ARCHITECTURE — AI Insights Tab
-**Owner:** Architect · **Stakeholder:** Karan (via PM)
+**Owner:** Architect · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./UX.md`](./UX.md) · [`./TASKS.md`](./TASKS.md)
 **Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
@@ -805,7 +805,7 @@ LlamaStack token cost is zero (instance principal). Latency is the cost.
 
 Sent to existing telemetry endpoint (no new infra; piggy-back on `routers/events.py`).
 
-### A11.3 Karan-facing observability
+### A11.3 the user-facing observability
 
 Per PRD §5.6, the per-card *provenance footer* is the user-visible observability surface: data sources used, skills run, confidence, materiality, generated_at, model, session_id. The `InsightProvenanceFooter` component reads from the persisted `Insight` record + linked `Chart` + `tool_call_log` summary. There is no separate observability dashboard for V1 — the provenance footer *is* the observability view for users.
 

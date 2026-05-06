@@ -1,7 +1,7 @@
 # ADR-13 — Migrate Chat-Tool Routing from TypeScript Plugins to a Native Python MCP Server
 
 **Status:** Accepted (2026-05-06)
-**Decision drivers:** Karan (primary stakeholder), strategic-insights-tool team
+**Decision drivers:** the user (primary stakeholder), strategic-insights-tool team
 **Supersedes (in part):** `11b-openclaw-migration-architecture.md` §3-§4 (TS plugin tool layer); `11c-openclaw-migration-addendum.md` §G (TS extension scaffold).
 **Untouched:** `11a-openclaw-migration-prd.md` goals, `11b §5` forwarder, `11b §6` dual-store, `11b §7` feature flag, `11b §8` SOUL.md grounding pattern, the `ToolLoopDriver` legacy path, the seven tool function bodies, `sql_gate`, the synthesis pipeline.
 

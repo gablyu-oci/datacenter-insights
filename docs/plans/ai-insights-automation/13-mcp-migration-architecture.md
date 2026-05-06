@@ -19,7 +19,7 @@ decisions — only translate this to code.
 ```
                           OpenClaw lane (OPENCLAW_ENABLED=1)
                           --------------------------------------
-   Karan ── React dock ── POST /api/insights/<id>/chat ──┐
+   the user ── React dock ── POST /api/insights/<id>/chat ──┐
                                                          │
                                                          ▼
                                        backend.openclaw.forwarder
@@ -62,7 +62,7 @@ decisions — only translate this to code.
 
                           Legacy lane (OPENCLAW_ENABLED=0, rollback target)
                           ------------------------------------------------
-   Karan ── React dock ── POST /api/insights/<id>/chat ──┐
+   the user ── React dock ── POST /api/insights/<id>/chat ──┐
                                                          ▼
                               ToolLoopDriver (in-process, untouched)
                                                          │

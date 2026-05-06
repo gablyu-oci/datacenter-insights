@@ -1,5 +1,5 @@
 # PRD: Data-Source Pipeline Subsystem
-**Owner:** Strategic Insights team (OCI) | **Stakeholder:** Karan | **Status:** Draft v1.0 | **Date:** 2026-04-28
+**Owner:** Strategic Insights team (OCI) | **Stakeholder:** the user | **Status:** Draft v1.0 | **Date:** 2026-04-28
 
 ---
 
@@ -12,7 +12,7 @@ The Datacenter & Power Intelligence Platform currently runs on approximately 78%
 - **`curated_deals.py` is the one solid asset.** 22 hand-verified deals with real SEC URLs, lat/lon coordinates, MW figures, and meaningful confidence scores. This must be preserved and extended, not replaced.
 - **No permit data, no earnings transcripts, no satellite imagery, and no Aterio dataset integration exist** despite the UI displaying tabs for all of them backed by random numbers.
 
-The result: Karan and analysts cannot trust any number on the dashboard. The platform looks functional but is not. Decisions made from this data would be wrong.
+The result: the user and analysts cannot trust any number on the dashboard. The platform looks functional but is not. Decisions made from this data would be wrong.
 
 ---
 
@@ -45,11 +45,11 @@ The result: Karan and analysts cannot trust any number on the dashboard. The pla
 
 ## 3. User Stories
 
-### Karan (Executive Sponsor)
+### the user (Executive Sponsor)
 
-- **US-K1:** As Karan, I want every number on the Power tab for Northern Virginia to link to its primary source (SEC filing, utility agreement, or permit record) so that I can verify claims before citing them in strategy meetings.
-- **US-K2:** As Karan, I want the dashboard to show "No data available -- source X not yet integrated" instead of a fake number so that I am never misled by plausible-looking fabricated data.
-- **US-K3:** As Karan, I want to see when each datapoint was last refreshed (e.g., "SEC filing retrieved 2026-04-27 at 14:32 UTC") so that I know how current the intelligence is.
+- **US-K1:** As the user, I want every number on the Power tab for Northern Virginia to link to its primary source (SEC filing, utility agreement, or permit record) so that I can verify claims before citing them in strategy meetings.
+- **US-K2:** As the user, I want the dashboard to show "No data available -- source X not yet integrated" instead of a fake number so that I am never misled by plausible-looking fabricated data.
+- **US-K3:** As the user, I want to see when each datapoint was last refreshed (e.g., "SEC filing retrieved 2026-04-27 at 14:32 UTC") so that I know how current the intelligence is.
 
 ### Strategy Analyst
 
@@ -505,7 +505,7 @@ The triangulation engine MUST:
 | 3 | NVIDIA + TSMC earnings parser. Aterio Excel ingestion. Storage layer with lineage. |
 | 4 | Triangulation engine rewired to consume pipeline. Mock data gated behind flag. |
 | 5 | Integration testing. Source-link every datapoint in NoVA tabs. Confidence score audit. |
-| 6 | Buffer / polish. Karan demo. |
+| 6 | Buffer / polish. the user demo. |
 
 ---
 

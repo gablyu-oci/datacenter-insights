@@ -2,7 +2,7 @@
 # Datacenter & Power Intelligence Platform
 
 **Date:** 2026-04-28 | **Author:** Strategic Insights Research Team | **Status:** Final Draft
-**Scope:** Phase 1 -- **National (all 50 US states + DC)** with explicit per-state coverage indicators per `00-DECISIONS-AND-CONSTRAINTS.md` §5.2 + §5.3 | **Audience:** Karan, Strategy team, Engineering
+**Scope:** Phase 1 -- **National (all 50 US states + DC)** with explicit per-state coverage indicators per `00-DECISIONS-AND-CONSTRAINTS.md` §5.2 + §5.3 | **Audience:** the user, Strategy team, Engineering
 
 > **Reading note (added 2026-04-28):** the per-source "NoVA coverage" cells throughout this report were the original framing when scope was Northern Virginia only. They remain useful as a *depth* indicator (NoVA is the heaviest datacenter market and sources that cover it well are likely high-value) but they are no longer a scope filter — the MVP runs nationally and any state with no covered source falls into the `<NoStateCoverage />` empty state per the coverage-honesty rule.
 
@@ -10,7 +10,7 @@
 
 ## Executive Summary
 
-This report evaluates **24 data sources** across three intelligence pillars (Power & Geographic Expansion, GPU Supply Chain, Satellite Imagery) for the OCI Datacenter & Power Intelligence Platform. The platform must answer Karan's core question: *"Is there enough power being contracted to actually run all the GPUs being shipped -- and where is the gap?"*
+This report evaluates **24 data sources** across three intelligence pillars (Power & Geographic Expansion, GPU Supply Chain, Satellite Imagery) for the OCI Datacenter & Power Intelligence Platform. The platform must answer the user's core question: *"Is there enough power being contracted to actually run all the GPUs being shipped -- and where is the gap?"*
 
 **Key findings (national MVP):**
 - A **national MVP can be built for $0/year** using free federal/state sources for the pillars that have national-scale free options (Aterio one-time CSV + SEC EDGAR + EPA ECHO + Sentinel-2). Building permits are partial: 6 states with free state APIs (VA + NY/WA/CO/OR via Socrata + TX TCEQ) cover the heaviest datacenter markets; the other 44 states render explicit no-coverage UI states.
@@ -88,7 +88,7 @@ This report evaluates **24 data sources** across three intelligence pillars (Pow
 | **Access method** | REST API: `https://api.shovels.ai/v2/` (JSON). Docs: `https://docs.shovels.ai` |
 | **Auth** | API key (paid subscription) |
 | **Cadence** | Weekly-monthly lag (varies by jurisdiction) |
-| **Cost** | **$599/month** minimum. Free tier exists but limited. **Procurement TBD** (named by Karan) |
+| **Cost** | **$599/month** minimum. Free tier exists but limited. **Procurement TBD** (named by the user) |
 | **Pillar(s)** | Power (datacenter construction tracking) |
 | **Strengths** | Aggregates multi-county permits into one API. Structured JSON, filterable by property type, keyword, geography |
 | **Weaknesses** | $7.2K/year. Coverage of specific Loudoun County LandMARC data needs verification. Description-based filtering may miss unlabeled permits |
@@ -604,7 +604,7 @@ https://code.earthengine.google.com/
 
 ---
 
-*This report should be reviewed with Karan to prioritize procurement decisions. The Phase-1 free stack is sufficient for a working demo; the paid stack is required for production-grade intelligence.*
+*This report should be reviewed with the user to prioritize procurement decisions. The Phase-1 free stack is sufficient for a working demo; the paid stack is required for production-grade intelligence.*
 
 ---
 

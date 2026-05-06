@@ -3,7 +3,7 @@
 **Status:** Decided — **SKIP**
 **Date:** 2026-05-05
 **Authors:** orchestrator (synthesis), researcher, pm, architect
-**Stakeholder:** Karan (analyst, primary user)
+**Stakeholder:** the user (analyst, primary user)
 **Predecessors:**
 - `00-index.md` (V1 plan index)
 - `03-architecture.md` (current SSE + ToolLoopDriver architecture)
@@ -211,7 +211,7 @@ Core deployable unit: a self-hosted Gateway process (Node 22 LTS or
 
 | Scenario | Verdict | Why |
 |---|---|---|
-| Karan asks "what does the EDGAR row really say?" → DB tool call. | **Harm (mild)** | We already have `query_database` wired through `sql_gate.validate_sql` with per-insight scope. OpenClaw routes through its tool layer to our DB as a remote tool. Same answer at best, extra hop and a third-party trust boundary at worst. |
+| the user asks "what does the EDGAR row really say?" → DB tool call. | **Harm (mild)** | We already have `query_database` wired through `sql_gate.validate_sql` with per-insight scope. OpenClaw routes through its tool layer to our DB as a remote tool. Same answer at best, extra hop and a third-party trust boundary at worst. |
 | "Show me a 12-month chart of permits in Texas" → `get_chart_data` + `emit_chart`. | **Harm** | Charts are first-class in our pipeline: `emit_chart` writes `agent_chart`, `InsightCard` reads `chart_id`/`spec` directly. OpenClaw is text-channel-first; it has no concept of structured chart artifacts in a session. |
 | Switches to a different insight, asks the same question. | **Neutral** | Both today and OpenClaw provide isolation; today via `thread_id` scoped to `insight_id`. Parity, not improvement. |
 | Returns tomorrow morning, "what we discussed yesterday". | **Help (small, but misaligned)** | OpenClaw advertises "24/7 context retention". But the unit of memory in our product is the **insight**, not the **user** — and yesterday's insight may already be deduped under `ongoing_of_id`. Cross-day chat memory across different insights is a feature we have **deliberately not** asked for, and we can add it ourselves to `agent_message` if desired. |
@@ -270,17 +270,17 @@ path:**
 - It would not help dedup (pgvector cosine vs last 14 days).
 - It would not help SSE fan-out (FastAPI-internal).
 
-The only loose fit is "pipe the cron output to Karan's Slack via
+The only loose fit is "pipe the cron output to the user's Slack via
 OpenClaw" — explicitly out-of-scope.
 
 ### 3.4 Features OpenClaw offers we don't have
 
 | Feature | Want for analyst tool? | Why |
 |---|---|---|
-| Multi-channel reach (Slack, WhatsApp, iMessage, Signal, Telegram, Discord) | **No** | Karan does triage in a desktop tab with charts and citation pills. WhatsApp truncates everything material. |
+| Multi-channel reach (Slack, WhatsApp, iMessage, Signal, Telegram, Discord) | **No** | the user does triage in a desktop tab with charts and citation pills. WhatsApp truncates everything material. |
 | `/compact` summarisation | **No (chats aren't long enough)** | `CHAT_MAX_TURNS=12`, `CHAT_HISTORY_LIMIT=50`. Most threads are 2-4 turns. |
 | Cross-session memory | **Maybe (small)** | Unit of memory in our product is insight, not user. Add ourselves in 1-2 days if needed. |
-| Slash commands | **No** | Karan is an analyst, not a CLI power user. |
+| Slash commands | **No** | the user is an analyst, not a CLI power user. |
 | Persona / agent customisation | **No** | Single user, single persona ("scoped to ONE specific insight"). |
 | Mobile nodes (camera + voice) | **No** | Out of scope ("No mobile layout"). |
 | ClawHub community skill marketplace | **No** | We deliberately **narrow** the agent surface; a marketplace pulls the wrong direction. |
@@ -320,7 +320,7 @@ benefit.**
 | AC2 | p95 chat-turn latency | ≤45 s (PRD §5.4 budget, met) | likely ≥50 s | Wall-budget tightens. |
 | AC3 | % of replies that cite a real DB row | ~70% | uncertain; depends on remote tool routing | Regression risk if <60%. |
 | AC4 | Trace replay fidelity | 100% (single SQL) | partial (depends on Gateway export) | Hard regression risk. |
-| AC5 | Karan satisfaction over N=10 chats | unknown baseline | needs **≥+0.5 points** | Only criterion that could justify. |
+| AC5 | the user satisfaction over N=10 chats | unknown baseline | needs **≥+0.5 points** | Only criterion that could justify. |
 | AC6 | Chart render success rate | ~95% | likely ≤50% in v1 | Hard regression. |
 | AC7 | Cross-session memory recall | n/a | claim-only; needs eval | Net-new but unrequested. |
 | AC8 | Eng effort to ship parity | 0 | 4-8 dev-weeks | Pure cost. |
@@ -345,7 +345,7 @@ V1.1 work we'd skip if we redirect engineering:
   (V1.1 §2.1) — opposite of OpenClaw's pull; opt-in human-watched,
   leaving the 09:00 cron deterministic.
 
-**Karan gets more value from V1.1.**
+**the user gets more value from V1.1.**
 
 ### 3.8 PM verdict
 
@@ -695,7 +695,7 @@ tool, single user, in-app dock, gpt-5.4 unchanged).
 | Lock-in / reversibility | 4 | 2 | 4 | 5 | 5 |
 | Operability (one fewer service is better) | 3 | 1 | 2 | 3 | 5 |
 | Compliance / data residency | 3 | 2 | 4 | 4 | 5 |
-| Closes Karan-named feature gap | 5 | 1 | 1 | 1 | 5 |
+| Closes the user-named feature gap | 5 | 1 | 1 | 1 | 5 |
 | Future optionality (multi-channel, mobile) | 2 | 4 | 4 | 2 | 1 |
 | **Weighted total** | **30** | **52** | **86** | **102** | **130** |
 
@@ -743,7 +743,7 @@ Reasoning, in order of weight:
    onto a filesystem in another process — a hard regression for
    trace fidelity, exports, and analyst tooling. Mode (b) is
    bounded but adds a sidecar to monitor.
-6. **V1.1 closes a Karan-named gap; OpenClaw does not.** ADR-006 §3
+6. **V1.1 closes a the user-named gap; OpenClaw does not.** ADR-006 §3
    names a specific finding-quality gap ("X MW generated, only
    partially consumed by some company") that V1's deterministic
    catalogue cannot pre-imagine. V1.1's agentic driver targets
@@ -774,7 +774,7 @@ SaaS) flips the decision, this is the suggested order.
 - Wire only the memory hooks: read-on-context-build,
   write-on-message-complete.
 - Gate behind a feature flag (`AI_INSIGHTS_USE_OPENCLAW_MEMORY=1`).
-- Eval criteria: does Karan find cross-session memory recall
+- Eval criteria: does the user find cross-session memory recall
   useful in N=20 chats over 2 weeks?
 - Rollback: feature-flag off, re-deploy. Zero code rollback.
 
@@ -786,7 +786,7 @@ SaaS) flips the decision, this is the suggested order.
 - Keep `agent_message` as source of truth; OpenClaw is an in-line
   cache, not the system of record.
 - Eval criteria: AC1 (p50 latency) regression <20%; AC4 (trace
-  fidelity) ≥ 95%; AC5 (Karan satisfaction) ≥ +0.5.
+  fidelity) ≥ 95%; AC5 (the user satisfaction) ≥ +0.5.
 - Rollback: feature-flag back to direct ToolLoopDriver path.
 
 ### Phase C — full replacement, mode (a)
@@ -882,10 +882,10 @@ with V1.1 as planned. Borrow ideas §9.1 and §9.2 as future
 enhancements; do not block V1.1 on them. Revisit only on a
 material change of product scope (multi-tenant SaaS; multi-channel
 notifications as a hard requirement; cross-session memory becoming
-a Karan-named requirement with a measurable success criterion).
+a the user-named requirement with a measurable success criterion).
 
 **Owner:** AI Insights team.
-**Sign-off requested from:** Karan (PM stakeholder).
+**Sign-off requested from:** the user (PM stakeholder).
 **Next step:** kick off V1.1 Phase 0 (driver scaffolding +
 `drill_down` tool) per `08-v1.1-agentic-plan.md`.
 

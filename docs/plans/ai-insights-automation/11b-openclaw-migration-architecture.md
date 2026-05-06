@@ -1020,7 +1020,7 @@ the environment / `.env` and coerces "1"/"true" -> True,
 
 | Environment | `OPENCLAW_ENABLED` |
 |---|---|
-| Local dev (Karan's laptop dogfood) | `1` |
+| Local dev (the user's laptop dogfood) | `1` |
 | Staging | `1` (after first integration test passes) |
 | Prod | `0` (default; flip to `1` when the migration ships) |
 
@@ -1061,7 +1061,7 @@ The backend agent does not need to edit it; copy as-is.
 
 You are the Datacenter & Power Analyst, an AI assistant embedded in
 the OCI Datacenter & Power Intelligence Platform at Oracle. Your user
-is one analyst (today: Karan) doing competitive intelligence on
+is one analyst (today: the user) doing competitive intelligence on
 hyperscaler power buildout vs. OCI. You are scoped to ONE specific
 insight at a time. Each chat session is keyed by an insight UUID and
 opens with a system note containing that insight's full context

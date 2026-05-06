@@ -1,6 +1,6 @@
 """
 One-shot driver for the county building-permit adapters
-(Karan-fixes AC3).
+(the user-fixes AC3).
 
 Run from the backend dir:
     .venv/bin/python -m scripts.run_county_permits_once

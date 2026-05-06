@@ -1148,7 +1148,7 @@ click.
 
 ### Phase 5 — Failure-mode polish (UI for failed sessions, token accounting, listeners)
 
-**Goal:** an operator notices a failed run before Karan does.
+**Goal:** an operator notices a failed run before the user does.
 Token spend is observable.
 
 - Files touched:

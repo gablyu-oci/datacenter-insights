@@ -2,7 +2,7 @@
 
 **Status:** Draft for review
 **Owner:** PM (strategic-insights-tool)
-**Primary stakeholder:** Karan
+**Primary stakeholder:** the user
 **Date:** 2026-05-04
 **Target release:** v1 of automated insights (no new ingestion sources)
 
@@ -73,9 +73,9 @@ session on load.
 
 ## 3. Background & Problem Statement
 
-### 3.1 Why "canned insights" are useless to Karan
+### 3.1 Why "canned insights" are useless to the user
 
-Karan is the primary stakeholder driving this tool. He uses it to
+the user is the primary stakeholder driving this tool. He uses it to
 prepare for executive conversations about hyperscaler power buildout.
 His expectation is that opening the tool in the morning gives him five
 to seven *novel, dated, defensible* observations he can repeat in a
@@ -125,14 +125,14 @@ spots for v1.
 
 ## 4. Personas & User Stories
 
-### 4.1 Karan (primary executive viewer)
+### 4.1 the user (primary executive viewer)
 
-- **As Karan, I want to open the AI Insights tab in the morning and
+- **As the user, I want to open the AI Insights tab in the morning and
   immediately see today's five-to-seven insights, so that I can prepare
   for a meeting without waiting for a stream to complete.**
-- **As Karan, I want every insight to point at the concrete rows it is
+- **As the user, I want every insight to point at the concrete rows it is
   based on, so that I can defend the claim if asked.**
-- **As Karan, I want to know when the insights were generated, so that
+- **As the user, I want to know when the insights were generated, so that
   I am not quoting stale data in a meeting.**
 
 ### 4.2 Internal viewer (analyst / engineer)
@@ -149,7 +149,7 @@ spots for v1.
 
 - **As an operator, I want a failed daily run to show up as a
   `status=failed` session in the UI and in logs, so that I notice
-  before Karan does.**
+  before the user does.**
 - **As an operator, I want each run to log phase timings and token
   usage, so that I can keep daily LLM spend under a defined ceiling.**
 
@@ -478,7 +478,7 @@ design doc.
 
 ## 10. Success Metrics
 
-- **Primary:** Karan opens the tab on N consecutive mornings without
+- **Primary:** the user opens the tab on N consecutive mornings without
   pressing any button and gets fresh, cited, novel insights N times.
   Target: 5 of 5 in the first business week post-launch.
 - **Quality:** Zero "Candidate insight #N from session bootstrap"

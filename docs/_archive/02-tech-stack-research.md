@@ -198,7 +198,7 @@ sites (id, company_id, name, county, state, lat, lng, capacity_mw)
 
 **Current state:** No lineage tracking. `curated_deals.py` has `source` and `date` fields in the Python dict. EDGAR agent has a file-based cache with no versioning. Mock data has no source attribution.
 
-**Requirements:** Every displayed metric must link to its primary source. Re-runs of ingestion must be reproducible. Auditors (and Karan) need to know "where did this number come from?"
+**Requirements:** Every displayed metric must link to its primary source. Re-runs of ingestion must be reproducible. Auditors (and the user) need to know "where did this number come from?"
 
 ### Options
 

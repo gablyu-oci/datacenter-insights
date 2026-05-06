@@ -655,7 +655,7 @@ function L2Body({
           Assumptions (the dials of the model)
         </summary>
         <p style={{ color: "#64748b", fontSize: "11px", margin: "8px 0 12px" }}>
-          These are the dials of the model. Karan will push back on each — that's the point.
+          These are the dials of the model. the user will push back on each — that's the point.
         </p>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
           <tbody>

@@ -71,7 +71,7 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=7, minute=0),                # 0 7 * * *
         "phase": 1,
     },
-    # Karan round-2: daily county-level US building-permit ingestion
+    # the user round-2: daily county-level US building-permit ingestion
     # (Loudoun VA + Mesa AZ + Grant County WA placeholder + Tier-1
     # expansion). Each adapter is independent so one failure does not
     # block the others. Daily so new permits are picked up within ~24h.
@@ -708,7 +708,7 @@ async def _force_finalize_status(session, session_id, *, status: str) -> None:
 
 _JOB_FUNCTIONS: dict[str, callable] = {
     "edgar_daily": run_edgar_job,
-    # Renamed weekly -> daily per Karan round-2 AC6.
+    # Renamed weekly -> daily per the user round-2 AC6.
     "quarterly_filings_daily": run_edgar_quarterly_job,
     "anomaly_detection_nightly": run_anomaly_detection_job,
     "permits_state_daily": run_permits_weekly_job,

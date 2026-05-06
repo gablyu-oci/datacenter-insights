@@ -1,15 +1,15 @@
 # PRD — Datacenter & Power Intelligence Platform
-**Owner:** Strategic Insights team (OCI) · **Stakeholder:** Karan · **Status:** Draft v0.1 · **Date:** 2026-04-28
+**Owner:** Strategic Insights team (OCI) · **Stakeholder:** the user · **Status:** Draft v0.1 · **Date:** 2026-04-28
 
 ---
 
 ## 1. Background & Problem
 
-OCI strategy lacks a single, source-cited view of where hyperscalers (Microsoft, AWS, GCP, Meta, and OCI itself) are securing **power** and **compute** capacity. Today's prototype is a weekly digest seeded mostly with mock data (~22% real / 78% mocked across 9 tabs), with credible-looking confidence scores that do not reflect ground truth. The team can't yet answer Karan's core question:
+OCI strategy lacks a single, source-cited view of where hyperscalers (Microsoft, AWS, GCP, Meta, and OCI itself) are securing **power** and **compute** capacity. Today's prototype is a weekly digest seeded mostly with mock data (~22% real / 78% mocked across 9 tabs), with credible-looking confidence scores that do not reflect ground truth. The team can't yet answer the user's core question:
 
 > *Is there enough power being contracted to actually run all the GPUs being shipped — and where is the gap?*
 
-Karan wants the tool to **evolve from a digest into a data-driven intelligence platform** — every datapoint clickable to its primary source, every chart backed by filings/permits/earnings rather than randomized mocks.
+the user wants the tool to **evolve from a digest into a data-driven intelligence platform** — every datapoint clickable to its primary source, every chart backed by filings/permits/earnings rather than randomized mocks.
 
 ---
 
@@ -34,7 +34,7 @@ Karan wants the tool to **evolve from a digest into a data-driven intelligence p
 
 | Persona | Primary use case |
 |---|---|
-| **Karan (exec sponsor)** | "Where does OCI sit relative to hyperscalers in power/geographic coverage *this quarter*, and where's the inventory-vs-deployment gap?" — drill-down with sources. |
+| **the user (exec sponsor)** | "Where does OCI sit relative to hyperscalers in power/geographic coverage *this quarter*, and where's the inventory-vs-deployment gap?" — drill-down with sources. |
 | **Strategy analyst** | Compose competitive briefings; cite SEC filings and permits directly from the dashboard. |
 | **Capacity planning** | Identify constrained regions (county-level) where buildout is/isn't matching announcements. |
 
@@ -135,11 +135,11 @@ Runs in parallel with the national MVP, doesn't block Phase 1 delivery. National
 |---|---|---|---|
 | SEC EDGAR | Filings (8-K/10-K) | Live (`agents/edgar_agent.py`) | Has silent `except`, blocking sync IO — must harden. |
 | `data/curated_deals.py` | Hand-verified deals | Live | 22 deals; SEC URLs + lat/lon + MW + confidence. |
-| Shovels.ai | County permits | **Procurement TBD** | Karan's named source; $599/mo; vendor approval status unknown. |
+| Shovels.ai | County permits | **Procurement TBD** | the user's named source; $599/mo; vendor approval status unknown. |
 | Aterio | Datacenter dataset | **Primary** — CSV (8.2 MB, 73 cols) + Events (957 rows) + Energy Projects (1695 rows) | Canonical site seed + events + energy project inventory. |
-| CleanView | Power/PPA tracking | Not evaluated | Karan-named. |
-| datacentermap.com | Site inventory | Not evaluated | Karan-named. |
-| SemiAnalysis | Industry research | Not evaluated | Karan-named; paywalled. |
+| CleanView | Power/PPA tracking | Not evaluated | the user-named. |
+| datacentermap.com | Site inventory | Not evaluated | the user-named. |
+| SemiAnalysis | Industry research | Not evaluated | the user-named; paywalled. |
 | Planet Labs / Maxar | Satellite imagery | Not evaluated | Cost + cadence to assess. |
 | NVIDIA / TSMC / Coherent / Lumentum | Earnings + 10-Q/10-K | Not built | Need transcript-parsing pipeline. |
 | Financial Modeling Prep (FMP) | Financial data API | Not evaluated | $29–99/mo depending on tier. |
@@ -157,7 +157,7 @@ Runs in parallel with the national MVP, doesn't block Phase 1 delivery. National
 - **Coverage honesty:** every tab displays a `<CoverageBadge />` summarizing where data is dense / sparse / missing — no silent partial coverage.
 - **Freshness:** EDGAR ≤24 h after release; EPA ECHO ≤7 days; state APIs ≤7 days where available; earnings ≤72 h after call (best-effort given free transcript sources).
 - **Triangulation explainability:** every gap number traceable to L1–L4 inputs in UI; triangulation degrades outside states with building-permit coverage and UI says so.
-- **Karan acceptance:** he can answer his core power-vs-GPU question **at national, regional, and state level**, with explicit visibility into which states have full vs partial data.
+- **the user acceptance:** he can answer his core power-vs-GPU question **at national, regional, and state level**, with explicit visibility into which states have full vs partial data.
 - **OCI %-share visible on every category tab** as a role-parameterized KPI tile.
 
 ---

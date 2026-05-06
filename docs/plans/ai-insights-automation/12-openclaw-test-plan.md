@@ -84,7 +84,7 @@ config points at that workspace.
 
 ## §3. Smoke 2 — Memory across turns ("CO Bar Yes" check)
 
-**Goal.** Acceptance check from Karan's task spec — multi-turn memory
+**Goal.** Acceptance check from the user's task spec — multi-turn memory
 within the per-insight session (PRD AC5, R6, §4.3).
 
 **Setup.**

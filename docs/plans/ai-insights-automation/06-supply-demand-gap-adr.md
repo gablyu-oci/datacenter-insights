@@ -10,7 +10,7 @@
 
 ## 1. Context
 
-Karan asked the daily AI Insights run to surface a class of finding the
+the user asked the daily AI Insights run to surface a class of finding the
 existing seven FactPack sections do not produce: residual / uncontracted
 generation capacity that OCI's commercial team could go after.
 Verbatim: *"XX datacenter/provider is generating XX megawatts but only
@@ -20,7 +20,7 @@ rest — types of findings, not limited to this one question."*
 The shipped FactPack (Phases 1-3, see `03-architecture.md` §3.3) covers
 movers, permits, anomalies, EDGAR mentions, EPA ECHO records, coverage
 gaps, and weekly developer deltas. None of those sections expose the
-*supply minus demand* shape Karan named. The PRD addendum (Goal B,
+*supply minus demand* shape the user named. The PRD addendum (Goal B,
 FR-B1..B5) scopes four new sections that do:
 
 - `uncontracted_capacity_top_sites` — `EnergyProject` rows with non-null
@@ -71,7 +71,7 @@ Three reasons, each tied to an existing constraint:
    top of synthesis and would breach that ceiling on a populated day.
    Four extra deterministic SELECTs add zero additional LLM tokens
    beyond the row payload.
-2. **Determinism / Karan's trust model.** Karan opens the tab cold each
+2. **Determinism / the user's trust model.** the user opens the tab cold each
    morning and expects the same kind of finding to appear day over day
    when the underlying data has not changed. A ToolLoop's tool-call
    sequence and intermediate reasoning vary across runs even with
@@ -144,7 +144,7 @@ What this approach cannot do:
   positives dominate.
 
 This trade-off is explicit: we ship a narrow, deterministic version of
-Karan's named pattern now; we defer open-ended gap-mining to the
+the user's named pattern now; we defer open-ended gap-mining to the
 agentic V1.1 path.
 
 ---
@@ -159,7 +159,7 @@ letting the LLM call exploratory tools (e.g. `query_energy_projects`,
 gaps from raw exploration.
 
 **Rejected for v1.** Three blockers: (a) cost — exceeds the 30K-token
-ceiling and adds non-trivial wall-clock; (b) non-determinism — Karan
+ceiling and adds non-trivial wall-clock; (b) non-determinism — the user
 cannot trust that today's "uncontracted Vistra site #4" will reappear
 tomorrow; (c) latency / cancellation — the daily cron has no
 human-in-the-loop guardrail and cannot tolerate tool-loop runaway.
@@ -183,7 +183,7 @@ needs a separate cadence.
 Wait until the agentic A3 hybrid lands, then implement gap-detection
 through the agentic path.
 
-**Rejected.** Karan has named the pattern explicitly and has named the
+**Rejected.** the user has named the pattern explicitly and has named the
 example shape (uncontracted MW). We can ship a deterministic version
 now without blocking on the V1.1 effort, and the deterministic version
 becomes a regression-test floor for whatever the agentic V1.1 path

@@ -1,5 +1,5 @@
 # TASKS — AI Insights Tab (V1 prioritized breakdown)
-**Owner:** PM (round 2 consolidation) · **Stakeholder:** Karan
+**Owner:** PM (round 2 consolidation) · **Stakeholder:** the user
 **Status:** Draft v0.2 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./UX.md`](./UX.md)
 
@@ -31,7 +31,7 @@
 
 ### T1.3 Critical path (must-not-slip chain)
 
-`W1.1 Read-only Postgres role → W1.2 Alembic migration → W2.1 SQL gate → W2.5 ToolLoopDriver → W2.6 emit_chart + ChartSpec v1 schema → W6.1 SSE router → W7.1 agentchat extraction → W8.2 InsightCard renderer → W10.4 Karan dogfood`
+`W1.1 Read-only Postgres role → W1.2 Alembic migration → W2.1 SQL gate → W2.5 ToolLoopDriver → W2.6 emit_chart + ChartSpec v1 schema → W6.1 SSE router → W7.1 agentchat extraction → W8.2 InsightCard renderer → W10.4 the user dogfood`
 
 If any of those slip a day, the demo slips a day. Everything else is parallelizable.
 
@@ -43,7 +43,7 @@ If any of those slip a day, the demo slips a day. Everything else is paralleliza
 | ChartSpec v1 needs an unforeseen Recharts adapter (heatmap, stacked-area edge) | +2 dev-days |
 | pgvector or Postgres role provisioning blocked on infra | +2 dev-days (calendar, not effort) |
 | LlamaStack instance principal misconfigured in prod path | +1 dev-day |
-| Karan calibration finds <30% useful → re-prompt cycle | +3 dev-days (already partly in T6 W11) |
+| the user calibration finds <30% useful → re-prompt cycle | +3 dev-days (already partly in T6 W11) |
 
 ---
 
@@ -57,7 +57,7 @@ If any of those slip a day, the demo slips a day. Everything else is paralleliza
 > |---|---|
 > | R-2 | Adopt ChartSpec v1 sketch (Pydantic + JSON-Schema) — ratify in W1.6, gates S1 day 1 |
 > | R-3 | SSE with typed `event:` names + Last-Event-ID — gates S1 day 1 |
-> | R-5 | V1: agent self-rate 3-level S/M/L. **Karan sign-off still required for rubric prompt before V2.** |
+> | R-5 | V1: agent self-rate 3-level S/M/L. **the user sign-off still required for rubric prompt before V2.** |
 > | R-6 | V1: cold per session. V3: cross-session embedding novelty |
 > | R-7 | Citation freshness ≤24 months default; flag-only beyond |
 > | R-8 | Confidence: low = (rows<50 OR no agree-cite OR stale); high = (rows≥200 AND ≥1 agree-cite AND fresh); else medium |
@@ -87,9 +87,9 @@ Single ratification table consolidating PRD OQ1–OQ11, ARCHITECTURE A15.2 P1–
 | **R-2** | ChartSpec v1 schema (PRD OQ2) | Adopt ChartSpec v1 sketch (RESEARCH §2.3 / ARCH §A4) | Architect | **Before S1 day 1** | **Resolved** — ratify Pydantic+JSON-Schema in W1.6 |
 | **R-3** | Streaming protocol (PRD OQ3) | SSE with typed `event:` names + Last-Event-ID (RESEARCH §6) | Architect | **Before S1 day 1** | **Resolved** |
 | **R-4** | Skill conversion path (PRD OQ4) | Pattern (a) — each skill = one tool fn under `run_skill` (RESEARCH §4 / SKILL §S1.1) | Skill engineer | S1 day 1 | **Resolved** |
-| **R-5** | Materiality scoring rubric (PRD OQ5) | V1: agent self-rate via prompt (3-level S/M/L). PM labels 50 samples post-V1 to seed V2. | PM + Karan | **End of S2** | **Open** — needs Karan sign-off on rubric prompt |
+| **R-5** | Materiality scoring rubric (PRD OQ5) | V1: agent self-rate via prompt (3-level S/M/L). PM labels 50 samples post-V1 to seed V2. | PM + the user | **End of S2** | **Open** — needs the user sign-off on rubric prompt |
 | **R-6** | Cross-session insight uniqueness (PRD OQ6) | V1: cold per session. V3 cron uses cross-session embedding novelty. | PM | Before V3 | Deferred (not V1-blocking) |
-| **R-7** | Citation freshness window (PRD OQ7) | ≤24 months default, flag-only beyond | PM + Karan | Before S2 | Deferred |
+| **R-7** | Citation freshness window (PRD OQ7) | ≤24 months default, flag-only beyond | PM + the user | Before S2 | Deferred |
 | **R-8** | Confidence rubric thresholds (PRD OQ8) | low = (rows<50 OR no agree-cite OR source past freshness band); high = (rows≥200 AND ≥1 agree-cite AND fresh); else medium (per ARCH P2) | Architect + PM | **Before S3** | **Open** — must ratify pre-demo |
 | **R-9** | V3 cron timing (PRD OQ9) | Sun 23:30 UTC OR Mon 00:30 UTC (defer until V3) | Ops | Before V3 | Deferred |
 | **R-10** | Chat thread retention (PRD OQ10) | 90-day retention; `delete_after` column on `agent_message` | PM | Before S2 (V2) | Deferred |
@@ -124,7 +124,7 @@ Single ratification table consolidating PRD OQ1–OQ11, ARCHITECTURE A15.2 P1–
 | **U-Q8** | Cancel during streaming partial chart (UX Q8) | Discard chart; keep headline + subtitle | PM | S1 | **Resolved (default)** |
 | **U-Q9** | Sessions retention in dropdown (UX Q9) | Last 20 | PM | S2 | Deferred |
 | **U-Q10** | Share-link expiry (UX Q10) | 30-day with renew (V3) | PM | V3 | Deferred |
-| **U-Q11** | In-card per-insight rating widget (UX Q11) | V1: 5-star in kebab. V2: thumb up/down inline. | PM + Karan | **Before S2** | **Open — instruments G4** |
+| **U-Q11** | In-card per-insight rating widget (UX Q11) | V1: 5-star in kebab. V2: thumb up/down inline. | PM + the user | **Before S2** | **Open — instruments G4** |
 | **U-tokens** | Platform-wide token migration vs tab-local | Tab-local in V1; platform-wide migration is a separate cleanup ticket | PM | S1 | **Resolved (default)** |
 
 **Top 3 unresolved items that block S1:**
@@ -165,9 +165,9 @@ Each prerequisite is a task in T6 (W0.x). They must all be ✓ before S1 day 1.
 | **W6** | HTTP API + SSE | `routers/insights.py`, SSE event emission, Last-Event-ID resume, persistence writes | Backend | ARCH A3 / A5 |
 | **W7** | Frontend Foundations | `agentchat/` extraction (6 primitives), SSE client, ChartSpec renderer, AIInsightsTab registration | Frontend | RESEARCH §5 / ARCH A12 / UX U2 |
 | **W8** | Frontend Insights UI | InsightCard, ProvenanceFooter, SurveyingBanner, SkeletonStack, EmptyState, ErrorState, SessionRunner | Frontend | UX U3 / U7 / U8 |
-| **W9** | Observability & Logging | per-session structured logs, tool_call_log writes, frontend telemetry hooks, Karan-facing provenance footer (V1's user-visible observability surface) | Backend + Frontend | ARCH A11 |
-| **W10** | QA & Dogfood | test plan, fixture insights, Karan calibration session, success-metric instrumentation | PM + Eng | PRD §7 / SKILL §S9 |
-| **W11** | Docs & Demo prep | per-skill README, V1 unveiling demo script, Karan handoff brief | PM | — |
+| **W9** | Observability & Logging | per-session structured logs, tool_call_log writes, frontend telemetry hooks, the user-facing provenance footer (V1's user-visible observability surface) | Backend + Frontend | ARCH A11 |
+| **W10** | QA & Dogfood | test plan, fixture insights, the user calibration session, success-metric instrumentation | PM + Eng | PRD §7 / SKILL §S9 |
+| **W11** | Docs & Demo prep | per-skill README, V1 unveiling demo script, the user handoff brief | PM | — |
 
 ---
 
@@ -209,7 +209,7 @@ W0.4 sqlglot ──┘        │                          │       ▼
                                                                                                                      │
                                        ┌─────────────────────────────────────────────────────────────────────────────┘
                                        ▼
-                                **W10.4 Karan dogfood** ──▶ W11.x docs + demo
+                                **W10.4 the user dogfood** ──▶ W11.x docs + demo
 ```
 
 ### T5.2 Parallelizable strands
@@ -321,12 +321,12 @@ Sprint allocation: **S1** = foundations + scaffolds + skills wave 1; **S2** = or
 | W10.1 | W10 | V1 test plan doc | PM | 0.5 | — | S2 | One page: surface, fixtures, dogfood protocol | PRD §7 |
 | W10.2 | W10 | 3 fixture insights (golden) for end-to-end smoke test | PM + Eng | 1.0 | W5.1 | S2 | Frozen DB snapshot + expected `insights[]` shape; CI-runnable | SKILL §S9.3 |
 | W10.3 | W10 | Success-metric instrumentation review (link each PRD §7 metric to a task; see T11) | PM | 0.5 | — | S3 | T11 table green | PRD §7 |
-| W10.4 | W10 | **Karan calibration session 1** (5 dogfood sessions; rate insights) | PM + Karan | 1.0 | W6.1, W8.2 | S3 | ≥30% useful per PRD §8 V1 exit; capture failure modes | PRD §8 V1 exit |
-| W10.5 | W10 | Re-prompt cycle based on Karan feedback (orchestrator system prompt tuning) | Backend + PM | 1.0 | W10.4 | S3 | Post-tune dogfood: ≥3 of 5 useful (DoD) | PRD §8 V1 exit, T7 |
+| W10.4 | W10 | **the user calibration session 1** (5 dogfood sessions; rate insights) | PM + the user | 1.0 | W6.1, W8.2 | S3 | ≥30% useful per PRD §8 V1 exit; capture failure modes | PRD §8 V1 exit |
+| W10.5 | W10 | Re-prompt cycle based on the user feedback (orchestrator system prompt tuning) | Backend + PM | 1.0 | W10.4 | S3 | Post-tune dogfood: ≥3 of 5 useful (DoD) | PRD §8 V1 exit, T7 |
 | W10.6 | W10 | Latency budget verification (5-insight session p50 < 90s) | Backend | 0.5 | W6.1, W5.1 | S3 | p50 < 90s on 10 trial sessions; report attached | PRD §7.1 Q5, ARCH A10.4 |
 | W11.1 | W11 | Per-skill README (12 skills) — one paragraph + smoke fixture pointer | Skill eng | 1.0 | W4.1–W4.12 | S3 | One README per `skills/<name>/`; linked from registry | — |
-| W11.2 | W11 | V1 demo script for Karan unveiling | PM | 0.5 | W10.4 | S3 | 7-step click-through script; pre-recorded fallback | — |
-| W11.3 | W11 | Karan-facing handoff brief (what's V1, what's coming, how to read provenance) | PM | 0.5 | W10.4 | S3 | 1-page brief shared in advance | — |
+| W11.2 | W11 | V1 demo script for the user unveiling | PM | 0.5 | W10.4 | S3 | 7-step click-through script; pre-recorded fallback | — |
+| W11.3 | W11 | the user-facing handoff brief (what's V1, what's coming, how to read provenance) | PM | 0.5 | W10.4 | S3 | 1-page brief shared in advance | — |
 | **TOTAL** | | | | **56.0** | | | | |
 
 ### T6.1 Sprint allocation totals
@@ -351,7 +351,7 @@ Sprint allocation: **S1** = foundations + scaffolds + skills wave 1; **S2** = or
 
 ## T7. Definition of Done — V1
 
-Crisp checklist for the Karan-facing V1 acceptance gate.
+Crisp checklist for the the user-facing V1 acceptance gate.
 
 | # | Criterion | Owner verifier | Pass signal |
 |---|---|---|---|
@@ -362,7 +362,7 @@ Crisp checklist for the Karan-facing V1 acceptance gate.
 | DoD-5 | Cancel + resume (Last-Event-ID) works | Backend + FE (W6.2/W7.5) | Manual disconnect-and-resume test green |
 | DoD-6 | No chat dock, no web-search affordance, no citation row visible (V1 hides those affordances) | Frontend (W8) | Visual QA + grep on rendered DOM |
 | DoD-7 | Lighthouse-ish a11y baseline: keyboard navigation works end-to-end; ARIA-live preamble announces session events | Frontend (W8.7) | UX U10.4 keyboard flow runs to completion; axe-core finds zero serious issues |
-| DoD-8 | Karan dogfood: **≥ 3 of 5 insights judged "useful or insightful"** in calibration session (W10.4 + W10.5) | PM + Karan | Captured in `tool_call_log` with `event=user_rating` |
+| DoD-8 | the user dogfood: **≥ 3 of 5 insights judged "useful or insightful"** in calibration session (W10.4 + W10.5) | PM + the user | Captured in `tool_call_log` with `event=user_rating` |
 | DoD-9 | Zero hallucinated tables/columns across 20 dogfood sessions (PRD G6) | Backend (W2.1) | sqlglot allowlist log shows zero rejections of valid SELECTs and 100% rejection of out-of-allowlist refs |
 | DoD-10 | Latency caps respected (12-turn loop, 4-wide parallel, 480s session, 48-call max) (PRD §5.1) | Backend (W2.5) | Cap-trip counter ≤ 5 per 100 sessions in dogfood |
 
@@ -409,7 +409,7 @@ Sized at S/M/L. **Status legend:** ✅ shipped (Track B, 2026-05-04) · 🟡 par
 | V3-03 | Subscribe / notify (in-product banner + optional email) | M | PRD G10 |
 | V3-04 | Geospatial-analysis skill (if Recharts gains map OR Leaflet emit path) | L | PRD §6.2 row 26 |
 | V3-05 | Audit history page (full skill+tool trace per insight) | M | PRD §5.5 power-user |
-| V3-06 | Scheduled emails to Karan (weekly digest) | S | parent PRD §10 alignment |
+| V3-06 | Scheduled emails to the user (weekly digest) | S | parent PRD §10 alignment |
 | V3-07 | RBAC (multi-user; auth integration) | L | parent PRD §8 D5 deferred |
 | V3-08 | Share-by-link (short-link mint + 30-day expiry) | M | UX U9.4 |
 | V3-09 | Cross-session embedding novelty filter | S | RESEARCH §9 |
@@ -426,8 +426,8 @@ Cross-doc consolidation. Probability/impact: low/med/high.
 | RV-1 | **ChartSpec v1 instability** — agent emits malformed specs | med | high | Pydantic strict validation at `emit_chart`; row_hash check; agent retry up to 2× per insight. Hard JSON-Schema gate. | `row_hash_mismatch` or `chart_validation_error` rate >5% in dogfood |
 | RV-2 | **sqlglot allowlist gaps** — false positives blocking valid SELECTs OR false negatives letting through write-shaped SQL | med | high | Fuzz test with 100 hostile + 100 valid SELECTs; read-only DB role is the second line of defense; tx-scoped statement_timeout is the third | `unsafe_sql` rate >10% (false positive) or any UPDATE/DELETE row reaching gate |
 | RV-3 | **LlamaStack quota / rate-limit** even though no $ cost | low | med | Token-name correctness (`max_completion_tokens`); 1× retry with jitter on 5xx; parallel-tool cap 4; sequential per-insight (V1) | 5xx rate >5% OR sustained 429 |
-| RV-4 | **Skill conversion fidelity drift** (PRD R4) — Llama-Stack-tuned skills disagree with Claude-Code originals | high | med | S9 smoke harness per skill; ship in 3 waves with highest-confidence first (W4 wave 1); per-skill golden statistic ±5% | Smoke test failures or Karan flags "weird" skill output in dogfood |
-| RV-5 | **Karan-perceived "smartness"** — insights too obvious or too generic | med | high | (a) Non-trivial filter in dedup; (b) Karan calibration session at end of S3 with re-prompt budget (W10.5); (c) materiality+novelty rank prefers `[L]` | <3 of 5 useful in calibration; Karan flagging "I knew that already" >3× |
+| RV-4 | **Skill conversion fidelity drift** (PRD R4) — Llama-Stack-tuned skills disagree with Claude-Code originals | high | med | S9 smoke harness per skill; ship in 3 waves with highest-confidence first (W4 wave 1); per-skill golden statistic ±5% | Smoke test failures or the user flags "weird" skill output in dogfood |
+| RV-5 | **the user-perceived "smartness"** — insights too obvious or too generic | med | high | (a) Non-trivial filter in dedup; (b) the user calibration session at end of S3 with re-prompt budget (W10.5); (c) materiality+novelty rank prefers `[L]` | <3 of 5 useful in calibration; the user flagging "I knew that already" >3× |
 | RV-6 | **ChatPanel extraction regresses existing chat** | low | high | Keep V0 `series` shape back-compat in `<InsightChart>`; `ChatPanel.tsx` is consumer-only of `agentchat/`; FE code review checkpoint W7.9 | Visual diff or snapshot test fail on existing ChatPanel |
 | RV-7 | **Latency overruns >120s/session** hurting demo | med | med | Parallel bootstrap calls (W5.3); stream insights as they finish; `medium` reasoning effort; per-insight 120s soft cap clips early | p50 >90s on the W10.6 verification day |
 | RV-8 | **Mid-conversation system-msg ignored by gpt-5.4** (C-2) — skill fragments don't influence next turn | low | high | W3.4 calibration; documented user-shaped fallback (ARCH A9.4); fragment_mode logged in skill_invocation | Skill output ignores fragment guidance in W3.4 calibration |
@@ -450,7 +450,7 @@ Mapping each PRD §7 metric to the task that instruments it. **Every metric has 
 | Q6 | Tool-call cap breaches/100 sessions | ≤5 | W2.5 (caps enforced), W9.2 (tool_call_log) | `tool_call_log` |
 | Q7 | Hallucinated table/column refs/100 sessions | 0 | W2.1 (sql_gate), W9.2 | `tool_call_log.error_code='unsafe_sql'` aggregation |
 | Q8 | Dedup rejects/session | ≤2 | W5.2 (novelty.py), W9.1 | `insight_session` log entries |
-| **G4** | **Karan ≥40% useful (V1: ≥30%; DoD: 3 of 5)** | ≥30% (V1 relaxed bar) | **W8.9 (5-star widget)**, W10.4 (calibration), W10.5 (re-prompt) | `tool_call_log` rows with `event=user_rating` |
+| **G4** | **the user ≥40% useful (V1: ≥30%; DoD: 3 of 5)** | ≥30% (V1 relaxed bar) | **W8.9 (5-star widget)**, W10.4 (calibration), W10.5 (re-prompt) | `tool_call_log` rows with `event=user_rating` |
 | G5 | Generation completes ≤3 min p50 / ≤8 min p95 | as Q5 | (same as Q5) | (same) |
 | G6 | Zero hallucinated tables/columns | 0 | (same as Q7) | (same) |
 

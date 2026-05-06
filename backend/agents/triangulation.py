@@ -270,7 +270,7 @@ async def compute_l1(session) -> list[dict]:
 # ---------------------------------------------------------------------------
 # L2 (Compute Demand) modeling assumptions
 # ---------------------------------------------------------------------------
-# These are the dials of the model. Karan will push back on each;
+# These are the dials of the model. the user will push back on each;
 # that's the point. Document any change in git blame.
 H100_AVG_POWER_W      = 700      # H100 typical TDP (watts)
 B200_AVG_POWER_W      = 1000     # B200 typical TDP (watts)

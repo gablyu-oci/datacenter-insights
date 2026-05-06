@@ -1,5 +1,5 @@
 # RESEARCH — AI Insights Tab
-**Owner:** Researcher · **Stakeholder:** Karan (via PM)
+**Owner:** Researcher · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./UX.md`](./UX.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./TASKS.md`](./TASKS.md)
 
@@ -300,7 +300,7 @@ The shape is uniform: SKILL.md (process) + scripts (deterministic Python) + refe
 
 - An orchestrator dispatches a skill by spawning a separate LLM call with the skill's full prompt.
 - More isolated, but PRD §5.1 forbids recursive agent calls (flat tool-use only).
-- Adds a full LLM round-trip per skill → blows the latency budget (Karan-felt UX).
+- Adds a full LLM round-trip per skill → blows the latency budget (the user-felt UX).
 
 **Reject** — revisit in V3 if isolation becomes a fidelity issue.
 
@@ -766,7 +766,7 @@ V1 sequential; budget 70–95 s p50. V2 parallel sub-agents; budget 30–50 s p5
 - **DuckDuckGo "free search" libraries are tempting but are ToS violations.** Don't use `duckduckgo-search` Python package as a stealth provider — it both violates DDG's ToS and the user-agent fingerprint will get our OCI VM IP banned.
 - **Don't conflate `data_source.rows` (count) with `data` length.** `rows` is the count of rows the *underlying* query returned (could be > 500); `data` is the post-aggregation inline frame (≤ 500). The agent must aggregate when `rows > 500` and the spec must record both numbers honestly.
 - **Embedding cosine thresholds are model-specific.** Don't port the 0.79 ada-002 threshold; calibrate 0.85 for `text-embedding-3-large`. Calibration set: 100 hand-labelled "near-dup vs novel" pairs in Sprint 2.
-- **Materiality `low_external_support` tag must not be hidden.** PRD §5.3 says insights with <2 citations after 3 web-search attempts ship with this flag. UI should render it visibly (not a footnote) so Karan knows the support is weak.
+- **Materiality `low_external_support` tag must not be hidden.** PRD §5.3 says insights with <2 citations after 3 web-search attempts ship with this flag. UI should render it visibly (not a footnote) so the user knows the support is weak.
 - **Row-hash canonicalization matters.** If the agent reads a frame and sorts it differently before emit, hashes won't match. The dispatcher sorts the frame canonically (by all columns ASC) before hashing on both sides — make this a single helper, used by both the tool wrapper and the emit validator.
 - **Skill-fragment loading order.** When the agent calls `run_skill(programmatic-eda)` mid-session, the dispatcher has to inject the process-fragment as a *system* message — but OpenAI's chat-completions only respects one leading system message. Implementation: insert as a `{role: "system"}` message *after* the prior turn's tool results, or fold into the assistant-turn-prompt. There's a slight risk the model treats it as a user turn — verify with a small test on `gpt-5.4`.
 

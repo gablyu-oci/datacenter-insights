@@ -76,7 +76,7 @@ The four files in `datasets/` are a **one-time, point-in-time delivery for the M
 - **Economics:** `TOT_PROJECT_COST`, `AVG_MARKET_POWER_COST`, `YEARLY_PUE`, `TOT_NUM_GENERATORS`
 - **Timeline:** `DATA_CENTER_ANNOUNCED_DATE`, `_CONSTRUCTION_START_DATE`, `_CONSTRUCTION_FINISHED_DATE`, `_ACTIVATION_DATE`, `ESTIMATED_ACTIVE_DATE_BY`, `_CANCELLED_DATE`, `_PROJECT_WITHDRAWN_DATE`, `LATEST_SATELLITE_PICTURE_DATE`
 - **Utility / grid:** `UTILITY_NAME`, `UTILITY_PUBLIC_PRIVATE`, `UTILITY_TICKER_NAME`, `BAL_AUTH_ABBR`, `BAL_AUTH_NAME`, `BAL_AUTH_SUBREGION_CODE`, `BAL_AUTH_SUBREGION_NAME`
-- **Source links (clickable per Karan's rule):** `DATASHEET_URL`, `MAP_URL`, `PROJECT_PERMIT_URL`, `CAPEX_URL`
+- **Source links (clickable per the user's rule):** `DATASHEET_URL`, `MAP_URL`, `PROJECT_PERMIT_URL`, `CAPEX_URL`
 - **Confidence & flags:** `PROJECT_EXECUTION_LIKELIHOOD`, `FLG_AI_FACILITY`, `FLG_BTM_ONSITE_POWER_GENERATION`, `NOTES`
 - **Lineage:** `RECORD_CREATED_DATE`, `RECORD_UPDATED_DATE`, `UPDATED_AT`
 
@@ -163,7 +163,7 @@ Five agents ship in MVP; nothing speculative. Each has a single owner, a defined
 | **A** | **EDGAR 8-K Extractor** | Phase 1 | Single-turn structured extraction | `gpt-5.4-mini` | Replaces brittle regex in `edgar_agent.py`. Filings vary wildly ("100 MW PPA" / "approximately 1.2 GW" / "200 MW with optional 50 MW expansion"); regex misses ~30% in our prior test set. Strict JSON schema gives reliable typed output with a `source_quote` field for citation. |
 | **B** | **Permit PDF Extractor** | Phase 1.5 | Single-turn structured extraction (vision) | `gemini-2.5-pro` | Generator-permit detail (rated MW, fuel type, emissions tier, hours) lives in PDFs, often scanned. Combined pipeline: `pdfplumber` for tables → Tesseract for OCR fallback → vision LLM for narrative. Was previously planned as Anthropic Claude; now Llama Stack. |
 | **C** | **LLC → Parent Resolver** | **Phase 1.5 (promoted from Phase-2 deferred)** | Multi-turn agent with tools | `gpt-5.4` | Was planned as deterministic-only weighted scorer (`03-PIPELINE-ARCHITECTURE.md` §7.5.4). With free internal LLM, the agent can *reason* across signals (SEC Exhibit 21 → OpenCorporates → parcel deed → ISO queue → web search) and produce attribution + evidence trail in one pass. The deterministic signals stay; the agent orchestrates them via tool-use and handles ambiguity. |
-| **D** | **Triangulation Q&A Agent** | Phase 1 | Multi-turn conversational with tools | `gpt-5.4` | Karan's "is there enough power for the GPUs being shipped in Texas?" question is naturally conversational. A chat agent with tool-use over `/api/sites`, `/api/{tab}/oci-share`, `/api/coverage`, vector search over permit narratives turns the dashboard into an actual *intelligence platform*, not a static digest. Streamed responses; conversation persisted via `/v1/conversations`. |
+| **D** | **Triangulation Q&A Agent** | Phase 1 | Multi-turn conversational with tools | `gpt-5.4` | the user's "is there enough power for the GPUs being shipped in Texas?" question is naturally conversational. A chat agent with tool-use over `/api/sites`, `/api/{tab}/oci-share`, `/api/coverage`, vector search over permit narratives turns the dashboard into an actual *intelligence platform*, not a static digest. Streamed responses; conversation persisted via `/v1/conversations`. |
 | **E** | **Weekly Brief Agent** | Phase 1 | Scheduled (APScheduler) tool-using | `gpt-5.4-mini` | Runs Sunday night; diffs current data against last week's snapshot via SQL tools, generates a 5–10 bullet Markdown briefing covering new permits, MW deltas by company, coverage changes, anomalies. Bridges the static dashboard to actionable insights. |
 
 ### Supporting LLM infrastructure (also MVP)
@@ -199,7 +199,7 @@ Every agent emits a structured response with the same envelope so `data_lineage`
 }
 ```
 
-Logged to a new `llm_extraction_runs` table (schema in `03-architecture-design.md` §6). All `confidence` values feed into the same lineage `confidence` column the rest of the pipeline uses — a Karan-clickable source link plus an LLM confidence score is a single UI affordance.
+Logged to a new `llm_extraction_runs` table (schema in `03-architecture-design.md` §6). All `confidence` values feed into the same lineage `confidence` column the rest of the pipeline uses — a the user-clickable source link plus an LLM confidence score is a single UI affordance.
 
 ### Fallback behavior when Llama Stack is unavailable
 
@@ -265,7 +265,7 @@ OCI %-share queries are **role-parameterized**: `/api/{tab}/oci-share?role=provi
 - ISO/RTO interconnection queues — **PJM only in v1** (mid-Atlantic + Great Lakes); ERCOT/MISO/SPP/CAISO/NYISO/ISO-NE flagged as pending.
 - Trade-press RSS (national best-effort signal).
 
-**Not in Phase 1:** Shovels.ai, Financial Modeling Prep, OpenCorporates Pro, Maxar, Aterio licensed live feed, additional state permit scrapers beyond the 6 above. These are deferred to Phase 2 pending Karan's procurement decisions.
+**Not in Phase 1:** Shovels.ai, Financial Modeling Prep, OpenCorporates Pro, Maxar, Aterio licensed live feed, additional state permit scrapers beyond the 6 above. These are deferred to Phase 2 pending the user's procurement decisions.
 
 **Implication of national scope on free sources:**
 - Power, sites, and federal filings work *fully* for all 50 states from day one (Aterio + EDGAR + ECHO are already national).

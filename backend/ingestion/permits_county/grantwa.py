@@ -1,6 +1,6 @@
 """
 Grant County, WA / City of Quincy -- county building-permit adapter
-(Karan-fixes AC3).
+(the user-fixes AC3).
 
 Status: NO FREE JSON ENDPOINT FOUND.
 

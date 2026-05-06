@@ -55,9 +55,9 @@ This file captures decisions that are **deliberately deferred**: trade-offs wher
 | Choice | **Sentinel-2 via Google Earth Engine** (10 m, free) | Planet Labs PlanetScope (~3 m, paid) or Maxar (sub-meter, paid) |
 | Strength | Free, near-global, 5-day revisit. Sufficient to detect "is this site under construction" / "has the slab been poured" / "are there generators on the pad now" at building-scale. | Sub-meter detail. Counts visible cooling units, individual transformer pads, individual GPU container modules, etc. |
 
-**Sentinel-2 for v1.** Phase-detection is what Karan asked for — announcement → groundbreak → completion. 10 m resolution clears that bar.
+**Sentinel-2 for v1.** Phase-detection is what the user asked for — announcement → groundbreak → completion. 10 m resolution clears that bar.
 
-**Trigger to revisit:** Karan or analyst feedback that we need to count individual buildings within a campus, count visible cooling units (often a leading indicator of MW commit), or detect equipment-level changes between weekly captures. At that point, Planet Labs is the cheaper next step; Maxar only if sub-meter is genuinely required.
+**Trigger to revisit:** the user or analyst feedback that we need to count individual buildings within a campus, count visible cooling units (often a leading indicator of MW commit), or detect equipment-level changes between weekly captures. At that point, Planet Labs is the cheaper next step; Maxar only if sub-meter is genuinely required.
 
 ---
 
@@ -70,7 +70,7 @@ This file captures decisions that are **deliberately deferred**: trade-offs wher
 
 **Design now for Phase 2.** All Aterio ingestion code uses upsert semantics on `ATERIO_DATA_CENTER_UID` and `ATERIO_DATA_CENTER_CAMPUS_UID`. Lineage records preserve the snapshot date so we can diff between two CSVs. No code changes required at refresh time — only re-running the ingest.
 
-**Trigger to revisit:** when Aterio is licensed. Procurement decision pending with Karan.
+**Trigger to revisit:** when Aterio is licensed. Procurement decision pending with the user.
 
 ---
 
@@ -85,7 +85,7 @@ The PRD calls for **national scope from day one**. Aterio + EDGAR + EPA ECHO alr
 
 **MVP behavior:** the Building Permits pillar shows `Partial (6 states)` coverage; clicking any of the other 44 states surfaces the per-state empty state with the roadmap message.
 
-**Trigger to revisit:** when Karan or analysts repeatedly ask "what about \<state X>" for X outside the 6 covered states, OR when the generator-permit pipeline reaches state-level coverage parity with Shovels.ai (in which case Shovels becomes redundant for many use-cases and we may skip it entirely).
+**Trigger to revisit:** when the user or analysts repeatedly ask "what about \<state X>" for X outside the 6 covered states, OR when the generator-permit pipeline reaches state-level coverage parity with Shovels.ai (in which case Shovels becomes redundant for many use-cases and we may skip it entirely).
 
 ---
 
@@ -97,7 +97,7 @@ EDGAR's free `companyfacts` API gives quarterly NVIDIA datacenter-segment revenu
 
 **MVP behavior:** publish quarterly directional indicators with explicit error bars and an "ASP assumption" slider (default range $25K–$45K per Hopper-class GPU). Surface the assumption in the UI rather than hide it.
 
-**Trigger to revisit:** when Karan asks for "the inventory gap number" as a single value. At that point, license FMP (Phase 2 already-deferred decision) — we cannot be precise without reliable transcript inputs, even with a perfect extractor.
+**Trigger to revisit:** when the user asks for "the inventory gap number" as a single value. At that point, license FMP (Phase 2 already-deferred decision) — we cannot be precise without reliable transcript inputs, even with a perfect extractor.
 
 ---
 

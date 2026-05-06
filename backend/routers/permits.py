@@ -253,7 +253,7 @@ async def permits_building(
     page_size: int = Query(200, ge=1, le=10000),
     db: AsyncSession = Depends(get_db),
 ):
-    """County-level US building-permit feed (Karan-fixes AC3).
+    """County-level US building-permit feed (the user-fixes AC3).
 
     Backed by the building_permits table populated by
     ingestion/permits_county adapters (Loudoun VA, Mesa AZ, etc.).

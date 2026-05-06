@@ -2,7 +2,7 @@
 
 **Status:** Active. Supersedes ADR-010 by user direction (2026-05-05). The skip recommendation is acknowledged; this PRD is the user's ratified counter-decision and the implementation contract for delivering it.
 **Owner:** PM (strategic-insights-tool)
-**Primary stakeholder:** Karan
+**Primary stakeholder:** the user
 **Date:** 2026-05-05
 **Predecessors:**
 - `01-prd.md` (PRD: AI Insights Automation & Real-Data Synthesis)
@@ -55,7 +55,7 @@ for that path. OpenClaw is exclusively the chat-turn runtime.
 - **G2.** Keep the synthesis pipeline (daily cron, hypothesizer,
   FactPack, mega LLM call, pgvector dedup) **byte-for-byte unchanged**.
   OpenClaw never enters the cron path.
-- **G3.** Single-user analyst tool. One Karan, one tab, one OpenClaw
+- **G3.** Single-user analyst tool. One the user, one tab, one OpenClaw
   instance, scoped per-insight via a `sessionKey` (R6).
 - **G4.** Provide a feature flag `OPENCLAW_ENABLED` (default 0) so the
   legacy `ToolLoopDriver` path is the rollback target and can be
@@ -87,7 +87,7 @@ for that path. OpenClaw is exclusively the chat-turn runtime.
   any operator surface that lets the agent expand its own tool set.
   V1.1 of the chat plan (`08-v1.1-agentic-plan.md`) deliberately
   narrows the tool surface; this migration must not loosen it.
-- **NG6.** Slash-command UI for Karan (`/compact`, `/reset`, etc.).
+- **NG6.** Slash-command UI for the user (`/compact`, `/reset`, etc.).
   OpenClaw exposes them server-side; we do not surface them in the
   React dock.
 - **NG7.** Multi-tenant or per-user agent provisioning. One agent,
@@ -112,7 +112,7 @@ This PRD does not re-litigate.
 ### 3.2 What stays load-bearing
 
 The features ADR-010 §3.5 listed as "WE have that OpenClaw might break"
-are still load-bearing for Karan's workflow and must survive the
+are still load-bearing for the user's workflow and must survive the
 migration:
 
 1. Per-insight scoped system prompt (8 KB JSON context blob).
@@ -133,12 +133,12 @@ integration shape.
 
 ## 4. Personas & User Stories
 
-All stories are scoped to Karan (analyst, single user). User-facing
+All stories are scoped to the user (analyst, single user). User-facing
 behavior must be indistinguishable from today's tool-loop path.
 
-### 4.1 Default chat experience is unchanged from Karan's POV
+### 4.1 Default chat experience is unchanged from the user's POV
 
-> **As Karan, opening an insight, I get a chat dock that talks to
+> **As the user, opening an insight, I get a chat dock that talks to
 > OpenClaw under the hood, indistinguishable from before.**
 
 - Acceptance: same chat dock UI; same SSE event names on the wire;
@@ -148,7 +148,7 @@ behavior must be indistinguishable from today's tool-loop path.
 
 ### 4.2 Database queries continue to work, end-to-end
 
-> **As Karan, asking "what other Crusoe sites?", the agent fires
+> **As the user, asking "what other Crusoe sites?", the agent fires
 > `query_database` via OpenClaw and returns rows.**
 
 - Acceptance: the model's tool call leaves OpenClaw as a webhook to
@@ -158,20 +158,20 @@ behavior must be indistinguishable from today's tool-loop path.
 
 ### 4.3 Multi-turn memory within an insight session
 
-> **As Karan, saying "yes" after the agent asked a clarifier,
+> **As the user, saying "yes" after the agent asked a clarifier,
 > OpenClaw remembers the prior turn (memory across turns within an
 > insight session).**
 
 - Acceptance: a chat session keyed by `sessionKey =
   "insight:<insight_id>"` (R6) retains prior turn context inside
-  OpenClaw. Karan saying "yes" or "show me more" resolves correctly
+  OpenClaw. the user saying "yes" or "show me more" resolves correctly
   against the prior assistant turn.
 - Out of scope: cross-session memory across distinct `insight_id`
   values. NG4 stands.
 
 ### 4.4 Persona is the senior datacenter analyst
 
-> **As Karan, asking who-are-you, the agent responds in the senior
+> **As the user, asking who-are-you, the agent responds in the senior
 > datacenter analyst voice from `SOUL.md`.**
 
 - Acceptance: `SOUL.md` checked into the OpenClaw agent workspace
@@ -182,7 +182,7 @@ behavior must be indistinguishable from today's tool-loop path.
 
 ### 4.5 Rollback is a flag flip
 
-> **As Karan, when `OPENCLAW_ENABLED=0`, my chat experience is bit-
+> **As the user, when `OPENCLAW_ENABLED=0`, my chat experience is bit-
 > for-bit the old `ToolLoopDriver` path (rollback).**
 
 - Acceptance: with the env var off, the chat router calls
@@ -444,7 +444,7 @@ Mirrors the user's OUT OF SCOPE block.
 - **ClawHub marketplace and self-modifying skills.** Tool surface is
   fixed at the 7 chat tools. The V1.1 plan continues to narrow it.
 - **Slash-command UI in the dock.** Server-side slash commands are
-  inert from Karan's POV.
+  inert from the user's POV.
 - **Per-insight OpenClaw agent provisioning.** R6 fixes one shared
   agent + `sessionKey` scoping.
 - **Removal of `_build_chat_context`.** It is the domain-model loader;
@@ -611,7 +611,7 @@ of retention drives storage cost.
 
 ## 11. Success Metrics
 
-- **Primary:** Karan opens an insight chat dock on N=10 consecutive
+- **Primary:** the user opens an insight chat dock on N=10 consecutive
   days with `OPENCLAW_ENABLED=1` and reports parity with the legacy
   experience (no degradation in answer quality, citation grounding,
   or chart render success).

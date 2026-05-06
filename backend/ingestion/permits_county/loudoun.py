@@ -1,5 +1,5 @@
 """
-Loudoun County, VA -- county building-permit adapter (Karan-fixes AC3).
+Loudoun County, VA -- county building-permit adapter (the user-fixes AC3).
 
 Data source
 -----------
@@ -50,7 +50,7 @@ SOURCE_ID = "loudoun_va"
 COUNTY = "Loudoun"
 STATE = "VA"
 USER_AGENT = (
-    "strategic-insights-tool/1.0 (research; karan@oracle.com)"
+    "strategic-insights-tool/1.0 (research; research@oracle.com)"
 )
 
 DATACENTER_RE = re.compile(r"data\s*[-_]?\s*center|datacenter|\bDC\b", re.I)

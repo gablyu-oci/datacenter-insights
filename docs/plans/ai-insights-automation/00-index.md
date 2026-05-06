@@ -2,7 +2,7 @@
 
 **Status:** Planning complete, awaiting user review.
 **Date:** 2026-05-04
-**Owner (product):** Karan (primary stakeholder)
+**Owner (product):** the user (primary stakeholder)
 **Scope:** Make the AI Insights tab generate real, data-grounded insights from Postgres on a daily auto-schedule, instead of canned text behind a manual button.
 
 ---

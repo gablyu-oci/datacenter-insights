@@ -1,7 +1,7 @@
 # Architecture Evolution PRD: Prototype to Production Platform
 
 **Owner:** Strategic Insights Team (OCI)
-**Stakeholder:** Karan
+**Stakeholder:** the user
 **Status:** Draft v1.0
 **Date:** 2026-04-28
 **Scope:** Backend architecture, data layer, API design, frontend error handling, observability
@@ -280,7 +280,7 @@ backend/
 
 ### R1: Mock-Data Hangover
 
-**Risk:** Users (especially Karan) may already be treating mock numbers as real. Confidence scores like `0.94` on fabricated data create false trust.
+**Risk:** Users (especially the user) may already be treating mock numbers as real. Confidence scores like `0.94` on fabricated data create false trust.
 
 **Mitigation:**
 - Phase 1, Week 1: Add a visible "PREVIEW DATA" watermark to all mock-backed tabs immediately, before any backend work begins.

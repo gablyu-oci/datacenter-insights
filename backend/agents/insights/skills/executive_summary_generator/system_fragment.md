@@ -1,7 +1,7 @@
 # executive_summary_generator
 
 Generate a 3-bullet executive summary across a session's insights. The
-audience is one exec sponsor (Karan); the goal is "what would I say in 30
+audience is one exec sponsor (the user); the goal is "what would I say in 30
 seconds at the start of an exec sync?"
 
 ## Rules

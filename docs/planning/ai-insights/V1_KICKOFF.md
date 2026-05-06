@@ -24,7 +24,7 @@ These were approved 2026-05-04 (gabrielle.lyu@oracle.com). Do not re-debate.
 |---|---|---|
 | R-2 | ChartSpec v1 | Pydantic + JSON-Schema; ratify in W1.6, gates S1 day 1 |
 | R-3 | Streaming protocol | SSE with typed `event:` names + Last-Event-ID resume |
-| R-5 | Materiality rubric (V1) | Agent self-rate 3-level S/M/L (Karan sign-off on prompt before V2) |
+| R-5 | Materiality rubric (V1) | Agent self-rate 3-level S/M/L (the user sign-off on prompt before V2) |
 | R-7 | Citation freshness | ≤24 months default; flag-only beyond |
 | R-8 | Confidence rubric | low = (rows<50 OR no agree-cite OR stale); high = (rows≥200 AND ≥1 agree-cite AND fresh); else medium |
 | P-3 | Chat retention column | V1 alembic adds `delete_after` column (default NULL) — avoids V2 follow-up migration |
@@ -54,8 +54,8 @@ These were approved 2026-05-04 (gabrielle.lyu@oracle.com). Do not re-debate.
 | **W7** | Frontend foundations — extract `agentchat/` (6 primitives), SSE client, ChartSpec renderer, AIInsightsTab nav registration |
 | **W8** | Frontend insights UI — InsightCard, ProvenanceFooter, SurveyingBanner, SkeletonStack, EmptyState/ErrorState, SessionRunner |
 | **W9** | Observability & logging — structured per-event JSON, tool_call_log writes, frontend telemetry, user-visible provenance footer |
-| **W10** | QA & dogfood — test plan, fixtures, Karan calibration session, success-metric instrumentation |
-| **W11** | Docs & demo prep — per-skill READMEs, V1 unveiling demo script, Karan handoff brief |
+| **W10** | QA & dogfood — test plan, fixtures, the user calibration session, success-metric instrumentation |
+| **W11** | Docs & demo prep — per-skill READMEs, V1 unveiling demo script, the user handoff brief |
 
 ---
 
@@ -63,7 +63,7 @@ These were approved 2026-05-04 (gabrielle.lyu@oracle.com). Do not re-debate.
 
 If any node slips a day, the demo slips a day.
 
-`W1.1 alembic migration → W1.2 SA models → W2.1 sql_gate → W2.5 ToolLoopDriver → W2.6 emit_chart + ChartSpec v1 → W6.1 SSE router → W7.1 agentchat extraction → W8.2 InsightCard renderer → W10.4 Karan dogfood`
+`W1.1 alembic migration → W1.2 SA models → W2.1 sql_gate → W2.5 ToolLoopDriver → W2.6 emit_chart + ChartSpec v1 → W6.1 SSE router → W7.1 agentchat extraction → W8.2 InsightCard renderer → W10.4 the user dogfood`
 
 Predecessors: W0.1 (read-only Postgres role) and W0.5 (ChartSpec v1 schema) gate the whole chain (per TASKS §T5.3).
 
@@ -110,7 +110,7 @@ Other prerequisites that share day 1: W0.3 LlamaStack smoke test, W0.4 sqlglot d
 | A2 | % insights with non-trivial chart | **≥80%** — per PRD G2, Q2 |
 | A3 | p50 generation latency | **≤3 min** (DoD: <90 s p50 on 5-insight seed-DB session) — per PRD G5/Q5, TASKS DoD-1 |
 | A4 | Hallucinated tables/columns | **0** per 100 sessions — per PRD G6/Q7, TASKS DoD-9 |
-| A5 | Karan dogfood usefulness | **≥30%** "useful" (V1 relaxed bar; DoD: ≥3 of 5 in calibration) — per PRD §8 V1 exit, TASKS DoD-8 |
+| A5 | the user dogfood usefulness | **≥30%** "useful" (V1 relaxed bar; DoD: ≥3 of 5 in calibration) — per PRD §8 V1 exit, TASKS DoD-8 |
 | A6 | Tool-call cap breaches | **≤5 per 100 sessions** — per PRD Q6, TASKS DoD-10 |
 | A7 | Cancel + Last-Event-ID resume | works manually end-to-end — per TASKS DoD-5 |
 | A8 | Provenance footer renders all 7 PRD §5.6 fields | 100% — per TASKS DoD-2 |

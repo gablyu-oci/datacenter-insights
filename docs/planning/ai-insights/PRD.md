@@ -1,5 +1,5 @@
 # PRD — AI Insights Tab
-**Owner:** Strategic Insights team (OCI) · **Stakeholder:** Karan
+**Owner:** Strategic Insights team (OCI) · **Stakeholder:** the user
 **Status:** Draft v0.2 — **Track B (V2) implementation landed 2026-05-04** · **Date:** 2026-05-04
 **Cross-refs:** [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./UX.md`](./UX.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./TASKS.md`](./TASKS.md)
 **Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
@@ -18,7 +18,7 @@ Add a 10th tab — **AI Insights** — where an LLM agent on OCI Llama Stack aut
 
 ### 1.1 Why now
 
-The platform today (per [parent PRD §2](../../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** Karan currently has to:
+The platform today (per [parent PRD §2](../../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** the user currently has to:
 
 1. Open each tab in turn,
 2. Eyeball the chart for anomalies,
@@ -35,7 +35,7 @@ That loop is the gap. **The platform produces facts; it does not produce finding
 | **`triangulation_qa`** | User-initiated chat, scoped to triangulation L1/L2 | Reactive (you have to ask a question). AI Insights is *proactive* (surfaces what to ask about). |
 | **`datacenter_qa`** | User-initiated chat, scoped to sites/permits | Same — reactive, single-pillar. AI Insights spans all 9 tabs. |
 
-**The gap closed:** Karan opens the tool on Monday morning, lands on AI Insights, and sees 5–10 fresh, supported claims about the data — claims he didn't have to formulate. He clicks the strongest one, opens the chat, and pushes back. The reactive agents stay; AI Insights complements them as the *proactive surface*.
+**The gap closed:** the user opens the tool on Monday morning, lands on AI Insights, and sees 5–10 fresh, supported claims about the data — claims he didn't have to formulate. He clicks the strongest one, opens the chat, and pushes back. The reactive agents stay; AI Insights complements them as the *proactive surface*.
 
 ### 1.3 Why an *agent* and not a query builder
 
@@ -50,7 +50,7 @@ A static dashboard of "top 10 anomalies" is achievable today with anomaly_detect
 | G1 | Per session, the agent produces **5–10 distinct, non-trivial insights** drawn from the platform's existing data | Count + dedup rate (no two insights share >70% n-gram overlap) |
 | G2 | **≥80% of insights are accompanied by a Recharts chart** that is non-trivially derived from the data (not a "single number with units") | Manual review of 20 dogfood sessions |
 | G3 | **Every insight has provenance**: data-sources used, skills run, generated-at timestamp, confidence | 100% — enforced by emit-time schema validation |
-| G4 | **Karan rates ≥40% of insights "useful"** in dogfood (5-point scale, useful = 4 or 5) | Capture rating in-product; weekly review |
+| G4 | **the user rates ≥40% of insights "useful"** in dogfood (5-point scale, useful = 4 or 5) | Capture rating in-product; weekly review |
 | G5 | Insight generation completes in **≤3 minutes p50, ≤8 minutes p95** per session | Server-side timing; logged to `llm_extraction_runs` |
 | G6 | **Zero hallucinated tables/columns** — agent never references DB objects that don't exist | Strict whitelist via introspection; failed calls logged |
 
@@ -75,14 +75,14 @@ V3 adds:
 | N5 | **No automated trading / external alerting** | Per [parent PRD §10](../../../PRD.md). |
 | N6 | **No cross-customer learning** | Each session is stateless aside from per-session insight + thread persistence. |
 | N7 | **Not a replacement for `weekly_brief`** | Weekly brief is time-bounded narrative for execs; AI Insights is open-domain analytical surface. Both ship. |
-| N8 | **No PDF / email export in V1** | Deferred to V3 if Karan asks. |
+| N8 | **No PDF / email export in V1** | Deferred to V3 if the user asks. |
 | N9 | **No multi-user collaboration features (comments, sharing, ACLs)** | Per [parent PRD §8 Decision 5](../../../PRD.md): no auth in v1, internal-only. |
 
 ---
 
 ## 4. Users & Use Cases
 
-### 4.1 Karan (exec sponsor)
+### 4.1 the user (exec sponsor)
 
 > *Monday morning. He opens the tool, lands on AI Insights. Sees: "Oracle's contracted-renewable share (86%) is 3× the hyperscaler median; this is structurally divergent from Amazon (0% renewable in last 5 deals) and Microsoft (55%)." He clicks the chart, scrolls citations, sees one Reuters piece tagged "agree", one SemiAnalysis blog tagged "disagree". He opens the thread: "Is the renewable concentration a financing constraint or a strategy?" The agent answers using `query_database` over `curated_deals` + `edgar_extractions`, producing a follow-up table.*
 
@@ -111,7 +111,7 @@ V3 adds:
 1. **Specific** — names entities (companies, states, sites, vendors) and a quantity.
 2. **Supported** — at least one row of evidence retrievable via `query_database` or `call_api`.
 3. **Non-trivial** — not directly visible as a tile on any of the 9 existing tabs. Examples of *trivial* (rejected): "Amazon has the most contracted GW" (visible on Power tab as the largest bar). Examples of *non-trivial* (accepted): "Amazon is the only hyperscaler whose top 5 deals are all nuclear, while Google's are all renewable."
-4. **Material** — the claim, if true, would change a strategy decision. Subjective; the agent self-rates and surfaces a `materiality_score ∈ {low, medium, high}`. Reviewer (Karan) ratings calibrate the prompt over time.
+4. **Material** — the claim, if true, would change a strategy decision. Subjective; the agent self-rates and surfaces a `materiality_score ∈ {low, medium, high}`. Reviewer (the user) ratings calibrate the prompt over time.
 
 **Generation loop (per session):**
 
@@ -203,7 +203,7 @@ Citation {
 
 **Required cite count:**
 - V2 rule: **≥2 citations** per insight, **≥1 of which must be `agree` or `disagree`** (pure `context`-only is insufficient). Up to 5 max to keep cards readable.
-- If the agent cannot find ≥2 citations after **3 web-search calls** for an insight, the insight is **emitted with a `low_external_support` flag** and Karan can choose to filter these out.
+- If the agent cannot find ≥2 citations after **3 web-search calls** for an insight, the insight is **emitted with a `low_external_support` flag** and the user can choose to filter these out.
 
 **Search provider:** TBD — defer to [`./RESEARCH.md`](./RESEARCH.md). Candidates: Brave Search API, Bing Web Search API, Tavily, SerpAPI. Selection criteria documented there.
 
@@ -279,11 +279,11 @@ The brief lists 33 skills under `~/.claude/skills/`. The brief explicitly highli
 | 8 | `funnel-analysis` | **DROP** | Hypothesis | — | No conversion funnel in competitive intel. The closest analog (announce → permit → site → commission) is better served by `time-series-analysis` + `cohort-analysis`. |
 | 9 | `business-metrics-calculator` | **KEEP** | Hypothesis | V1 | We have GW, MW, $-revenue, gap. Standardizes per-metric computation (e.g., contracted-GW-per-state-per-quarter). |
 | 10 | `insight-synthesis` | **KEEP** | Narrative | V1 | The skill that turns a verified hypothesis into a one-sentence headline. Core. |
-| 11 | `executive-summary-generator` | **KEEP** | Narrative | V1 | Karan-facing card-body generator. Tone calibration matters here. |
+| 11 | `executive-summary-generator` | **KEEP** | Narrative | V1 | the user-facing card-body generator. Tone calibration matters here. |
 | 12 | `visualization-builder` | **KEEP** | Narrative | V1 | Chooses chart type + encoding given the data shape. Outputs the `ChartSpec` JSON. |
 | 13 | `data-narrative-builder` | **KEEP** | Narrative | V1 | Stitches headline + chart + caption into a coherent card body. Distinct from `executive-summary-generator` in that it operates *per insight*, not over a corpus. |
 | 14 | `impact-quantification` | **KEEP** | Narrative | V1 | "What's the GW gap in dollars?" — converts technical numbers into stakes. Important for materiality scoring. |
-| 15 | `methodology-explainer` | **KEEP** | QA | V2 | Produces the "how was this computed?" pop-out. Essential when Karan pushes back. V1 ships a static methodology footer; V2 swaps in the skill-driven version. |
+| 15 | `methodology-explainer` | **KEEP** | QA | V2 | Produces the "how was this computed?" pop-out. Essential when the user pushes back. V1 ships a static methodology footer; V2 swaps in the skill-driven version. |
 | 16 | `technical-to-business-translator` | **KEEP** | Narrative | V1 | Converts "L2 implied GW = 4.4" into "FY26 NVIDIA revenue implies datacenter compute demand of 4.4 GW worldwide" — exec-readable. |
 | 17 | `peer-review-template` | **KEEP** | QA | V2 | Pre-emit defensive check: agent self-reviews each insight against a checklist (specificity, support, non-triviality, materiality). Costs an extra LLM call per insight; deferred to V2 to keep V1 latency low. |
 | 18 | `statistical-test-selection` | **DROP** | Hypothesis | — | We're rarely doing inferential stats on this dataset. Most claims are descriptive (counts, sums, ratios). Reconsider in V3 if a use case appears. |
@@ -335,7 +335,7 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 
 ### 7.2 Qualitative
 
-- Karan rates **≥40%** of insights "useful" (4 or 5 on 5-point scale) in V1 dogfood; **≥55%** by V2; **≥65%** by V3.
+- the user rates **≥40%** of insights "useful" (4 or 5 on 5-point scale) in V1 dogfood; **≥55%** by V2; **≥65%** by V3.
 - Strategy analyst can copy ≥1 insight per session into a working briefing without rewording the headline.
 - Capacity planner reports the chat answers structured questions correctly **≥70%** of the time (V2 metric, capture by spot-audit).
 
@@ -360,9 +360,9 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 - Persistence: `ai_insights` + `ai_sessions` tables (schemas in [`./ARCHITECTURE.md`](./ARCHITECTURE.md)).
 
 **Exit criteria:**
-- Karan completes 5 dogfood sessions with no P0 incidents.
+- the user completes 5 dogfood sessions with no P0 incidents.
 - Q1, Q2, Q5, Q6, Q7, Q8 metrics meet target on a sample of 20 sessions.
-- Q4 (Karan rating) ≥30% useful (relaxed V1 bar; raises in V2).
+- Q4 (the user rating) ≥30% useful (relaxed V1 bar; raises in V2).
 
 ### V2 (+3–4 weeks) — "Chat + web search"
 
@@ -402,7 +402,7 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 | R5 | **Latency** — 8-min budget breached on complex sessions. | Medium | Medium | (a) Parallelize independent tool calls. (b) Pre-warm bootstrap data via cache. (c) Stream insights as they finish (agent emits one card → frontend renders it → agent continues). Streaming protocol in [`./ARCHITECTURE.md`](./ARCHITECTURE.md). |
 | R6 | **DB query safety** — agent submits expensive or write-shaped SQL. | Low | Critical | (a) Read-only DB role. (b) SQL parser whitelist (SELECT only, no CTEs that touch `pg_*`, no `pg_sleep`). (c) Statement timeout 5 s. (d) Row cap 10 K. |
 | R7 | **Stale ingestion produces stale insights** — agent reports on data ingested 30 days ago. | Medium | Medium | `data-quality-audit` skill surfaces last-run-age per source; insights flagged `low_confidence` if any underlying source is older than its expected freshness band ([parent PRD §7](../../../PRD.md)). |
-| R8 | **User over-trusts the agent** — treats output as ground truth. | Medium | High | Card-level "AI-generated" badge, prominent provenance footer, every chart click-throughs to source. Karan pre-briefed at V1 demo. |
+| R8 | **User over-trusts the agent** — treats output as ground truth. | Medium | High | Card-level "AI-generated" badge, prominent provenance footer, every chart click-throughs to source. the user pre-briefed at V1 demo. |
 | R9 | **Llama Stack outage** | Low | High | Graceful failure: insight tab shows last successful session with its `generated_at` timestamp. No silent fallbacks to mock data — banner shows "AI service unavailable." |
 | R10 | **Prompt injection via ingested data** (an EDGAR filing contains "ignore previous instructions"). | Low | Medium | Tool outputs are always serialized as JSON, not concatenated into the prompt as raw text. Skill prompts treat data fields as values, not instructions. Spot-audit V1. |
 
@@ -416,9 +416,9 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 | OQ2 | **Chart-spec format** — adopt the §5.2 schema as-is, or align with an existing internal schema (e.g., the `chart_spec` already returned by `datacenter_qa` and `triangulation_qa`)? | Architect → [`./ARCHITECTURE.md`](./ARCHITECTURE.md) | Before V1 implementation start |
 | OQ3 | **Streaming protocol** — SSE vs WebSocket vs long-poll? Latency vs proxy compatibility. | Architect → [`./ARCHITECTURE.md`](./ARCHITECTURE.md) | Before V1 implementation start |
 | OQ4 | **Skill conversion path** — direct prompt port, or Llama-Stack-native rewrite? | Skill engineer → [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) | Sprint 1 of V1 |
-| OQ5 | **Materiality scoring rubric** — agent self-rate via prompt only, or seed with reviewer-labeled training examples? | PM + Karan | Sprint 2 of V1 |
+| OQ5 | **Materiality scoring rubric** — agent self-rate via prompt only, or seed with reviewer-labeled training examples? | PM + the user | Sprint 2 of V1 |
 | OQ6 | **Insight uniqueness across sessions** — should the agent see prior sessions' insights to avoid repetition, or run cold each time? Trade-off: novelty vs continuity. | PM | Before V3 (cron rollout) |
-| OQ7 | **Citation freshness** — is a citation acceptable if its source is >12 months old? | PM + Karan | Before V2 |
+| OQ7 | **Citation freshness** — is a citation acceptable if its source is >12 months old? | PM + the user | Before V2 |
 | OQ8 | **Confidence rubric** — what numeric thresholds map to low/medium/high? (e.g., row count, citation count, source age) | Architect + PM | Before V1 demo |
 | OQ9 | **Cron timing in V3** — Sunday 23:30 UTC clashes with `weekly_brief` log volume; choose a non-overlapping window. | Ops | Before V3 |
 | OQ10 | **Chat persistence retention** — do threads live forever, or rotate after N days? | PM | Before V2 |

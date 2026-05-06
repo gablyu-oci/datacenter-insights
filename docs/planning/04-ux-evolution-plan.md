@@ -1269,7 +1269,7 @@ Drill-down view per company. **This is the answer to "what is OCI's footprint an
 
 1. **Header.** Company name, logo (if available from a curated mapping), ticker / CIK, parent link if subsidiary, public/private badge, "Major role" tag (the role with the highest site_count for this company).
 2. **Role distribution card.** A donut or stacked-bar showing this company's site-association count by role (Provider / End-user / Financing / Equipment / Utility / Developer / Customer / Permittee LLC / Permit parent). Click a slice → filters section 3 to that role.
-3. **Footprint table.** Per role: site count, MW total (with note when `multi_tenant_warning` applies), top 3 geographies. Mirrors the queries Karan asked for (self-owned vs end-user-only).
+3. **Footprint table.** Per role: site count, MW total (with note when `multi_tenant_warning` applies), top 3 geographies. Mirrors the queries the user asked for (self-owned vs end-user-only).
 4. **Sites map + list.** Map view of all sites where this company plays *any* role; markers colored by role. List below with role chips per row. Filter chips: state, role, stage.
 5. **Events timeline.** Reuse the `<EventsTimeline />` component, scoped to events on this company's sites.
 6. **Lineage panel.** "How we attribute this company" — links to source URLs, alias confidence, parent-attribution evidence (relevant for resolved LLCs).
@@ -1367,7 +1367,7 @@ Frontend chart components read this and render the badge + empty-state automatic
 
 ### Triangulation Q&A Chat Panel (New — additive, §4.2 Agent D of 00-DECISIONS-AND-CONSTRAINTS.md)
 
-A docked chat panel powered by the Triangulation Q&A agent (Llama Stack `oci/openai.gpt-5.4` with tool-use). This is how Karan's "is there enough power for the GPUs being shipped in Texas?" question becomes a typeable interaction, not a navigation puzzle. **Strictly additive** — no existing tab or component is modified.
+A docked chat panel powered by the Triangulation Q&A agent (Llama Stack `oci/openai.gpt-5.4` with tool-use). This is how the user's "is there enough power for the GPUs being shipped in Texas?" question becomes a typeable interaction, not a navigation puzzle. **Strictly additive** — no existing tab or component is modified.
 
 **Component:** `<QaChatPanel />`
 **Data source:** `POST /api/agent/qa` (SSE streaming) + `GET /api/agent/qa/conversations/{id}` (history).

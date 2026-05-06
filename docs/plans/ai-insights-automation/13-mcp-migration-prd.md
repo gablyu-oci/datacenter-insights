@@ -2,7 +2,7 @@
 
 **Status:** Active. Sub-PRD of `11a-openclaw-migration-prd.md`. Replaces the TypeScript-plugin tool-routing layer described in `11b §3-§4` and `11c §G` with a native Python MCP (Model Context Protocol) server mounted on the existing FastAPI process. Inherits all goals, NFRs, risks, and open questions from 11a unless explicitly overridden here.
 **Owner:** PM (strategic-insights-tool)
-**Primary stakeholder:** Karan
+**Primary stakeholder:** the user
 **Date:** 2026-05-06
 **Predecessors:**
 - `11a-openclaw-migration-prd.md` — chat-runtime PRD (R1-R9, OpenClaw lane). This sub-PRD is its tool-routing implementation.
@@ -46,11 +46,11 @@ Everything else from 11a is unchanged: the synthesis pipeline is untouched (NG3)
 
 ## 3. User Stories
 
-All stories are scoped to Karan (single analyst) plus the operator/engineer personas implied by the rollout.
+All stories are scoped to the user (single analyst) plus the operator/engineer personas implied by the rollout.
 
 ### 3.1 Real tool calls in the OpenClaw lane
 
-> **As Karan, when `OPENCLAW_ENABLED=1`, my chat turns invoke real Python tools via MCP and the assistant cites real DB rows — not "I cannot access the platform Postgres".**
+> **As the user, when `OPENCLAW_ENABLED=1`, my chat turns invoke real Python tools via MCP and the assistant cites real DB rows — not "I cannot access the platform Postgres".**
 
 - Acceptance: a turn that asks "what other Crusoe sites?" results in a `query_database` MCP tool invocation, rows return, the dock renders a `tool_call_complete` chip, and the assistant's text references concrete row values. An `agent_tool_call` row lands in Postgres with `ok=true`.
 
@@ -237,7 +237,7 @@ MCP requests carry tool args but not necessarily our `session_key` / `insight_id
 
 ## 9. Success Metrics
 
-- **Primary:** Karan opens an insight chat dock with `OPENCLAW_ENABLED=1` and gets a response that cites a concrete DB row on the first prompt that warrants `query_database`. The "I cannot access the platform Postgres" string is absent from the next 10 consecutive turns.
+- **Primary:** the user opens an insight chat dock with `OPENCLAW_ENABLED=1` and gets a response that cites a concrete DB row on the first prompt that warrants `query_database`. The "I cannot access the platform Postgres" string is absent from the next 10 consecutive turns.
 - **Reliability:** ≥ 99% of MCP tool invocations from the gateway succeed (HTTP 200 + valid MCP envelope) over a rolling 7-day window.
 - **Latency:** p95 MCP tool round-trip ≤ 200 ms on loopback / bridge-network for non-DB tools; ≤ 1.5 s for `query_database` (DB-bound, matches today's in-process baseline + framing overhead).
 - **Surface reduction:** the deleted TS scaffold (~1500 lines across 11+ files) is no longer in `git ls-files`.

@@ -2,7 +2,7 @@
 
 **Status:** Draft for review
 **Owner:** PM (strategic-insights-tool)
-**Primary stakeholder:** Karan
+**Primary stakeholder:** the user
 **Date:** 2026-05-05
 **Predecessors:**
 - `01-prd.md` (original PRD; FR1-FR7, AC1-AC9)
@@ -20,7 +20,7 @@ already-shipped Phase 1-3 work.
 ### 1.1 Goal A — Phase 4: Frontend default-load and `GET /api/insights/latest`
 
 The synthesis loop, the daily 09:00 UTC scheduler, and the schema for
-auto-run sessions are all live, but Karan still has to click "Generate
+auto-run sessions are all live, but the user still has to click "Generate
 insights" to see the day's set. Goal A closes that gap by exposing a
 single snapshot endpoint (`GET /api/insights/latest`) that returns the
 most recent completed `ai_session` plus its persisted `ai_insight` rows
@@ -34,7 +34,7 @@ UX spec §4 stale banner over the previous successful insights.
 
 ### 1.2 Goal B — Supply/demand-gap analytical pattern
 
-Karan's quote: *"I want it to be able to find out Oh XX
+the user's quote: *"I want it to be able to find out Oh XX
 datacenter/provider is generating XX megawatts but only partially
 consumed by some company, so we could potentially contract the rest
 energy types of findings, not limited to this one question."* Today's
@@ -54,26 +54,26 @@ the decision and the row-count caps.
 
 ## 2. User Stories
 
-Karan is the primary user throughout. Stories are ordered A then B.
+the user is the primary user throughout. Stories are ordered A then B.
 
-- **A-S1.** *As Karan, I want the AI Insights tab to show today's
+- **A-S1.** *As the user, I want the AI Insights tab to show today's
   insights the moment I open it, so that I do not need to remember to
   click "Generate" before a meeting.*
-- **A-S2.** *As Karan, when a manual "Run again" is in flight, I want
+- **A-S2.** *As the user, when a manual "Run again" is in flight, I want
   yesterday's (or this morning's) insights to remain visible until the
   new run actually has results, so that I am not staring at a blank
   page during a stream.*
-- **A-S3.** *As Karan, when this morning's auto-run failed, I want a
+- **A-S3.** *As the user, when this morning's auto-run failed, I want a
   banner telling me so plus the most recent successful set still
   rendered, so that I am never left with a blank tab when the
   scheduler hiccups.*
-- **B-S1.** *As Karan, I want the tool to surface datacenter or power
+- **B-S1.** *As the user, I want the tool to surface datacenter or power
   sites that have contracted MW but no named offtaker, so that OCI's
   commercial team can chase the uncontracted capacity.*
-- **B-S2.** *As Karan, I want the tool to flag sites where one
+- **B-S2.** *As the user, I want the tool to flag sites where one
   hyperscaler took the entire offtake and another high-MW site sits
   with no known customer, so I can spot asymmetric concentration.*
-- **B-S3.** *As Karan, I want supply/demand-gap insights to appear in
+- **B-S3.** *As the user, I want supply/demand-gap insights to appear in
   the daily set as commercial opportunities, not buried as raw rows,
   so that they are part of the morning narrative.*
 

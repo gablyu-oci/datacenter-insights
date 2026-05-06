@@ -366,7 +366,7 @@ class GeneratorPermit(SQLModel, table=True):
 
 # ---------------------------------------------------------------------------
 # Building Permits — county-level US building-permit landing table
-# (Karan-fixes batch AC3). Distinct from `generator_permits` which holds
+# (the user-fixes batch AC3). Distinct from `generator_permits` which holds
 # state air/generator permits. One row per (source, source_permit_id).
 # ---------------------------------------------------------------------------
 

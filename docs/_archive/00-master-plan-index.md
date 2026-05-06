@@ -1,6 +1,6 @@
 # Datacenter & Power Intelligence Platform — Master Architecture Plan
 
-> **Date:** 2026-04-28 | **Owner:** Strategic Insights Team (OCI) | **Stakeholder:** Karan
+> **Date:** 2026-04-28 | **Owner:** Strategic Insights Team (OCI) | **Stakeholder:** the user
 > **Status:** Planning Complete — Ready for Engineering Review
 
 ---
@@ -123,7 +123,7 @@ The prototype at `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/` has 
 - >=95% of displayed metrics link to primary source
 - Zero bare `except` clauses
 - All API errors render in the UI (no more infinite spinners)
-- Karan can answer "where does OCI sit vs hyperscalers in NoVA?" without leaving the dashboard
+- the user can answer "where does OCI sit vs hyperscalers in NoVA?" without leaving the dashboard
 
 ### Phase 2 — Scale Pillars (Weeks 7-14)
 - Add Meta + OCI to power tracking

@@ -234,7 +234,7 @@ def test_weekly_brief_cron_grace_window():
 
 def test_quarterly_filings_cron_grace_window():
     """The quarterly_filings_daily cron is registered with at least the daily
-    1h grace (post-Karan-round-2 weekly→daily rename in pipeline/runner.py)."""
+    1h grace (post-the user-round-2 weekly→daily rename in pipeline/runner.py)."""
     from pipeline.runner import create_scheduler
 
     sched = create_scheduler()

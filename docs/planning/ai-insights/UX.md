@@ -1,5 +1,5 @@
 # UX — AI Insights Tab
-**Owner:** Product Designer · **Stakeholder:** Karan (via PM)
+**Owner:** Product Designer · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./TASKS.md`](./TASKS.md)
 **Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
@@ -14,7 +14,7 @@
 
 | # | Persona | Goal in 60 seconds on this tab |
 |---|---|---|
-| P1 | **Karan (exec sponsor)** | Land on tab Monday 09:00. Skim 5–10 cards. Find the one non-obvious claim that sharpens his next exec sync. Push back in chat on the strongest one. Walk away with one talking point. |
+| P1 | **the user (exec sponsor)** | Land on tab Monday 09:00. Skim 5–10 cards. Find the one non-obvious claim that sharpens his next exec sync. Push back in chat on the strongest one. Walk away with one talking point. |
 | P2 | **Strategy analyst** | Filter cards by tag (`#power`, `#permits`). Copy a chart and provenance footer into Confluence. Click through citations to verify the underlying SEC 8-K. |
 | P3 | **Capacity planner** | Skip the cards. Open the chat dock under a chosen insight. Ask "which states have the highest contracted-GW per active building permit?" Get a state-ranked table back. |
 
@@ -24,7 +24,7 @@
 |---|---|---|
 | **G1** | **Insight is scannable in <5 s.** Headline + materiality chip + chart shape carry 80% of the value before the eye moves to footnotes. | Five-card stack readable end-to-end in 60 s without scrolling past the 4th card. |
 | **G2** | **Every claim's provenance is one click away.** No card asks the reader to trust without showing. Provenance footer is collapsed by default but always one chevron-click from full transparency. | A reader who clicks "show provenance" sees the SQL or endpoint, the row count, the skills run, and (V2) the citations — all without leaving the card. |
-| **G3** | **Chat follow-up feels like a continuation, not a context switch.** The chat dock opens in-card with the insight headline pinned as a context chip. The dock reuses the same `agentchat/` primitives that power the global Q&A widget, so the keystroke pattern is already learned. | Karan opens chat on a card and his first message is a follow-up question, not "what was that claim again?". |
+| **G3** | **Chat follow-up feels like a continuation, not a context switch.** The chat dock opens in-card with the insight headline pinned as a context chip. The dock reuses the same `agentchat/` primitives that power the global Q&A widget, so the keystroke pattern is already learned. | the user opens chat on a card and his first message is a follow-up question, not "what was that claim again?". |
 
 These three goals trade off with each other in known places — the explicit decisions below name which goal wins each trade-off.
 
@@ -117,7 +117,7 @@ V1/V2 are **desktop-first** (resolves D10 — see ARCHITECTURE A15.1). Tablet/mo
 
 ### U2.5 Right rail (V2 only)
 
-V1 ships with no right rail — the card stack uses the full 1080 px content column. **In V2** an optional 280 px right rail appears at ≥1480 px viewport showing: session-level summary (one paragraph), "Open executive summary" button, share link. Below 1480 px the rail collapses into a button that opens a modal with the same content. **V1 decision: ship without the rail.** Rationale: on a 1366×768 laptop (Karan's likely device per existing tab assumptions), a right rail forces the card column down to ~700 px and the chart legibility suffers.
+V1 ships with no right rail — the card stack uses the full 1080 px content column. **In V2** an optional 280 px right rail appears at ≥1480 px viewport showing: session-level summary (one paragraph), "Open executive summary" button, share link. Below 1480 px the rail collapses into a button that opens a modal with the same content. **V1 decision: ship without the rail.** Rationale: on a 1366×768 laptop (the user's likely device per existing tab assumptions), a right rail forces the card column down to ~700 px and the chart legibility suffers.
 
 ### U2.6 Footer
 
@@ -429,7 +429,7 @@ The global `ChatPanel.tsx` FAB stays for cross-tab Q&A. **Insight-scoped chat is
 │ └─────────────────────────────────────────────────────────────────────┘ │
 │                                                                          │
 │ ┌── messages ─────────────────────────────────────────────────────────┐  │
-│ │  Karan:                                                              │  │
+│ │  the user:                                                              │  │
 │ │  ╭─────────────────────────────────────────────────────────────────╮ │  │
 │ │  │ Is the renewable concentration a financing constraint or a       │ │  │
 │ │  │ strategy?                                                        │ │  │
@@ -952,11 +952,11 @@ Font family: inherits from platform (`-apple-system, BlinkMacSystemFont, …` �
 | Streaming UX | Insight N+1 always renders below — no "where did the new card just appear" hunt. | New card could appear in either column; less predictable. |
 | Mobile | Already 1-col. | Doesn't gracefully degrade. |
 
-The cost of 1-column is more vertical scrolling. We accept that — Karan-style scanners are reading ~5 cards × ~600 px each = 3000 px, which is one-and-a-half page-downs. That's faster than parsing a 2-col grid.
+The cost of 1-column is more vertical scrolling. We accept that — the user-style scanners are reading ~5 cards × ~600 px each = 3000 px, which is one-and-a-half page-downs. That's faster than parsing a 2-col grid.
 
-### U12.2 60-second-scan path (Karan persona)
+### U12.2 60-second-scan path (the user persona)
 
-For Karan (P1) on a 1366 × 768 laptop at default zoom:
+For the user (P1) on a 1366 × 768 laptop at default zoom:
 
 ```
 0:00 — Land on tab. Header + first card visible.
@@ -970,7 +970,7 @@ For Karan (P1) on a 1366 × 768 laptop at default zoom:
 0:60 — Choose 1 card to open Discuss on, OR done.
 ```
 
-The **headline + materiality chip + chart shape** carry 80% of the value in this scan. The **provenance footer is on-demand only**, never required for the scan. The **citations row** is on-demand for analyst (P2), not for Karan (P1).
+The **headline + materiality chip + chart shape** carry 80% of the value in this scan. The **provenance footer is on-demand only**, never required for the scan. The **citations row** is on-demand for analyst (P2), not for the user (P1).
 
 This is why the provenance footer is collapsed by default (D6 resolution) and why citation pills exist as an inline summary (3 pills max in main view) with a hover-card for detail (D3 resolution).
 
@@ -1013,11 +1013,11 @@ This is why the provenance footer is collapsed by default (D6 resolution) and wh
 | Q4 | **Default sort order** — by materiality+novelty (agent's rank) vs by recency vs by tag? | Decides whether the first card the user sees is the "most important" or the "newest". | Agent's rank. |
 | Q5 | **Insight count per session** — fixed 7 vs let the agent emit 5–10? | UI shows "Insight N of M"; M is dynamic if the agent decides. | Dynamic 5–10 (display M from `session_complete`). |
 | Q6 | **Confidence label form** — `conf: high` (chosen) vs `high confidence` (verbose) vs just `high` ambiguous? | Brevity matters in the chip cluster. | `conf: high`. |
-| Q7 | **Generated-time format** — relative ("2 minutes ago") vs absolute UTC ("09:13:42 UTC")? | Karan reads at 09:14 UTC; relative is friendlier. Analyst copies to Confluence; absolute is needed. | Show relative in header, absolute in provenance footer. |
+| Q7 | **Generated-time format** — relative ("2 minutes ago") vs absolute UTC ("09:13:42 UTC")? | the user reads at 09:14 UTC; relative is friendlier. Analyst copies to Confluence; absolute is needed. | Show relative in header, absolute in provenance footer. |
 | Q8 | **Cancel during streaming — partial chart**: if a `chart` event arrived but `insight_complete` did not, do we keep the partial chart or discard? | UI complexity vs user expectation. | Discard the chart; keep the headline+subtitle (matches "halted at insight 3" framing). |
 | Q9 | **Sessions retention in selector** — how many past sessions in the dropdown? | Affects dropdown design (search needed if >20). | Last 20. |
 | Q10 | **Share-link expiry (V3)** — permanent vs 30-day? | Affects share-link modal copy. | 30-day, with renew option. |
-| Q11 | **Per-insight ratings** — does Karan rate inline (5-star widget on the card kebab menu)? PRD §7.2 calls for ≥40% useful ratings. | Determines whether the card needs a `[rate]` action. | V1: yes — inline 5-star in kebab. V2: same plus inline thumb up/down quick-rate. |
+| Q11 | **Per-insight ratings** — does the user rate inline (5-star widget on the card kebab menu)? PRD §7.2 calls for ≥40% useful ratings. | Determines whether the card needs a `[rate]` action. | V1: yes — inline 5-star in kebab. V2: same plus inline thumb up/down quick-rate. |
 
 ---
 
@@ -1028,7 +1028,7 @@ This is why the provenance footer is collapsed by default (D6 resolution) and wh
 - [`./ARCHITECTURE.md`](./ARCHITECTURE.md) — Component layout under `frontend/src/components/insights/` (A12), SSE events the UI consumes (A5), error states (A13), designer hooks D1–D10 (A15.1).
 - [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) — Skills inform a "skills used" badge row in the provenance footer (U3.5).
 - [`./TASKS.md`](./TASKS.md) — to be authored; will pick up the U14 open questions and the implementation tickets implied by U2–U11.
-- [`/strategic-insights-tool/PRD.md`](../../../PRD.md) — Karan's brand, OCI palette, existing tab visual language (PowerTab token map).
+- [`/strategic-insights-tool/PRD.md`](../../../PRD.md) — the user's brand, OCI palette, existing tab visual language (PowerTab token map).
 - [`/strategic-insights-tool/frontend/src/components/ChatPanel.tsx`](../../../frontend/src/components/ChatPanel.tsx) — Visual conventions inherited (markdown components, chart renderer, tooltip styles, citation row).
 - [`/strategic-insights-tool/frontend/src/components/tabs/PowerTab.tsx`](../../../frontend/src/components/tabs/PowerTab.tsx) — Card chrome, brand palette, source badge, metric tile reference implementation.
 

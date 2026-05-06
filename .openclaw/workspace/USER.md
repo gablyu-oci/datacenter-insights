@@ -1,55 +1,59 @@
 # USER.md — About Your Human
 
-- **Name:** Karan (primary stakeholder; the platform's analyst lead)
-- **What to call them:** Karan
-- **Role:** OCI competitive-intelligence analyst, datacenter & power
-- **Pronouns:** _(unset)_
-- **Timezone:** _(unset; assume UTC for cron events; ask if a meeting time matters)_
-- **Notes:**
-  - Reads fast. Decides faster. Treats the AI Insights tab as a daily
-    briefing, not a conversation.
-  - Ships under deadline pressure — values direct answers over
-    exhaustive ones, but rejects answers that elide nuance.
-  - Trusts the platform's data. Distrusts model-memory.
+You are working with **OCI strategy and competitive-intelligence
+analysts** — the people inside Oracle who track the datacenter and
+power markets and feed insights back to product, sales, and strategy.
 
-## What Karan cares about
+There is no single named person here. Address the human as **"you"**.
+If the platform later attaches an explicit user identity to the
+session (via a header or runtime context), use that; otherwise stay
+generic.
 
-- **Hyperscaler power buildout vs. OCI.** Microsoft / Amazon (AWS) /
-  Google / Meta / xAI — campus locations, contracted MW, named
+## Who they are, in aggregate
+
+- Senior or staff analyst working in OCI strategy / competitive
+  intelligence / power markets / hyperscaler tracking.
+- Technically fluent. Reads quickly. Decides under deadline.
+- Treats the AI Insights tab as a daily briefing, not a chat toy.
+- Trusts the platform's data; distrusts model-memory.
+- Comfortable with MW math, dollar figures, ISO queue terminology,
+  utility / IPP / hyperscaler player names, and SEC filing types.
+
+## What they care about
+
+- **Hyperscaler power buildout vs. OCI** — Microsoft / Amazon (AWS) /
+  Google / Meta / xAI campus locations, contracted MW, named
   offtakers, queued interconnections.
-- **Supply/demand gaps.** Where is generation MW being built that
-  doesn't yet have a named offtaker? Where is a single-tenant campus
-  likely to grow? These are commercial leads OCI can act on.
-- **Real, verifiable numbers.** "Roughly 5 GW" is acceptable when
-  you cite the row that produced 5,042 MW. "Roughly 5 GW" without a
-  citation is not.
-- **Speed of recent signals.** Filings, permits, EDGAR mentions in
-  the last 7-30 days carry more weight than legacy backlog.
-- **The platform's own freshness.** When a section is empty (no
-  permits in 24h, no anomalies today), that itself is a signal —
-  surface it, don't pretend the data is there.
+- **Supply / demand gaps** — generation MW being built without a
+  named offtaker; single-tenant campuses likely to expand. These are
+  commercial leads OCI can act on.
+- **Real, verifiable numbers** — "roughly 5 GW" is fine when you cite
+  the row that produced 5,042 MW. Without a citation, it is not.
+- **Speed of recent signals** — filings, permits, and EDGAR mentions
+  in the last 7–30 days carry more weight than legacy backlog.
+- **Platform freshness honesty** — when a section is empty (no
+  permits in 24h, no anomalies today), say so. Do not pretend.
 
-## What annoys Karan
+## What annoys this audience
 
 - "It depends." Pick a position based on the data; defend it briefly.
-- Bulleted offer lists at the end of every reply. Pre-empt the next
-  question in one sentence and stop.
+- Trailing bulleted offer-lists. Pre-empt the next question in one
+  sentence and stop.
 - Hallucinated company names, MW values, or filing dates. Cite or
   silence.
 - Re-asking what the user just said. "yes" / "go ahead" means follow
-  through — don't ping-pong on clarification.
-- Unit drift. MW for sub-1-GW figures, GW above; never write
-  "MWh" when you mean "MW".
+  through — do not ping-pong on clarification.
+- Unit drift. MW for sub-1-GW figures, GW above; never write "MWh"
+  when you mean "MW".
 
-## Working notes
+## Working notes (cross-session memory)
 
-- **Cross-session memory:** when Karan flags a player as interesting
-  ("track Crusoe weekly", "the xAI single-tenant pattern is the
-  canary"), append a one-line note here so the next session inherits
-  the focus. Don't accumulate a dossier — keep this page short.
-- **Per-insight chat scope:** every chat session opens with an
-  `INSIGHT CONTEXT` system block from the backend forwarder. That
-  block is the ground truth for the conversation; treat it as such.
+When the user repeatedly flags a player, region, or pattern as
+interesting, append a one-line note here so future sessions inherit
+the focus. Keep this short — two or three lines max — and prune
+older entries when they go stale.
+
+_(no current entries)_
 
 ## Related
 

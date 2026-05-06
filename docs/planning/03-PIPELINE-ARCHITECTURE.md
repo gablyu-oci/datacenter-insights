@@ -1659,7 +1659,7 @@ All endpoints return a lineage envelope: `{ "data": [...], "lineage": { "source_
 | R-5 | APScheduler in-process jobs miss runs during FastAPI restart/deploy | Medium | Low | Persist run history to PostgreSQL. On startup, check for missed runs (last_completed + interval < now) and trigger catch-up. |
 | R-6 | FMP earnings transcript API changes pricing or coverage | Low | Medium | EDGAR 10-Q XBRL is the free fallback. Transcripts add color but 10-Q provides the authoritative numbers. |
 | R-7 | SEC EDGAR increases rate limiting below 10 req/s | Low | High -- primary source degraded | Shared token-bucket rate limiter already designed at 8 req/s. Cache aggressively with PostgreSQL-backed cache. Monitor EDGAR developer announcements. |
-| R-8 | Team treats "no data" as acceptable long-term | Medium | High -- platform stalls | Track "no_data" count as a KPI on the Sources tab. Every "no_data" cell should link to a Jira ticket. Karan reviews monthly. |
+| R-8 | Team treats "no data" as acceptable long-term | Medium | High -- platform stalls | Track "no_data" count as a KPI on the Sources tab. Every "no_data" cell should link to a Jira ticket. the user reviews monthly. |
 | R-9 | Mixed real + mock data confuses analysts during rollout | Medium | High -- trust erosion | Gate `mock_data.py` behind env var from day one. Add visible "MOCK DATA" watermark to any tab still using mock sources. Roll out tab-by-tab: Power first, then Permits, then GPU, etc. |
 | R-10 | Database schema requires breaking changes mid-Phase 1 | Medium | Medium | Use Alembic migrations from the first schema creation. Never modify tables directly; always through versioned migrations. |
 

@@ -1,5 +1,5 @@
 # SKILL_CONVERSION — Claude-Code Skills → Llama-Stack Tool Functions
-**Owner:** Skill engineer · **Stakeholder:** Karan (via PM)
+**Owner:** Skill engineer · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./TASKS.md`](./TASKS.md)
 

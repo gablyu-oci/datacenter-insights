@@ -1,5 +1,5 @@
 """
-City of Mesa, AZ -- county/city building-permit adapter (Karan-fixes AC3).
+City of Mesa, AZ -- county/city building-permit adapter (the user-fixes AC3).
 
 Data source
 -----------
@@ -20,7 +20,7 @@ data-center variants. The endpoint has no auth requirement at low rates.
               OR upper(description_of_work) like '%DATACENTER%'
         &$limit=200&$offset=N
 
-NB: Mesa is a *city* in Maricopa County, but Karan's brief specified
+NB: Mesa is a *city* in Maricopa County, but the user's brief specified
 'mesa_az' as the source id and the dataset is the city-issued permit
 feed. We store county="Maricopa" and jurisdiction="City of Mesa".
 """
@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 SOURCE_ID = "mesa_az"
 COUNTY = "Maricopa"
 STATE = "AZ"
-USER_AGENT = "strategic-insights-tool/1.0 (research; karan@oracle.com)"
+USER_AGENT = "strategic-insights-tool/1.0 (research; research@oracle.com)"
 
 DATACENTER_RE = re.compile(r"data\s*[-_]?\s*center|datacenter|\bDC\b", re.I)
 

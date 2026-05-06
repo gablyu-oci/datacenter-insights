@@ -401,7 +401,7 @@ Every tab (Power, Permits, GPU Supply, TSMC, Satellite, Triangulation) displays 
 
 ## 6. Triangulation Tab Special UX
 
-The triangulation tab is the most complex view in the platform. It combines four data layers to answer Karan's core question: "Is there enough power being contracted to actually run all the GPUs being shipped?" The UX must make the inputs, assumptions, and gaps transparent.
+The triangulation tab is the most complex view in the platform. It combines four data layers to answer the user's core question: "Is there enough power being contracted to actually run all the GPUs being shipped?" The UX must make the inputs, assumptions, and gaps transparent.
 
 ### Layer Stack Visualization
 

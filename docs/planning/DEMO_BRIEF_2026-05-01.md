@@ -9,11 +9,11 @@ A competitive-intelligence dashboard for OCI strategy. Three pillars:
 
 1. **Power contracting** — who's locking up gigawatts where (vs. OCI).
 2. **Hardware supply chain** — GPUs, NICs, optics, foundry/packaging — what's shipping and at what scale.
-3. **Triangulation** — cross-reference contracted power vs. inferred GPU compute demand to surface *gaps* (the headline number Karan asked for).
+3. **Triangulation** — cross-reference contracted power vs. inferred GPU compute demand to surface *gaps* (the headline number the user asked for).
 
 Driven by **free public data** (SEC EDGAR, EPA ECHO, PJM ISO, state DEQs, IR press releases, county Socrata APIs, Aterio one-time CSV). LLM agents do the heavy lifting on extraction, classification, and Q&A. No paid data sources.
 
-**Today: ~22% real data / 78% mock — but every Karan-priority pillar has live data behind it.**
+**Today: ~22% real data / 78% mock — but every the user-priority pillar has live data behind it.**
 
 ---
 
@@ -37,7 +37,7 @@ Driven by **free public data** (SEC EDGAR, EPA ECHO, PJM ISO, state DEQs, IR pre
 
 | Component | Data source | Rows | Update freq |
 |---|---|---|---|
-| **GW Side-by-side bar** (the marquee Karan visual) | `curated_deals` + EDGAR 8-Ks | 8 entities | curated_deals manual; EDGAR daily |
+| **GW Side-by-side bar** (the marquee the user visual) | `curated_deals` + EDGAR 8-Ks | 8 entities | curated_deals manual; EDGAR daily |
 | Power capacity by provider | `sites` aggregated | 345 distinct providers | 1× Aterio import |
 | Power timeseries (announcements over time) | `curated_deals` + 8-Ks | 23 deals | EDGAR daily 06:00 UTC |
 | Deal-card list (clickable through to SEC) | `curated_deals` (curated 8-Ks) | 23 | manual |
@@ -107,11 +107,11 @@ Driven by **free public data** (SEC EDGAR, EPA ECHO, PJM ISO, state DEQs, IR pre
 | Mode | Data source | Rows | Coverage | Update freq |
 |---|---|---|---|---|
 | **Generator** (default) | EPA ECHO (federal) + PJM interconnection queue + TCEQ (TX) + VA Open Data + NY DEC | **4,150 rows** (501 with lat/lon) | 51 states | daily (EPA 08:00, PJM/state daily 07:00) |
-| **Building** (Karan's §1.4 ask) | Loudoun County VA Socrata + Mesa AZ Socrata | **345 rows** (271 + 74) | VA, AZ | weekly Mon 06:00 |
+| **Building** (the user's §1.4 ask) | Loudoun County VA Socrata + Mesa AZ Socrata | **345 rows** (271 + 74) | VA, AZ | weekly Mon 06:00 |
 
 **Both modes:** Google-satellite map, MarkerCluster, MW-sized pins, click for source link.
 
-**Sample building permit:** Mesa `PMT25-22348` — *"RED HAWK PH03 Foundation"* at 7232 E Elliot Rd, valuation **$36.75M**, 284,497 sqft, applicant JE Dunn — exactly the construction-ground-truth signal Karan asked for.
+**Sample building permit:** Mesa `PMT25-22348` — *"RED HAWK PH03 Foundation"* at 7232 E Elliot Rd, valuation **$36.75M**, 284,497 sqft, applicant JE Dunn — exactly the construction-ground-truth signal the user asked for.
 
 **Demo talking points:** Toggle to Building → 345 datacenter-keyword-matched permits from open-data portals. Grant County WA (Microsoft+AWS hub) doesn't have a free API; the adapter logs that gap weekly without failing. **No paid Shovels.ai used.**
 
@@ -154,14 +154,14 @@ Driven by **free public data** (SEC EDGAR, EPA ECHO, PJM ISO, state DEQs, IR pre
 | Microsoft | 10.47 | 0.77 | **9.70** | overcontracted |
 | Meta | 7.00 | 0.52 | **6.48** | overcontracted |
 
-**Model assumptions (visible in expandable panel — Karan WILL push back):**
+**Model assumptions (visible in expandable panel — the user WILL push back):**
 - Avg blended GPU power: 850 W (50/50 H100 700W / B200 1000W)
 - Avg ASP: $35,000 / GPU
 - Utilization: 60%
 - Datacenter overhead multiplier: 1.4× (PUE + networking + cooling)
 - Per-hyperscaler share: distributed proportional to contracted GW (no authoritative customer breakdown)
 
-**Demo talking points:** "All five hyperscalers show as 'overcontracted' — they have **more contracted GW than current FY26 GPU shipments imply**. That's expected: contracted is forward-looking, implied is current. The *gap* is the headline. Tunable assumptions panel lets us update the model in seconds when Karan pushes back."
+**Demo talking points:** "All five hyperscalers show as 'overcontracted' — they have **more contracted GW than current FY26 GPU shipments imply**. That's expected: contracted is forward-looking, implied is current. The *gap* is the headline. Tunable assumptions panel lets us update the model in seconds when the user pushes back."
 
 ### Tab 9: Data Sources (527 LOC)
 **Endpoints:** `/api/sources/`, `/api/coverage/`
@@ -230,16 +230,16 @@ The **Llama Stack** instance at `https://llama-stack.ai-apps-ord.oci-incubations
 ## 4. What's NOT built (gaps and deferred-paid items)
 
 ### Not built (free, in-scope, just no-time-yet)
-- **Satellite Imagery tab** — Karan asked for a separate tab with Sentinel-2 imagery + change detection over time. **Tab does not exist.** Free Sentinel-2 via ESA Copernicus is technically possible — pilot would be ~1 week.
-- **Earnings transcript parsing** — Karan named NVIDIA / TSMC / hyperscaler earnings calls. We do **filings** (10-K/10-Q/20-F) but not call **transcripts**. FMP / Capital IQ are paid; SeekingAlpha has anti-bot. SEC's Inline XBRL gives us the structured data without needing transcripts for the headline numbers.
+- **Satellite Imagery tab** — the user asked for a separate tab with Sentinel-2 imagery + change detection over time. **Tab does not exist.** Free Sentinel-2 via ESA Copernicus is technically possible — pilot would be ~1 week.
+- **Earnings transcript parsing** — the user named NVIDIA / TSMC / hyperscaler earnings calls. We do **filings** (10-K/10-Q/20-F) but not call **transcripts**. FMP / Capital IQ are paid; SeekingAlpha has anti-bot. SEC's Inline XBRL gives us the structured data without needing transcripts for the headline numbers.
 - **GPU unit shipments** — we extract NVIDIA Data Center revenue ($), not unit counts. The L2 model derives units via `revenue / $35K ASP` but that's a model assumption, not vendor disclosure. NVIDIA doesn't disclose units publicly.
-- **Inventory gap calc** (Karan's "shipped but not deployed") — we have the pieces (NVIDIA inventory $, purchase commitments $, contracted GW) but no derived KPI tile yet.
+- **Inventory gap calc** (the user's "shipped but not deployed") — we have the pieces (NVIDIA inventory $, purchase commitments $, contracted GW) but no derived KPI tile yet.
 - **Construction change detection** — Aterio milestones exist but no time-slider / before-after tile / diff view.
 - **OCI footprint hero tile** — Oracle's 11.6 GW shows up in `/api/power/gw-summary` but no per-tab "where OCI sits" KPI.
 - **Building permits beyond VA + AZ** — Grant County WA documented as no-free-API; LA County, Santa Clara CA, NoVa other counties not yet wired. Each is ~1 day if the county has a Socrata-style endpoint.
 
 ### Deferred-paid (blocked on procurement / explicit scope decision)
-- **Shovels.ai** — county-permits-as-a-service. Karan named it; we built free Socrata adapters instead.
+- **Shovels.ai** — county-permits-as-a-service. the user named it; we built free Socrata adapters instead.
 - **Planet Labs / Maxar** — high-res satellite imagery. Free Sentinel-2 is the alternative.
 - **Aterio licensed feed** — we have the one-time CSV import (40,722 rows already loaded) but not the live feed.
 - **CleanView** — power-deals API. Out of scope.
@@ -258,13 +258,13 @@ The **Llama Stack** instance at `https://llama-stack.ai-apps-ord.oci-incubations
 
 2. **Click Power Contracts.** Show GW side-by-side: *"Amazon 17.9, Microsoft 10.47, Oracle 11.60. Oracle is #4 by total GW, ahead of Microsoft and Meta on contracted power."* Click an Amazon deal card → 8-K opens on sec.gov.
 
-3. **Click Triangulation.** Lead with L2: *"NVIDIA's $215.94B FY revenue implies 6.2 million GPUs × 850W × 60% utilization × 1.4 datacenter overhead = 4.4 GW of global compute demand. Microsoft has 10.47 GW contracted — that's a 9.7 GW overhang. The gap is the signal."* Open the assumptions panel — Karan will engage. Move to L1 stacked bar for company × state breakdown.
+3. **Click Triangulation.** Lead with L2: *"NVIDIA's $215.94B FY revenue implies 6.2 million GPUs × 850W × 60% utilization × 1.4 datacenter overhead = 4.4 GW of global compute demand. Microsoft has 10.47 GW contracted — that's a 9.7 GW overhang. The gap is the signal."* Open the assumptions panel — the user will engage. Move to L1 stacked bar for company × state breakdown.
 
 4. **Click GPU Supply.** Show NVIDIA / AMD / Intel-DCAI quarterly revenue line chart. Click NVIDIA's $215.94B point → SEC 10-K opens.
 
 5. **Click Wafer Production & Supply.** Show ASML + Applied Materials timeseries. Skip the empty TSMC headline (1 row); explain the 20-F path landed yesterday and is filling in. *"Samsung + SK Hynix are flagged non-EDGAR — Korean DART, not SEC. Honest scope."*
 
-6. **Click Country Permits → toggle to Building.** *"345 county-permitted datacenter shells from free Loudoun VA + Mesa AZ Socrata APIs. This is Karan's §1.4 ask: ground truth on construction starts vs. announcements."* Click a Mesa permit → opens the source.
+6. **Click Country Permits → toggle to Building.** *"345 county-permitted datacenter shells from free Loudoun VA + Mesa AZ Socrata APIs. This is the user's §1.4 ask: ground truth on construction starts vs. announcements."* Click a Mesa permit → opens the source.
 
 7. **Click Companies.** Click Alphabet → 276 sites by role. *"1,247 unique companies, LLC→parent canonicalization done by an LLM agent."*
 
@@ -272,13 +272,13 @@ The **Llama Stack** instance at `https://llama-stack.ai-apps-ord.oci-incubations
 
 9. **Click the floating chat icon.** Type: *"What's Oracle's largest power deal?"* Live SQL + chart + source link. *"Same agent answers cross-pillar questions like 'is there enough power in Texas?'"*
 
-10. **Land the close:** *"Today is 22% real / 78% mock. Karan's three pillars all have live data behind them. Top three things to ship next: satellite imagery tab, more county permit adapters, OCI hero tile."*
+10. **Land the close:** *"Today is 22% real / 78% mock. the user's three pillars all have live data behind them. Top three things to ship next: satellite imagery tab, more county permit adapters, OCI hero tile."*
 
 ---
 
-## 6. Numbers to memorize for Karan's questions
+## 6. Numbers to memorize for the user's questions
 
-| If Karan asks… | Answer |
+| If the user asks… | Answer |
 |---|---|
 | "How many sites?" | 6,973 (Aterio one-time, 2026-04-28) |
 | "Where does Oracle sit?" | #4 by GW (11.60), ahead of Microsoft, Meta |
@@ -296,7 +296,7 @@ The **Llama Stack** instance at `https://llama-stack.ai-apps-ord.oci-incubations
 ## 7. Known caveats — get ahead of these
 
 1. **TSMC has only 1 row** of vendor_supply data — its 20-F was processed yesterday but only one chunk passed the regex+LLM gate (CHIPS-Act narrative). Acceptable; not a bug.
-2. **Triangulation is mock-badged** in the nav (`real: false`) but L1 returns 1014 real rows + L2 is a live model. The badge is conservative; happy to flip to "real" if Karan asks.
+2. **Triangulation is mock-badged** in the nav (`real: false`) but L1 returns 1014 real rows + L2 is a live model. The badge is conservative; happy to flip to "real" if the user asks.
 3. **Permits map shows 501 of 4,150 pins** — only EPA ECHO has lat/lon; PJM + state-permits feed the table but not the map.
 4. **Hyperscaler L2 shows all 5 as "overcontracted"** — that's expected: contracted GW is forward-looking, implied compute is current FY. The number that matters is the *trend* of the gap.
 5. **Coherent CIK was wrong** before this week — pointed at Willis Towers Watson. Caught + fixed; new CIK is 0000820318.
