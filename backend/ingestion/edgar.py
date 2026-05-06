@@ -323,6 +323,13 @@ class EdgarAdapter:
                             confidence = 0.90 if capacity_mw else 0.60
 
                             # Build the row for upsert
+                            # Track C: set is_power_related from the keyword
+                            # gate (is_relevant) plus 10-K filings of tracked
+                            # filers (where the body discusses energy contracts
+                            # in Note 1 / Derivative Instruments). We use
+                            # deal_index=0 here because the regex extractor
+                            # only emits one deal per filing — multi-deal
+                            # extraction is the LLM extractor's job.
                             row = {
                                 "cik": cik,
                                 "accession_number": filing["accession_number"],
@@ -338,12 +345,15 @@ class EdgarAdapter:
                                 "parser_version": self.adapter_version,
                                 "confidence": confidence,
                                 "retrieved_at": datetime.utcnow(),
+                                "is_power_related": bool(is_relevant or capacity_mw or buyer),
+                                "deal_index": 0,
                             }
 
-                            # Upsert: ON CONFLICT(accession_number) DO UPDATE
+                            # Upsert: target the new composite unique constraint
+                            # `(accession_number, deal_index)` from migration 012.
                             stmt = pg_insert(EdgarExtraction).values(**row)
                             stmt = stmt.on_conflict_do_update(
-                                index_elements=["accession_number"],
+                                index_elements=["accession_number", "deal_index"],
                                 set_={
                                     "capacity_mw": stmt.excluded.capacity_mw,
                                     "energy_source": stmt.excluded.energy_source,
@@ -353,6 +363,7 @@ class EdgarAdapter:
                                     "parser_version": stmt.excluded.parser_version,
                                     "confidence": stmt.excluded.confidence,
                                     "retrieved_at": stmt.excluded.retrieved_at,
+                                    "is_power_related": stmt.excluded.is_power_related,
                                 },
                             )
                             await session.execute(stmt)

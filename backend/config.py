@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import List
+from typing import List, Literal
 
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -66,6 +66,23 @@ class Settings(BaseSettings):
     llama_stack_api_key: str = ""  # LLAMA_STACK_API_KEY env (used by
     # the OpenClaw provider config; FastAPI itself does not need it)
     openclaw_session_prefix: str = "agent:main:insight:"
+
+    # ------------------------------------------------------------------
+    # Phase 2 (PRD/ARCH 14) — agentic synthesis dispatcher flag.
+    # `agentic` (default) routes the orchestrator's synthesis phase
+    # through `run_agentic_synthesis` (OpenClaw + MCP write-tools).
+    # `legacy` keeps the V1 `_phase_hypothesize_iter` +
+    # `_phase_verify_and_synthesize_iter` path (rollback target during
+    # Phases 2-4; flag is removed in Phase 5).
+    #     env: SYNTHESIS_MODE
+    # ------------------------------------------------------------------
+    synthesis_mode: Literal["legacy", "agentic"] = "agentic"
+
+    # Phase 2 / FR-X.5 — relaxed token ceiling for the agentic loop. The
+    # legacy module-level constant in hypothesizer.py stays at 30K (only
+    # used by `synthesize_insights` which Phase 5 deletes); new code reads
+    # this setting instead.
+    hypothesizer_token_ceiling: int = 80_000
 
 
 settings = Settings()

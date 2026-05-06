@@ -1,31 +1,31 @@
-"""InsightOrchestrator — V1 multi-insight session driver.
+"""InsightOrchestrator — multi-insight session driver.
 
-Per ARCHITECTURE.md §A8 the orchestrator runs five phases per session:
+Two phases per session:
 
     1. Bootstrap — call_api against fixed survey endpoints (cap 8 calls).
-    2. Hypothesize — agent generates 5–15 candidate hypotheses via LLM.
-    3. Verify — per-hypothesis 2–4 verification calls; agent confirms / rejects.
-    4. Rank — by materiality + novelty (cosine 0.85) + data support; top 5–10.
-    5. Synthesize — per kept insight, run insight_synthesis ->
-       data_narrative_builder -> visualization_builder; emit chart + insight.
+    2. Synthesize — build a FactPack and delegate to the agentic synthesis
+       driver (`agentic_synthesis.run_agentic_synthesis`). The driver
+       streams insights through OpenClaw + MCP write-tools and emits SSE
+       events back into this generator's event queue.
 
 Caps (PRD §5.1, ARCH A10):
-    - 40 tool calls per session (V1)
+    - 40 tool calls per session
     - 480 s wall-clock per session
-    - 12 turns per insight, 4 parallel tools per turn (delegated to ToolLoopDriver)
+    - Inner agentic caps (12 turns / 30 tool calls / 600 s) live in
+      `agentic_synthesis` and `openclaw.forwarder._drive_openclaw_stream`.
     - No recursive run_skill (enforced in tools/run_skill.py)
 
-SSE event taxonomy: see specs/sse_events.py (13 events). The orchestrator
-yields concrete `_SSEBase` subclasses; the router serialises with
+SSE event taxonomy: see specs/sse_events.py. The orchestrator yields
+concrete `_SSEBase` subclasses; the router serialises with
 `to_sse_text(event)`.
 
 Persistence covers:
     - ai_session                   — top-level run record
-    - ai_insight                   — one row per emitted insight
+    - ai_insight                   — one row per emitted insight (written
+      by the `persist_insight` MCP write-tool)
     - agent_chart                  — one row per emitted chart
     - agent_message                — assistant/tool transcript + SSE replay
     - agent_tool_call              — per tool dispatch
-    - skill_invocation             — per run_skill dispatch
 """
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ V1_MAX_INSIGHTS = 10
 V1_NOVELTY_COSINE_THRESHOLD = 0.85
 V1_MAX_VERIFY_CALLS_PER_HYP = 4
 V1_REASONING_MODEL = "oci/openai.gpt-5.4"   # mirrors LlmClient default
-HYPOTHESIZER_TOKEN_CEILING = 30_000  # D7 hard cap (tracked in hypothesizer module)
+HYPOTHESIZER_TOKEN_CEILING = 80_000  # FR-X.5 relaxed ceiling (matches hypothesizer.py)
 
 
 # Fixed survey endpoints (from ARCH A6.3 + A8.1). Capped at 8 calls.
@@ -251,9 +251,9 @@ class InsightOrchestrator:
         # Headlines emitted in this session, with embeddings — for novelty dedup.
         self._emitted_headlines: list[tuple[str, list[float]]] = []
         self._emitted_count = 0
-        # Phase 1 hypothesizer state — populated in _phase_hypothesize_iter.
+        # FactPack state — populated in _phase_hypothesize_iter for the
+        # agentic synthesis driver to consume.
         self._fact_pack: "FactPack | None" = None
-        self._hypothesizer_insights: list = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -326,6 +326,11 @@ class InsightOrchestrator:
                         yield term
                     return
 
+            # --- Build FactPack (server-side) -------------------------
+            # `_phase_hypothesize_iter` yields one ReasoningStep event
+            # and populates self._fact_pack. The agentic synthesis
+            # driver consumes the FactPack and emits per-insight SSE
+            # events through the synthesis lane.
             async for ev in self._phase_hypothesize_iter():
                 yield ev
                 if self._cancel_event.is_set():
@@ -333,34 +338,97 @@ class InsightOrchestrator:
                         yield term
                     return
 
-            # --- Verify + Synthesize (Phases 3-5) ---------------------
-            async for ev in self._phase_verify_and_synthesize_iter():
-                yield ev
-                if self._cancel_event.is_set():
-                    async for term in self._terminate("cancelled", "session cancelled during synthesize"):
-                        yield term
-                    return
-
-            # --- session_complete -------------------------------------
-            duration_ms = int((time.monotonic() - self._started_monotonic) * 1000)
-            budget_status = "ok"
-            if self._tool_call_cap_exceeded() or self._wall_clock_exceeded():
-                budget_status = "clipped"
-
-            yield self._build_event(
-                SessionCompleteEvent,
-                SessionCompleteData(
-                    session_id=str(self.session_id),
-                    insights_emitted=self._emitted_count,
-                    duration_ms=duration_ms,
-                    budget_status=budget_status,
-                ),
+            # Lazy import to avoid a hard dependency at import time
+            # (agentic_synthesis pulls in openclaw.forwarder which
+            # imports httpx; keeping this lazy preserves the ability
+            # to import the orchestrator from minimal envs).
+            from .agentic_synthesis import (  # noqa: F401
+                SynthesisRunError,
+                run_agentic_synthesis,
             )
+
+            # Bridge the agentic loop's `sse_emit` callback into our
+            # async-generator stream via an asyncio.Queue. The driver
+            # task pushes events; this generator drains them while
+            # also watching for cancel + driver completion.
+            event_queue: asyncio.Queue[_SSEBase] = asyncio.Queue()
+            _SENTINEL: object = object()
+
+            async def _sse_emit(evt: _SSEBase) -> None:
+                await event_queue.put(evt)
+
+            cron_run_date = filters.get("cron_run_date") if filters else None
+
+            async def _driver() -> None:
+                try:
+                    if self._fact_pack is None:
+                        # Without a FactPack the agentic driver has
+                        # nothing to ground on; return cleanly. The
+                        # wrapping code emits session_complete with
+                        # budget_status='ok' but zero insights.
+                        return
+                    await run_agentic_synthesis(
+                        session_id=self.session_id,
+                        fact_pack=self._fact_pack,
+                        max_insights=self.max_insights,
+                        db=self.db,
+                        sse_emit=_sse_emit,
+                        cron_run_date=cron_run_date,
+                        mode="manual",
+                    )
+                except SynthesisRunError as exc:
+                    logger.warning(
+                        "ai_insights.orchestrator.agentic_run_error",
+                        extra={"err": str(exc)},
+                    )
+                except Exception:
+                    logger.exception(
+                        "ai_insights.orchestrator.agentic_unexpected"
+                    )
+                finally:
+                    await event_queue.put(_SENTINEL)  # type: ignore[arg-type]
+
+            driver_task = asyncio.create_task(_driver())
+
+            try:
+                while True:
+                    item = await event_queue.get()
+                    if item is _SENTINEL:
+                        break
+                    yield item  # type: ignore[misc]
+                    if self._cancel_event.is_set():
+                        # Cooperative: do NOT cancel the driver task —
+                        # let it drain naturally; emit terminate now.
+                        async for term in self._terminate(
+                            "cancelled",
+                            "session cancelled during synthesize",
+                        ):
+                            yield term
+                        # Best-effort: wait for the driver so the
+                        # asyncio task does not leak; the agentic
+                        # loop's own cap-checks will close out.
+                        try:
+                            await driver_task
+                        except Exception:  # noqa: BLE001
+                            pass
+                        return
+            finally:
+                if not driver_task.done():
+                    try:
+                        await driver_task
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            # Agentic path emits session_complete via the synthesis
+            # SSE translator (finalize_session MCP tool). Skip the
+            # orchestrator-level session_complete to avoid a double
+            # emit.
             await self._persist_session_finish(
                 status="complete",
-                budget_status=budget_status,
-                duration_ms=duration_ms,
+                budget_status="ok",
+                duration_ms=int((time.monotonic() - self._started_monotonic) * 1000),
             )
+            return
         except Exception as exc:
             logger.exception("ai_insights.orchestrator.unexpected_in_run")
             async for ev in self._terminate("error", f"unexpected error: {exc}"):
@@ -432,16 +500,15 @@ class InsightOrchestrator:
         yield self._build_event(PingEvent, None)
 
     async def _phase_hypothesize_iter(self) -> AsyncIterator[_SSEBase]:
-        """Phase 2: build a FactPack and synthesize candidate insights.
+        """Build a FactPack server-side for the agentic synthesis driver.
 
-        Emits exactly one `reasoning_step="hypothesize"` event (the SSE shape
-        the frontend reads). On db=None we skip the warehouse pull and leave
-        the canned synthesis path in `_phase_verify_and_synthesize_iter` to
-        carry the session — keeps unit tests that pass db=None working.
+        Emits exactly one ``reasoning_step="hypothesize"`` event (the SSE
+        shape the frontend reads). On db=None we skip the warehouse pull
+        and leave ``self._fact_pack`` unset; the agentic driver short-
+        circuits and emits zero insights (used by db-less unit tests).
         """
-        from .hypothesizer import build_factpack, synthesize_insights
+        from .hypothesizer import build_factpack
 
-        # Single reasoning_step event for the hypothesize phase (UNCHANGED).
         yield self._build_event(
             ReasoningStepEvent,
             ReasoningStepData(insight_id="session", step="hypothesize"),
@@ -449,258 +516,18 @@ class InsightOrchestrator:
 
         if self.db is None:
             self._fact_pack = None
-            self._hypothesizer_insights = []
             return
 
         try:
             self._fact_pack = await build_factpack(self.db)
-            if self._fact_pack is None or self._fact_pack.total_rows() == 0:
-                self._hypothesizer_insights = []
-                return
-            self._hypothesizer_insights = await synthesize_insights(
-                self._fact_pack,
-                max_insights=self.max_insights,
-            )
+            if self._fact_pack is not None and self._fact_pack.total_rows() == 0:
+                self._fact_pack = None
         except Exception as exc:
-            # Catch + log: phase 5 will fall back to the legacy synthesis-skill
-            # loop (or emit nothing) rather than crash the SSE session.
             logger.warning(
                 "ai_insights.orchestrator.hypothesize_failed",
                 extra={"err": str(exc)},
             )
             self._fact_pack = None
-            self._hypothesizer_insights = []
-
-    async def _phase_verify_and_synthesize_iter(self) -> AsyncIterator[_SSEBase]:
-        """Phases 3-5: per-candidate verify + emit chart + emit insight.
-
-        Phase 1 wiring: when the hypothesizer produced insights, replay them
-        directly through the SSE flow with row-id grounding. Otherwise fall
-        back to the legacy `insight_synthesis` skill loop so unit tests that
-        pass db=None continue to work.
-        """
-        confidence_map = {"weak": "low", "moderate": "medium", "strong": "high"}
-
-        # ------------------------------------------------------------------
-        # New path: hypothesizer produced concrete insights with row_ids.
-        # ------------------------------------------------------------------
-        if self._fact_pack is not None and self._hypothesizer_insights:
-            for idx, insight_out in enumerate(
-                self._hypothesizer_insights[: self.max_insights]
-            ):
-                if self._cancel_event.is_set():
-                    return
-                if self._tool_call_cap_exceeded() or self._wall_clock_exceeded():
-                    return
-
-                insight_id = str(uuid.uuid4())
-                yield self._build_event(
-                    InsightStartedEvent,
-                    InsightStartedData(
-                        session_id=str(self.session_id),
-                        insight_id=insight_id,
-                        index=idx,
-                        headline_draft=insight_out.headline[:140],
-                    ),
-                )
-                yield self._build_event(
-                    ReasoningStepEvent,
-                    ReasoningStepData(insight_id=insight_id, step="verify"),
-                )
-
-                # Resolve row_ids back into FactRow objects for downstream use
-                # (chart-building / persistence in later phases).
-                supporting_rows = self._fact_pack.lookup(insight_out.supporting_row_ids)
-
-                # Best-effort dedup against prior emitted headlines.
-                try:
-                    duplicate = await is_duplicate(
-                        insight_out.headline,
-                        self._emitted_headlines,
-                        cosine_threshold=V1_NOVELTY_COSINE_THRESHOLD,
-                    )
-                except Exception:
-                    duplicate = False
-                if duplicate:
-                    yield self._build_event(
-                        ErrorEvent,
-                        ErrorData(
-                            insight_id=insight_id,
-                            code="duplicate_insight",
-                            message="headline too similar to a prior insight",
-                            retryable=False,
-                        ),
-                    )
-                    continue
-
-                yield self._build_event(
-                    ReasoningStepEvent,
-                    ReasoningStepData(insight_id=insight_id, step="emit"),
-                )
-
-                confidence = confidence_map.get(insight_out.confidence_signal, "medium")
-                materiality = insight_out.materiality or "medium"
-
-                yield self._build_event(
-                    InsightCompleteEvent,
-                    InsightCompleteData(
-                        insight_id=insight_id,
-                        headline=insight_out.headline,
-                        confidence=confidence,  # type: ignore[arg-type]
-                        materiality=materiality,  # type: ignore[arg-type]
-                        skills_run=["mega_synthesis"],
-                        low_external_support=None,
-                    ),
-                )
-
-                self._emitted_headlines.append((insight_out.headline, []))
-                self._emitted_count += 1
-                await self._persist_insight(
-                    insight_id=uuid.UUID(insight_id),
-                    idx=idx,
-                    headline=insight_out.headline,
-                    body=insight_out.body,
-                    confidence=confidence,
-                    materiality=materiality,
-                    skills_run=["mega_synthesis"],
-                    supporting_row_ids=insight_out.supporting_row_ids,
-                )
-
-                # LLM picks the chart shape; the orchestrator builds the
-                # spec deterministically from the cited supporting rows.
-                chart = _chart_from_supporting_rows(
-                    supporting_rows,
-                    insight_out.headline,
-                    chart_type_hint=insight_out.chart_type,
-                    y_label_hint=insight_out.chart_y_label,
-                )
-                if chart is not None:
-                    async for ev in self.emit_chart_for_insight(insight_id, chart):
-                        yield ev
-
-                # Citation prefetch: ground the insight in real web sources
-                # before the user opens the chat. Caps at WEB_SEARCH_PER_RUN
-                # across the whole session to stay under Brave's 1 RPS / free
-                # tier limits.
-                await self._prefetch_citations_for_insight(
-                    insight_id=insight_id,
-                    headline=insight_out.headline,
-                )
-            return
-
-        # ------------------------------------------------------------------
-        # Legacy fallback: keeps unit tests (db=None) green until Phase 2.
-        # ------------------------------------------------------------------
-        from .skills.insight_synthesis.inputs import InsightSynthesisInputs
-        from .skills.insight_synthesis.tool import run as run_insight_synthesis
-
-        for idx in range(self.max_insights):
-            if self._cancel_event.is_set():
-                return
-            if self._tool_call_cap_exceeded() or self._wall_clock_exceeded():
-                return
-
-            insight_id = str(uuid.uuid4())
-            yield self._build_event(
-                InsightStartedEvent,
-                InsightStartedData(
-                    session_id=str(self.session_id),
-                    insight_id=insight_id,
-                    index=idx,
-                    headline_draft=None,
-                ),
-            )
-
-            # ---- run insight_synthesis ----
-            yield self._build_event(
-                ReasoningStepEvent,
-                ReasoningStepData(insight_id=insight_id, step="verify"),
-            )
-
-            try:
-                synth = await run_insight_synthesis(
-                    InsightSynthesisInputs(
-                        hypothesis=f"Candidate insight #{idx + 1} from session bootstrap.",
-                        supporting_rows=[],
-                        context={"session_id": str(self.session_id)},
-                    ),
-                    self._build_skill_context(),
-                )
-                self._record_skill_invocation("insight_synthesis", synth.model_dump())
-            except Exception as exc:
-                logger.warning(
-                    "ai_insights.orchestrator.insight_synthesis_failed",
-                    extra={"err": str(exc)},
-                )
-                yield self._build_event(
-                    ErrorEvent,
-                    ErrorData(
-                        insight_id=insight_id,
-                        code="skill_error",
-                        message=f"insight_synthesis failed: {exc}",
-                        retryable=True,
-                    ),
-                )
-                continue
-
-            # ---- de-duplicate ----
-            try:
-                duplicate = await is_duplicate(
-                    synth.headline,
-                    self._emitted_headlines,
-                    cosine_threshold=V1_NOVELTY_COSINE_THRESHOLD,
-                )
-            except Exception:
-                duplicate = False
-            if duplicate:
-                yield self._build_event(
-                    ErrorEvent,
-                    ErrorData(
-                        insight_id=insight_id,
-                        code="duplicate_insight",
-                        message="headline too similar to a prior insight",
-                        retryable=False,
-                    ),
-                )
-                continue
-
-            # ---- (best-effort) emit a placeholder chart ----
-            yield self._build_event(
-                ReasoningStepEvent,
-                ReasoningStepData(insight_id=insight_id, step="emit"),
-            )
-            # We do not synthesise a fake chart in V1's minimal path —
-            # the agent-driven flow adds charts when verification yields
-            # row-backed data. The synthesize_iter shell stays open for V2.
-
-            # ---- persist + emit insight_complete ----
-            confidence_map = {"weak": "low", "moderate": "medium", "strong": "high"}
-            confidence = confidence_map.get(synth.confidence_signal, "medium")
-            materiality = "medium"   # V1 default; agent self-rate lands in V2
-
-            yield self._build_event(
-                InsightCompleteEvent,
-                InsightCompleteData(
-                    insight_id=insight_id,
-                    headline=synth.headline,
-                    confidence=confidence,  # type: ignore[arg-type]
-                    materiality=materiality,  # type: ignore[arg-type]
-                    skills_run=["insight_synthesis"],
-                    low_external_support=None,
-                ),
-            )
-
-            self._emitted_headlines.append((synth.headline, []))
-            self._emitted_count += 1
-            await self._persist_insight(
-                insight_id=uuid.UUID(insight_id),
-                idx=idx,
-                headline=synth.headline,
-                body=synth.body,
-                confidence=confidence,
-                materiality=materiality,
-                skills_run=["insight_synthesis"],
-            )
 
     # ------------------------------------------------------------------
     # Caps + termination helpers

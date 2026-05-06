@@ -1,5 +1,15 @@
 # 11b - OpenClaw Migration: Implementation Architecture
 
+> **§3 (FastAPI agent-tools router) and §4 (TypeScript plugin tool layer)
+> are SUPERSEDED by ADR-13 (`13-mcp-migration.md`, 2026-05-06).** Tool
+> routing now flows through a native Python MCP server mounted at `/mcp`
+> on the existing FastAPI process; the TS extension under
+> `.openclaw/extensions/insights-tools/` has been deleted. The bearer
+> webhook router from §3 is retained as a fallback / test surface but
+> is no longer the primary tool transport. All other sections (§5
+> forwarder, §6 dual-store, §7 feature flag, §8 SOUL.md grounding)
+> stand unchanged.
+
 **Status:** Implementation spec (user-ratified override of ADR-010 SKIP).
 **Date:** 2026-05-05
 **Owner (architecture):** AI Insights team

@@ -388,35 +388,47 @@ INSIGHTS_DAILY_RETRY_SLEEP_S = 60
 
 
 async def _invoke_insights_daily(session) -> dict:
-    """Drain InsightOrchestrator headlessly with idempotency + retry.
+    """Drive an OpenClaw agentic-synthesis turn for today's AI Insights.
+
+    Phase 3 retarget (PRD/ARCH §14, FR-3.1..FR-3.6): replaces the
+    previous `InsightOrchestrator.run_session` drain with a server-side
+    `build_factpack` + `run_agentic_synthesis` against the OpenClaw
+    gateway. The legacy orchestrator is intentionally retained for the
+    manual UI path (Phase 5 cleanup).
 
     Behaviour:
-      1. Idempotency guard: if an AISession already exists today with
-         created_by='scheduler' and status in (running, complete), skip.
-      2. Otherwise instantiate InsightOrchestrator with max_insights=5,
-         created_by='scheduler', cron_run_date=today, anonymous filters
-         (no user focus), and drain its iterator under
-         asyncio.wait_for(timeout=600).
-      3. Count InsightCompleteEvent frames as `stored`. The orchestrator
-         persists frames itself; we are NOT consuming the SSE wire.
-      4. On exception during the drain, retry up to 2 more times with a
-         60s sleep. After the 3rd failure: flip the session row to
-         status='failed' and re-raise so EVENT_JOB_ERROR fires.
+      1. Idempotency guard: if a `created_by='scheduler'` AISession
+         already exists today with status in (running, complete), no-op.
+      2. Build the FactPack server-side (so the agent sees a stable
+         input regardless of MCP availability) and pre-create the
+         AISession row in `status='running'`. Commit so a same-day
+         retry hits the idempotency guard.
+      3. Drive `run_agentic_synthesis` under a 600s wall-clock guard.
+         The agent persists insight rows + finalizes the AISession via
+         MCP tools (`persist_insight`, `finalize_session`). This driver
+         only handles failure-path force-finalisation.
+      4. Up to 2 retries with 60s linear backoff. Final failure
+         re-raises so APScheduler's EVENT_JOB_ERROR listener fires.
 
-    Returns the IngestionRun summary dict expected by _run_adapter_job
+    Returns the standard runner summary dict
     ({"fetched": N, "stored": M, ...}). On idempotency-skip we return
     `skipped=1` so the audit row reflects the no-op truthfully.
     """
     import asyncio
     import logging
+    import time
     import traceback
     import uuid as _uuid
-    from datetime import date
+    from datetime import date, datetime
 
     from sqlalchemy import select, update
 
+    from agents.insights.agentic_synthesis import (
+        SynthesisRunError,
+        run_agentic_synthesis,
+    )
     from agents.insights.db.models import AISession
-    from agents.insights.specs.sse_events import InsightCompleteEvent
+    from agents.insights.hypothesizer import build_factpack
 
     log = logging.getLogger(__name__)
     today = date.today()
@@ -446,54 +458,173 @@ async def _invoke_insights_daily(session) -> dict:
     sid: _uuid.UUID | None = None
     insights_emitted = 0
     fact_pack_rows = 0
+    degraded_final = False
 
     for attempt in range(INSIGHTS_DAILY_MAX_RETRIES + 1):
-        # Lazy-import inside the loop so a transient import failure is also
-        # retried (e.g. circular import during process startup race).
-        from agents.insights.orchestrator import InsightOrchestrator
-
         sid = _uuid.uuid4()
-        # Tag the session as scheduler-originated; the persistence helper
-        # picks created_by + cron_run_date out of `filters`.
-        filters: dict = {
-            "focus": "daily-cron",
-            "created_by": "scheduler",
-            "cron_run_date": today,
-        }
+        attempt_started = time.monotonic()
 
-        orch = InsightOrchestrator(
-            session_id=sid,
-            db=session,
-            max_insights=5,
-        )
-
+        # 2a. Build the FactPack server-side. Done per attempt so a
+        # transient DB blip on the first attempt is recoverable.
         try:
-            local_emitted = 0
+            fact_pack = await build_factpack(session)
+            fact_pack_rows = (
+                fact_pack.total_rows()
+                if hasattr(fact_pack, "total_rows")
+                else sum(len(s.rows or []) for s in getattr(fact_pack, "sections", []))
+            )
+        except Exception as exc:
+            last_exc = exc
+            log.warning(
+                "insights_daily.factpack_build_failed",
+                extra={
+                    "attempt": attempt + 1,
+                    "session_id": str(sid),
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            if attempt < INSIGHTS_DAILY_MAX_RETRIES:
+                await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
+                continue
+            raise
 
-            async def _drain() -> None:
-                nonlocal local_emitted
-                async for ev in orch.run_session(filters=filters):
-                    if isinstance(ev, InsightCompleteEvent):
-                        local_emitted += 1
+        # 2b. Pre-create the AISession row so the idempotency guard
+        # catches a same-day retry once we've started this attempt.
+        ai_session = AISession(
+            id=sid,
+            status="running",
+            started_at=datetime.utcnow(),
+            max_insights=5,
+            created_by="scheduler",
+            cron_run_date=today,
+            focus="daily-cron",
+        )
+        session.add(ai_session)
+        try:
+            await session.commit()
+        except Exception as exc:  # pragma: no cover - defensive
+            log.warning(
+                "insights_daily.session_precreate_failed",
+                extra={"err": str(exc), "session_id": str(sid)},
+            )
+            try:
+                await session.rollback()
+            except Exception:
+                pass
 
-            await asyncio.wait_for(
-                _drain(),
+        async def _scheduler_sse_log(event):
+            # Cron path has no UI consumer; we just log the event type
+            # for ops visibility (matching the manual flow's debug log).
+            try:
+                ev_type = getattr(event, "type", None) or (
+                    event.get("type") if isinstance(event, dict) else "?"
+                )
+            except Exception:
+                ev_type = "?"
+            log.info("insights_daily.sse type=%s", ev_type)
+
+        # 2c. Drive the agentic synthesis under the outer wall-clock.
+        try:
+            result = await asyncio.wait_for(
+                run_agentic_synthesis(
+                    session_id=sid,
+                    fact_pack=fact_pack,
+                    max_insights=5,
+                    db=session,
+                    sse_emit=_scheduler_sse_log,
+                    cron_run_date=today,
+                    mode="scheduled",
+                ),
                 timeout=INSIGHTS_DAILY_TIMEOUT_S,
             )
-            insights_emitted = local_emitted
-            fact_pack = getattr(orch, "_fact_pack", None)
-            fact_pack_rows = fact_pack.total_rows() if fact_pack is not None else 0
+            insights_emitted = int(getattr(result, "insights_count", 0) or 0)
+            degraded_final = bool(getattr(result, "degraded", False))
+            wall_seconds = round(time.monotonic() - attempt_started, 3)
+
+            # Read back token_estimate set by the agent's finalize_session call.
+            token_estimate: int | None = None
+            try:
+                refreshed = (
+                    await session.execute(
+                        select(AISession.token_estimate).where(AISession.id == sid)
+                    )
+                ).first()
+                if refreshed is not None:
+                    token_estimate = refreshed[0]
+            except Exception:  # pragma: no cover - defensive
+                pass
+
             last_exc = None
             log.info(
                 "insights_daily.success",
                 extra={
                     "attempt": attempt + 1,
                     "session_id": str(sid),
-                    "insights_emitted": insights_emitted,
-                    "fact_pack_rows": fact_pack_rows,
+                    "cron_run_date": today.isoformat(),
+                    "factpack_rows": fact_pack_rows,
+                    "total_insights": insights_emitted,
+                    "degraded": degraded_final,
+                    "wall_clock_seconds": wall_seconds,
+                    "token_estimate": token_estimate,
+                    "reason": getattr(result, "reason", None),
                 },
             )
             break  # success — leave retry loop
+
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            log.warning(
+                "insights_daily.attempt_wall_timeout",
+                extra={
+                    "attempt": attempt + 1,
+                    "max_attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                    "session_id": str(sid),
+                },
+            )
+            # Force-finalize to 'degraded' since run_agentic_synthesis
+            # was cancelled before its own finalize hook could fire.
+            await _force_finalize_status(session, sid, status="degraded")
+
+            if attempt < INSIGHTS_DAILY_MAX_RETRIES:
+                await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
+                continue
+            log.error(
+                "insights_daily.exhausted_retries_timeout",
+                extra={
+                    "session_id": str(sid),
+                    "attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                },
+            )
+            raise
+
+        except SynthesisRunError as exc:
+            last_exc = exc
+            log.warning(
+                "insights_daily.attempt_synthesis_error",
+                extra={
+                    "attempt": attempt + 1,
+                    "max_attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                    "session_id": str(sid),
+                    "error": str(exc),
+                    "traceback": traceback.format_exc(),
+                },
+            )
+            await _force_finalize_status(session, sid, status="failed")
+
+            if attempt < INSIGHTS_DAILY_MAX_RETRIES:
+                await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
+                continue
+            log.error(
+                "insights_daily.exhausted_retries_synthesis_error",
+                extra={
+                    "session_id": str(sid),
+                    "attempts": INSIGHTS_DAILY_MAX_RETRIES + 1,
+                    "final_error": str(exc),
+                },
+            )
+            raise
+
         except Exception as exc:
             last_exc = exc
             log.warning(
@@ -506,33 +637,11 @@ async def _invoke_insights_daily(session) -> dict:
                     "traceback": traceback.format_exc(),
                 },
             )
-            # Best-effort: mark this attempt's session row as failed so a
-            # repeat fire within the same day still hits the idempotency
-            # guard (failed rows are intentionally NOT in the in-clause,
-            # but a row with status='running' would mask a real subsequent
-            # success; we flip running->failed on every failed attempt).
-            try:
-                await session.execute(
-                    update(AISession)
-                    .where(
-                        AISession.id == sid,
-                        AISession.status == "running",
-                    )
-                    .values(status="failed")
-                )
-                await session.commit()
-            except Exception as flip_exc:  # pragma: no cover - defensive
-                log.warning(
-                    "insights_daily.attempt_status_flip_failed",
-                    extra={"err": str(flip_exc)},
-                )
+            await _force_finalize_status(session, sid, status="failed")
 
             if attempt < INSIGHTS_DAILY_MAX_RETRIES:
                 await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
                 continue
-            # Out of retries. Re-raise so _run_adapter_job records
-            # status='failure' AND APScheduler's EVENT_JOB_ERROR listener
-            # (D11) fires.
             log.error(
                 "insights_daily.exhausted_retries",
                 extra={
@@ -551,7 +660,46 @@ async def _invoke_insights_daily(session) -> dict:
         "stored": insights_emitted,
         "skipped": 0,
         "session_id": str(sid) if sid else None,
+        "degraded": degraded_final,
     }
+
+
+async def _force_finalize_status(session, session_id, *, status: str) -> None:
+    """Best-effort UPDATE that flips an AISession row to a terminal
+    status when run_agentic_synthesis was cut off before its own
+    finalize_session hook could fire.
+
+    Only flips rows still in 'running' so we never clobber a row that
+    the agent (or the synthesis driver's own degraded-finalize) already
+    wrote.
+    """
+    from sqlalchemy import update
+    from datetime import datetime
+    from agents.insights.db.models import AISession
+
+    try:
+        await session.execute(
+            update(AISession)
+            .where(
+                AISession.id == session_id,
+                AISession.status == "running",
+            )
+            .values(status=status, finished_at=datetime.utcnow())
+        )
+        await session.commit()
+    except Exception as flip_exc:  # pragma: no cover - defensive
+        logger.warning(
+            "insights_daily.force_finalize_failed",
+            extra={
+                "err": str(flip_exc),
+                "session_id": str(session_id),
+                "target_status": status,
+            },
+        )
+        try:
+            await session.rollback()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

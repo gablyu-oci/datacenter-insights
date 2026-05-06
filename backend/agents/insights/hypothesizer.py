@@ -61,7 +61,7 @@ FACT_PACK_MAX_ROWS_PER_SECTION = 12
 # by the LLM. Prompt tokens grow ~linearly with row count — at 132 rows we land
 # around 4-5K prompt tokens, well under the 30K hard ceiling.
 FACT_PACK_MAX_TOTAL_ROWS = 132
-HYPOTHESIZER_TOKEN_CEILING = 30_000  # D7 hard cap (warn-only)
+HYPOTHESIZER_TOKEN_CEILING = 80_000  # D7 hard cap (warn-only) — bumped Phase 2 (FR-X.5: 30K -> 80K) for the agentic loop's multi-turn budget
 PROMPT_VERSION = "ai-insights/hypothesizer-v1"
 
 # Fixed UTC clock helper.

@@ -28,6 +28,8 @@ dependencies = [
     "sqlglot>=23,<27",
     "statsmodels>=0.14,<0.16",
     "pgvector>=0.2,<0.4",
+    # MCP server (PRD 13). Mounts FastMCP at /mcp for OpenClaw tool routing.
+    "mcp>=1.27,<2",
 ]
 
 [build-system]

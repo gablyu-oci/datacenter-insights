@@ -28,8 +28,10 @@ contract is identical to the legacy ToolLoopDriver lane (PRD R5).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
-from typing import Any, AsyncIterator, Optional
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import httpx
 from sqlalchemy import select
@@ -122,6 +124,14 @@ async def forward_chat(
     url = f"{settings.openclaw_gateway_url.rstrip('/')}/v1/chat/completions"
 
     finished_normally = False
+
+    # NOTE (Phase 2): the shared `_drive_openclaw_stream` helper sits
+    # below this function. We keep `forward_chat` inline for now to
+    # preserve byte-identical streaming semantics — the chat lane yields
+    # SSE bytes as each chunk arrives, which is hard to layer through
+    # an async-callback collector without changing observable timing.
+    # The synthesis lane (which has no streaming-to-browser contract)
+    # uses `_drive_openclaw_stream` directly. PRD AC-4 / FR-X.6.
 
     try:
         async with httpx.AsyncClient(timeout=_OPENCLAW_TIMEOUT) as client:
@@ -279,3 +289,169 @@ def _yield_error(
         ),
     )
     return to_sse_text(evt).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 (PRD/ARCH 14) — shared OpenClaw stream driver
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class StreamResult:
+    """Outcome of a `_drive_openclaw_stream` invocation.
+
+    Attributes:
+      degraded: True when the stream was cut short by a cap or upstream
+        error rather than reaching a clean terminator.
+      reason: short slug ("turn_cap" | "tool_cap" | "wall_clock" |
+        "http_error" | "timeout" | "exception" | "completed") used by
+        the caller to set ai_session.failure_reason.
+      total_chunks: number of SSE data: frames parsed.
+      total_tool_calls: number of tool_call_complete events observed.
+    """
+
+    degraded: bool = False
+    reason: Optional[str] = None
+    total_chunks: int = 0
+    total_tool_calls: int = 0
+
+
+async def _drive_openclaw_stream(
+    *,
+    session_key: str,
+    messages: list[dict[str, Any]],
+    on_translated_event: Callable[[Any], Awaitable[None]],
+    accumulator: Any,
+    translator: Callable[[Any, Any], list[Any]],
+    cap_turns: int = 12,
+    cap_tool_calls: int = 30,
+    cap_wall_seconds: float = 600.0,
+) -> StreamResult:
+    """POST to OpenClaw `/v1/chat/completions` and drain SSE.
+
+    Shared between the chat lane (`forward_chat`) and the synthesis lane
+    (`agents.insights.agentic_synthesis.run_agentic_synthesis`). The
+    `accumulator` and `translator` arguments are intentionally untyped
+    here so the same body can carry either of:
+
+      - chat:      `ChunkAccumulator` + `translate_chunk`
+      - synthesis: `SynthesisChunkAccumulator` + `translate_synthesis_chunk`
+
+    Caps are enforced by inspecting `accumulator.cap_counters` (synthesis)
+    or by counting locally (chat). On cap-trip we set `degraded=True` and
+    break out of the SSE drain — we NEVER call `task.cancel()` (httpx
+    issues #1461 / #2437).
+
+    Args:
+      session_key: value for the `x-openclaw-session-key` header. The
+        OpenClaw memory store is keyed on this string.
+      messages: OpenAI-shape `[{role, content}]` list.
+      on_translated_event: per-event async sink. The caller chooses
+        whether to push bytes onto an SSE response, persist to DB, or
+        both.
+      accumulator: mutable per-stream state.
+      translator: pure function (chunk, acc) -> list[event].
+      cap_turns: hard upper bound on assistant turns. Synthesis caps
+        come from `acc.cap_counters["turns"]`; chat does not enforce
+        this cap (left at the default to satisfy the API).
+      cap_tool_calls: hard upper bound on tool-call completions.
+      cap_wall_seconds: hard upper bound on wall-clock seconds.
+    """
+    result = StreamResult()
+
+    headers = {
+        "Content-Type": "application/json",
+        "x-openclaw-session-key": session_key,
+    }
+    if settings.openclaw_gateway_token:
+        headers["Authorization"] = f"Bearer {settings.openclaw_gateway_token}"
+
+    body = {
+        "model": "openclaw/default",
+        "messages": messages,
+        "stream": True,
+    }
+    url = f"{settings.openclaw_gateway_url.rstrip('/')}/v1/chat/completions"
+
+    started = time.monotonic()
+    # Synthesis accumulator carries cap_counters; chat accumulator does
+    # not. We probe with getattr so the same helper handles both shapes.
+    cap_counters = getattr(accumulator, "cap_counters", None)
+    if isinstance(cap_counters, dict):
+        cap_counters["wall_clock_started_at"] = started
+
+    try:
+        async with httpx.AsyncClient(timeout=_OPENCLAW_TIMEOUT) as client:
+            async with client.stream(
+                "POST", url, headers=headers, json=body
+            ) as response:
+                if response.status_code >= 400:
+                    err_text: str
+                    try:
+                        err_text = (await response.aread()).decode(
+                            "utf-8", "replace"
+                        )[:500]
+                    except Exception:  # noqa: BLE001
+                        err_text = f"http_{response.status_code}"
+                    logger.warning(
+                        "openclaw.driver.http_error: %s %s",
+                        response.status_code,
+                        err_text,
+                    )
+                    result.degraded = True
+                    result.reason = "http_error"
+                    return result
+
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    parsed = parse_sse_data_field(line[len("data:") :])
+                    if parsed is None:
+                        continue
+
+                    result.total_chunks += 1
+                    events = translator(parsed, accumulator)
+                    for evt in events:
+                        await on_translated_event(evt)
+
+                    # ---- Cap enforcement (cooperative break-out) ----
+                    if isinstance(cap_counters, dict):
+                        if int(cap_counters.get("tool_calls", 0)) > cap_tool_calls:
+                            result.degraded = True
+                            result.reason = "tool_cap"
+                            break
+                        if int(cap_counters.get("turns", 0)) > cap_turns:
+                            result.degraded = True
+                            result.reason = "turn_cap"
+                            break
+                    if (time.monotonic() - started) > cap_wall_seconds:
+                        result.degraded = True
+                        result.reason = "wall_clock"
+                        break
+
+                    if getattr(accumulator, "finished", False):
+                        break
+
+    except httpx.TimeoutException as exc:
+        logger.warning("openclaw.driver.timeout: %s", exc)
+        result.degraded = True
+        result.reason = "timeout"
+        return result
+    except httpx.HTTPError as exc:
+        logger.warning("openclaw.driver.http_error: %s", exc)
+        result.degraded = True
+        result.reason = "http_error"
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("openclaw.driver.unhandled")
+        result.degraded = True
+        result.reason = f"exception:{type(exc).__name__}"
+        return result
+
+    if isinstance(cap_counters, dict):
+        result.total_tool_calls = int(cap_counters.get("tool_calls", 0))
+    if not result.degraded and result.reason is None:
+        result.reason = "completed"
+    return result

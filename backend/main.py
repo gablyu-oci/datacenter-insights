@@ -41,6 +41,10 @@ from routers.agent_tools import router as agent_tools_router
 # oci_share has a wildcard {tab} path -- register last to avoid shadowing
 from routers.oci_share import router as oci_share_router
 
+# MCP server (PRD 13). Mounts FastMCP streamable-HTTP at /mcp for the
+# OpenClaw gateway tool-routing path.
+from mcp_server import mount_mcp
+
 logger = logging.getLogger("uvicorn.error")
 
 
@@ -145,3 +149,8 @@ app.include_router(insights_router)
 app.include_router(agent_tools_router)
 # oci_share must be last -- its /api/{tab}/oci-share pattern is broad
 app.include_router(oci_share_router)
+
+# MCP mount must come after the FastAPI lifespan is declared on `app`
+# (it composes the streamable-HTTP lifespan onto whatever was attached
+# at FastAPI() construction time). Bearer auth is wired inside.
+mount_mcp(app)

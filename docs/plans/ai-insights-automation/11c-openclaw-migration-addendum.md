@@ -1,5 +1,12 @@
 # 11c - OpenClaw Migration: Addendum (researcher reconciliation)
 
+> **§G (TypeScript extension scaffold) is ABANDONED as of ADR-13
+> (`13-mcp-migration.md`, 2026-05-06).** Tool routing has migrated to a
+> native Python MCP server on FastAPI; `.openclaw/extensions/insights-tools/`
+> has been deleted. All other sections in this addendum (§A Docker,
+> §B REST API, §C session key, §D agent, §E SOUL.md location, §F provider
+> config, §H bootstrap hook) remain authoritative.
+
 **Status:** Authoritative override of any conflicting items in `11b-openclaw-migration-architecture.md`.
 **Date:** 2026-05-05
 **Reason:** The architect doc was written from ADR-010's component map, which predated full Docker/REST-API verification. Researcher's `/tmp/openclaw_integration_research.md` confirmed several wire-format details from primary sources (docs.openclaw.ai + GitHub `docker-compose.yml`). Where this addendum and 11b disagree, **this addendum wins**.

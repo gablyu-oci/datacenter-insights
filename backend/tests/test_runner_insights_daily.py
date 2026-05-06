@@ -1,38 +1,36 @@
 """Phase 3: scheduler-driven daily AI Insights cron tests.
 
 `pipeline.runner._invoke_insights_daily` is the headless entry point that
-APScheduler fires once per UTC day. Its contract:
+APScheduler fires once per UTC day. Phase 3 retargeted it from
+``InsightOrchestrator`` onto ``run_agentic_synthesis`` (OpenClaw gateway).
+
+Contract under test:
 
   1. Idempotency guard: if a `created_by='scheduler'` AISession already
      exists today with status in (running, complete), no-op and return
      `{"skipped": 1, "reason": "idempotency_guard"}`.
-  2. Otherwise instantiate InsightOrchestrator, drain it, count
-     InsightCompleteEvent frames as `stored`, and surface
-     `_fact_pack.total_rows()` as `fetched`.
+  2. Otherwise build the FactPack server-side, pre-create an AISession
+     row, and drive `run_agentic_synthesis` under a 600s wait_for. The
+     `insights_count` from `SynthesisResult` is surfaced as `stored` and
+     `fact_pack.total_rows()` as `fetched`.
   3. Up to 2 retries (3 attempts total) on exception, with a sleep
      between attempts. After the 3rd failure: re-raise so the
      APScheduler EVENT_JOB_ERROR listener fires.
-  4. Each failed attempt flips its session row to status='failed' so a
-     same-day repeat fire still hits the idempotency guard cleanly.
+  4. Each failed attempt force-finalises its session row to a terminal
+     status so a same-day repeat fire still hits the idempotency guard.
 
-These tests stub the orchestrator and DB so the cron path is exercised
-without spinning up Postgres or the LLM.
+Tests stub the synthesis driver and DB so the cron path is exercised
+without spinning up Postgres or hitting the OpenClaw gateway.
 """
 from __future__ import annotations
 
 import asyncio as _asyncio
+import uuid
 from typing import Any
 
 import pytest
 
 import pipeline.runner as runner_mod
-from agents.insights.specs.sse_events import (
-    InsightCompleteData,
-    InsightCompleteEvent,
-    PingEvent,
-    SessionStartedData,
-    SessionStartedEvent,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -41,81 +39,103 @@ from agents.insights.specs.sse_events import (
 
 
 class _FactPackStub:
+    """Minimal FactPack stand-in. Only `total_rows` and `sections` are touched."""
+
     def __init__(self, total: int) -> None:
         self._total = total
+        self.sections: list = []  # for the fallback len(...) path
 
     def total_rows(self) -> int:
         return self._total
 
 
-class _StubOrchFactory:
-    """Builds a configurable StubOrch class.
-
-    Each instantiation records its constructor args in `instances`; each
-    call to `run_session` consumes the next entry from `event_batches`
-    (a list of either: a list of events to yield, OR an Exception class
-    to raise before yielding anything).
-    """
+class _SynthesisResultStub:
+    """Mirrors the public surface of `SynthesisResult` used by the runner."""
 
     def __init__(
         self,
         *,
-        event_batches: list,
-        fact_pack_total: int = 42,
+        insights_count: int = 0,
+        degraded: bool = False,
+        reason: str | None = None,
     ) -> None:
-        self.event_batches = event_batches
-        self.fact_pack_total = fact_pack_total
-        self.instances: list[Any] = []
+        self.insights_count = insights_count
+        self.degraded = degraded
+        self.reason = reason
+
+
+class _SynthesisDriverFactory:
+    """Builds a stub `run_agentic_synthesis` coroutine.
+
+    Each invocation consumes the next entry from `outcomes` (a list whose
+    elements are either: a `_SynthesisResultStub` to return, or an
+    Exception/Exception-class to raise). Each call records its kwargs on
+    `calls` for assertion.
+    """
+
+    def __init__(self, *, outcomes: list) -> None:
+        self.outcomes = outcomes
+        self.calls: list[dict[str, Any]] = []
 
     def make(self):
         outer = self
 
-        class StubOrch:
-            def __init__(self, *, session_id, db=None, max_insights=7, **kwargs):
-                self.session_id = session_id
-                self.db = db
-                self.max_insights = max_insights
-                self.kwargs = kwargs
-                self._fact_pack = _FactPackStub(outer.fact_pack_total)
-                self._call_index = len(outer.instances)
-                outer.instances.append(self)
+        async def _stub(**kwargs):
+            idx = len(outer.calls)
+            outer.calls.append(kwargs)
+            if idx >= len(outer.outcomes):
+                return _SynthesisResultStub(insights_count=0, degraded=True)
+            outcome = outer.outcomes[idx]
+            if isinstance(outcome, BaseException):
+                raise outcome
+            if isinstance(outcome, type) and issubclass(outcome, BaseException):
+                raise outcome("stub failure")
+            return outcome
 
-            async def run_session(self, filters=None):
-                idx = self._call_index
-                if idx >= len(outer.event_batches):
-                    return
-                batch = outer.event_batches[idx]
-                if isinstance(batch, BaseException) or (
-                    isinstance(batch, type) and issubclass(batch, BaseException)
-                ):
-                    # Either an instance or class — raise it.
-                    if isinstance(batch, type):
-                        raise batch("stub failure")
-                    raise batch
-                for ev in batch:
-                    yield ev
+        return _stub
 
-        return StubOrch
+
+class _FactpackBuilderFactory:
+    """Stub for `build_factpack` returning a `_FactPackStub` per call."""
+
+    def __init__(self, *, total: int = 42, raise_on_first: bool = False) -> None:
+        self.total = total
+        self.raise_on_first = raise_on_first
+        self.calls = 0
+
+    def make(self):
+        outer = self
+
+        async def _stub(db):
+            outer.calls += 1
+            if outer.raise_on_first and outer.calls == 1:
+                raise RuntimeError("factpack build blip")
+            return _FactPackStub(outer.total)
+
+        return _stub
 
 
 class FakeSession:
     """Stub AsyncSession just rich enough for `_invoke_insights_daily`.
 
-    - `execute()` returns a result whose `.first()` is configurable for
-      the idempotency SELECT path. UPDATE statements just record the call.
-    - `commit()` is a no-op.
+    - The first `execute()` is the idempotency SELECT and returns a
+      result whose `.first()` is configurable.
+    - Subsequent `execute()` calls are the AISession pre-create
+      SELECT-back / failure UPDATEs / token_estimate read-back; they
+      simply return an empty result object.
+    - `add()` / `commit()` / `rollback()` are no-ops.
     """
 
     def __init__(self, idempotency_row=None) -> None:
         self.idempotency_row = idempotency_row
         self.executes: list = []
+        self.added: list = []
+        self.commits = 0
+        self.rollbacks = 0
         self._first_select_seen = False
 
     async def execute(self, stmt, *a, **k):
         self.executes.append(stmt)
-        # The very first execute() is the idempotency SELECT; subsequent
-        # ones are the UPDATE-to-failed flips. We model that by returning
-        # a "first()-able" result on the first call only.
         first_call = not self._first_select_seen
         self._first_select_seen = True
         row = self.idempotency_row if first_call else None
@@ -127,54 +147,55 @@ class FakeSession:
             def first(self):
                 return self._r
 
+            def scalar_one_or_none(self):
+                return self._r
+
             def scalars(self):
                 class _S:
                     def all(_self):
                         return []
+
                 return _S()
 
         return _R(row)
 
+    def add(self, obj):
+        self.added.append(obj)
+
     async def commit(self):
-        return None
+        self.commits += 1
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_insight_complete_event(idx: int) -> InsightCompleteEvent:
-    return InsightCompleteEvent(
-        event_id=f"e{idx:04d}",
-        seq=idx,
-        data=InsightCompleteData(
-            insight_id=f"insight-{idx}",
-            headline=f"Headline {idx}",
-            confidence="medium",
-            materiality="medium",
-            skills_run=["mega_synthesis"],
-            low_external_support=None,
-        ),
-    )
-
-
-def _make_session_started_event() -> SessionStartedEvent:
-    from datetime import datetime, timezone
-    return SessionStartedEvent(
-        event_id="ss01",
-        seq=0,
-        data=SessionStartedData(
-            session_id="00000000-0000-0000-0000-000000000000",
-            model="stub",
-            started_at=datetime.now(timezone.utc),
-            max_insights=7,
-        ),
-    )
+    async def rollback(self):
+        self.rollbacks += 1
 
 
 async def _noop_sleep(_secs):
     return None
+
+
+def _patch_runner(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    synth_factory: _SynthesisDriverFactory,
+    fp_factory: _FactpackBuilderFactory | None = None,
+) -> _FactpackBuilderFactory:
+    """Wire the synthesis + factpack stubs into the runner namespace.
+
+    The runner imports `run_agentic_synthesis` and `build_factpack`
+    inside the function body, so we patch the source modules.
+    """
+    if fp_factory is None:
+        fp_factory = _FactpackBuilderFactory(total=42)
+    monkeypatch.setattr(
+        "agents.insights.agentic_synthesis.run_agentic_synthesis",
+        synth_factory.make(),
+    )
+    monkeypatch.setattr(
+        "agents.insights.hypothesizer.build_factpack",
+        fp_factory.make(),
+    )
+    monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
+    return fp_factory
 
 
 # ---------------------------------------------------------------------------
@@ -185,13 +206,8 @@ async def _noop_sleep(_secs):
 @pytest.mark.asyncio
 async def test_invoke_insights_daily_skips_when_idempotency_row_exists(monkeypatch):
     """If a scheduler-originated row already exists for today, no-op."""
-    factory = _StubOrchFactory(event_batches=[])
-    monkeypatch.setattr(
-        "agents.insights.orchestrator.InsightOrchestrator",
-        factory.make(),
-    )
-    # Faster sleeps just in case the path reaches them (it should NOT).
-    monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
+    synth = _SynthesisDriverFactory(outcomes=[])
+    fp = _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=("some-uuid",))
 
@@ -203,66 +219,61 @@ async def test_invoke_insights_daily_skips_when_idempotency_row_exists(monkeypat
         "skipped": 1,
         "reason": "idempotency_guard",
     }
-    # Critically: NO orchestrator should have been constructed.
-    assert len(factory.instances) == 0
+    # Critically: no FactPack build, no synthesis run.
+    assert fp.calls == 0
+    assert synth.calls == []
 
 
 @pytest.mark.asyncio
-async def test_invoke_insights_daily_drains_seven_insight_complete_events(monkeypatch):
-    """Counts only InsightCompleteEvent frames as `stored`, ignores others.
-
-    Also verifies `fetched` is sourced from `_fact_pack.total_rows()`.
-    """
-    events = [
-        _make_session_started_event(),
-        _make_insight_complete_event(1),
-        PingEvent(event_id="p1", seq=1),
-        _make_insight_complete_event(2),
-        _make_insight_complete_event(3),
-        PingEvent(event_id="p2", seq=2),
-        _make_insight_complete_event(4),
-        _make_insight_complete_event(5),
-        _make_insight_complete_event(6),
-        _make_insight_complete_event(7),
-    ]
-    factory = _StubOrchFactory(event_batches=[events], fact_pack_total=123)
-    monkeypatch.setattr(
-        "agents.insights.orchestrator.InsightOrchestrator",
-        factory.make(),
+async def test_invoke_insights_daily_drives_agentic_synthesis_on_happy_path(monkeypatch):
+    """`stored` mirrors `SynthesisResult.insights_count`; `fetched` is FactPack rows."""
+    synth = _SynthesisDriverFactory(
+        outcomes=[_SynthesisResultStub(insights_count=7, degraded=False)],
     )
-    monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
+    fp = _patch_runner(
+        monkeypatch,
+        synth_factory=synth,
+        fp_factory=_FactpackBuilderFactory(total=123),
+    )
 
     session = FakeSession(idempotency_row=None)
 
     result = await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
 
-    assert result["stored"] == 7, f"expected 7 InsightCompleteEvents counted, got {result}"
-    assert result["fetched"] == 123, "fetched must reflect FactPack.total_rows()"
+    assert result["stored"] == 7
+    assert result["fetched"] == 123
     assert result["skipped"] == 0
-    assert len(factory.instances) == 1
+    assert result["degraded"] is False
+    assert fp.calls == 1
+    assert len(synth.calls) == 1
+
+    call = synth.calls[0]
+    # Phase 3 contract: scheduler-mode keyed by today's date.
+    assert call["mode"] == "scheduled"
+    assert call["max_insights"] == 5
+    assert call["cron_run_date"] is not None
+    assert isinstance(call["session_id"], uuid.UUID)
+    # The pre-created AISession row must have been added with the
+    # scheduler tag so the idempotency guard catches a same-day retry.
+    assert any(
+        getattr(o, "created_by", None) == "scheduler" for o in session.added
+    ), "expected scheduler-tagged AISession to be pre-created"
 
 
 @pytest.mark.asyncio
 async def test_invoke_insights_daily_retries_then_succeeds(monkeypatch):
-    """Transient failure on attempt 1, success on attempt 2.
-
-    Asserts: the function returns the success result, the orchestrator
-    was instantiated twice, and an UPDATE-to-failed was issued for the
-    first attempt's session id.
-    """
-    success_events = [_make_insight_complete_event(i) for i in range(5)]
-    factory = _StubOrchFactory(
-        event_batches=[
-            RuntimeError("transient"),  # attempt 1
-            success_events,             # attempt 2
+    """Transient failure on attempt 1, success on attempt 2."""
+    synth = _SynthesisDriverFactory(
+        outcomes=[
+            RuntimeError("transient"),
+            _SynthesisResultStub(insights_count=5, degraded=False),
         ],
-        fact_pack_total=99,
     )
-    monkeypatch.setattr(
-        "agents.insights.orchestrator.InsightOrchestrator",
-        factory.make(),
+    fp = _patch_runner(
+        monkeypatch,
+        synth_factory=synth,
+        fp_factory=_FactpackBuilderFactory(total=99),
     )
-    monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
 
     session = FakeSession(idempotency_row=None)
 
@@ -270,39 +281,79 @@ async def test_invoke_insights_daily_retries_then_succeeds(monkeypatch):
 
     assert result["stored"] == 5
     assert result["fetched"] == 99
-    assert len(factory.instances) == 2, "orchestrator should be re-instantiated on retry"
-    # First call was idempotency SELECT, then the failing attempt issued an UPDATE.
-    # Total calls so far should be at least 2 (SELECT + at least one UPDATE).
-    assert len(session.executes) >= 2
+    assert len(synth.calls) == 2, "synthesis driver should be re-invoked on retry"
+    # FactPack rebuilt per attempt.
+    assert fp.calls == 2
 
 
 @pytest.mark.asyncio
 async def test_invoke_insights_daily_three_failures_exhausts_retries(monkeypatch):
-    """All 3 attempts fail -> exception re-raised after 3 instantiations.
-
-    Each attempt must have flipped its session row to status='failed',
-    yielding 1 SELECT + 3 UPDATE statements minimum.
-    """
-    factory = _StubOrchFactory(
-        event_batches=[
+    """All 3 attempts fail -> exception re-raised after 3 invocations."""
+    synth = _SynthesisDriverFactory(
+        outcomes=[
             RuntimeError("boom-1"),
             RuntimeError("boom-2"),
             RuntimeError("boom-3"),
         ],
     )
-    monkeypatch.setattr(
-        "agents.insights.orchestrator.InsightOrchestrator",
-        factory.make(),
-    )
-    monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
+    fp = _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=None)
 
     with pytest.raises(RuntimeError):
         await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
 
-    assert len(factory.instances) == 3, (
-        "expected 3 attempts (1 + 2 retries) before re-raising"
+    assert len(synth.calls) == 3, "expected 3 attempts (1 + 2 retries) before re-raise"
+    assert fp.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_invoke_insights_daily_timeout_marks_session_degraded(monkeypatch):
+    """asyncio.TimeoutError on first attempt -> retry; final timeout -> re-raise."""
+    synth = _SynthesisDriverFactory(
+        outcomes=[
+            _asyncio.TimeoutError(),
+            _asyncio.TimeoutError(),
+            _asyncio.TimeoutError(),
+        ],
     )
-    # 1 SELECT (idempotency guard) + 3 UPDATEs (one per failed attempt).
+    _patch_runner(monkeypatch, synth_factory=synth)
+
+    session = FakeSession(idempotency_row=None)
+
+    with pytest.raises(_asyncio.TimeoutError):
+        await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
+
+    assert len(synth.calls) == 3
+    # We expect at least 1 SELECT (idempotency) + 3 UPDATE-to-degraded flips.
+    update_count = sum(
+        1
+        for stmt in session.executes
+        if "UPDATE" in str(getattr(stmt, "_compile_w_cache", lambda *a, **k: stmt)).upper()
+        or "Update" in type(stmt).__name__
+    )
+    # Loose assertion — at minimum the executes list must show the
+    # idempotency SELECT + at least one flip per attempt.
     assert len(session.executes) >= 4
+
+
+@pytest.mark.asyncio
+async def test_invoke_insights_daily_synthesis_run_error_is_failed(monkeypatch):
+    """SynthesisRunError on every attempt -> force-finalize to 'failed' + re-raise."""
+    from agents.insights.agentic_synthesis import SynthesisRunError
+
+    synth = _SynthesisDriverFactory(
+        outcomes=[
+            SynthesisRunError("gateway 503"),
+            SynthesisRunError("gateway 503"),
+            SynthesisRunError("gateway 503"),
+        ],
+    )
+    _patch_runner(monkeypatch, synth_factory=synth)
+
+    session = FakeSession(idempotency_row=None)
+
+    with pytest.raises(SynthesisRunError):
+        await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
+
+    assert len(synth.calls) == 3

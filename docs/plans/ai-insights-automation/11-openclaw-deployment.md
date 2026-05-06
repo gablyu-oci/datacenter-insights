@@ -632,4 +632,185 @@ sudo find $REPO/.openclaw/agents -name '*.jsonl' -mmin -10      # recent transcr
 
 ---
 
+## MCP Server (added 2026-05-06)
+
+### Why MCP
+The OpenClaw -> FastAPI tool path was originally a TypeScript plugin scaffold
+(`/.openclaw/extensions/insights-tools`) that required a compiled `dist/`
+output and POST'd back to `/api/agent-tools/<tool>` over HTTP. That scaffold
+was never compiled and is now superseded by a native Python MCP server hosted
+inside FastAPI (`backend/mcp_server.py`). Tools run in-process with the rest
+of the backend and are advertised to OpenClaw via the standard MCP
+streamable-HTTP transport. The TS scaffold is intentionally left in place but
+unused; OpenClaw still emits a startup warning about the missing `dist/` for
+the `insights-tools` plugin and that warning is benign.
+
+### Wire path
+```
+OpenClaw container (ghcr.io/openclaw/openclaw:latest, port 7474)
+        |
+        |  streamable-http POST + SSE
+        v
+http://host.docker.internal:8002/mcp
+        |
+        |  resolves to host bridge IP (host-gateway extra_host)
+        v
+FastAPI uvicorn (0.0.0.0:8002) -> backend/mcp_server.py
+```
+
+The container reaches the host via the `extra_hosts: host.docker.internal:host-gateway`
+entry already present in `docker-compose.openclaw.yml`. The host port is
+**8002** (the live `--reload` uvicorn used for the `/api/insights/insights/{id}/chat`
+smoke). Port 8000 is NOT in use; an earlier copy of `openclaw.json` shipped
+with `:8000` in the URL and has been corrected to `:8002`.
+
+### Required env
+| Variable                  | Where it lives           | Consumed by                          |
+|---------------------------|--------------------------|--------------------------------------|
+| `AGENT_TOOLS_BEARER`      | `backend/.env`           | OpenClaw substitutes into `Authorization: Bearer ...` header on every MCP request; FastAPI MCP server validates it. |
+| `OPENCLAW_GATEWAY_TOKEN`  | `backend/.env`           | Gateway-side bearer for the FastAPI forwarder (unrelated to MCP, kept for context). |
+| `LLAMA_STACK_API_KEY`     | `backend/.env`           | Provider credential for the LLM, used by `openclaw.json` (unrelated to MCP). |
+
+The compose file already loads `backend/.env` via `env_file:`, so the bearer
+flows from the host shell into the container, then OpenClaw substitutes the
+`${AGENT_TOOLS_BEARER}` placeholder in `mcp.servers.oci-insights.headers`
+into the outgoing HTTP request. **Never** commit a literal token into
+`openclaw.json`.
+
+### Restart after editing `.openclaw/openclaw.json`
+
+OpenClaw 2026.5.x supports hot-reload of the `mcp` subtree, so most edits to
+`mcp.servers.*` apply within ~1s without a restart (look for
+`[reload] config hot reload applied (mcp.*)` in the logs). For changes
+outside the hot-reload allowlist (auth mode, model providers, gateway HTTP
+endpoints), force a restart:
+
+```
+docker compose -f /home/ubuntu/oci-ai-incubations/strategic-insights-tool/docker-compose.openclaw.yml \
+    restart openclaw-gateway
+```
+
+Note: the compose service name is **`openclaw-gateway`**, not `openclaw`.
+
+After restart, confirm health and check for MCP-related log lines:
+
+```
+docker compose -f docker-compose.openclaw.yml ps                # expect: Up (healthy)
+docker compose -f docker-compose.openclaw.yml logs openclaw-gateway --tail 80 \
+    | grep -iE 'mcp|oci-insights|streamable'
+```
+
+MCP servers are loaded **lazily on first agent invocation**; absence of
+`oci-insights` log lines at boot is normal. To force-load, fire one chat
+request through the gateway and re-tail the logs.
+
+### Disable MCP without disabling OpenClaw
+
+To take MCP out of the loop while keeping the rest of the gateway running
+(e.g. to fall back to the embedded ToolLoopDriver lane temporarily), comment
+out (or remove) the `mcp.servers.oci-insights` block in
+`.openclaw/openclaw.json`:
+
+```jsonc
+// "mcp": {
+//   "servers": {
+//     "oci-insights": { ... }
+//   }
+// }
+```
+
+Then restart:
+
+```
+docker compose -f docker-compose.openclaw.yml restart openclaw-gateway
+```
+
+OpenClaw will start with no external MCP servers registered. Chat traffic
+that does NOT require tool calls continues to work; tool-using prompts will
+return without tool grounding (the model answers from its priors).
+
+### Roll back to the legacy ToolLoopDriver lane entirely
+
+Set `OPENCLAW_ENABLED=0` in `backend/.env` and restart FastAPI. The
+forwarder in `backend/openclaw/forwarder.py` checks this flag and routes
+chat to the in-process `ToolLoopDriver` instead of POSTing to the gateway.
+The OpenClaw container can stay running (idle) or be stopped via
+`docker compose -f docker-compose.openclaw.yml stop`. Do NOT remove the
+container with `down -v`; that would wipe `/.openclaw/agents/main/sessions`
+state.
+
+### Known-good ports as of 2026-05-06
+
+| Component                    | Bind / Port                              |
+|------------------------------|------------------------------------------|
+| FastAPI (live, reload mode)  | `0.0.0.0:8002` (uvicorn, `pid` varies)   |
+| FastAPI (sanity, loopback)   | `127.0.0.1:8767`, `:8768`, `:8769` (dev replicas, NOT reachable from container) |
+| OpenClaw gateway             | host `0.0.0.0:7474` -> container `:18789`|
+| OpenClaw bridge (unused)     | container `:18790`, not exposed          |
+
+When the FastAPI host port changes, update **two** places:
+1. `mcp.servers.oci-insights.url` in `.openclaw/openclaw.json` (hot reloads).
+2. `OPENCLAW_FORWARDER_TARGET` (or equivalent) in `backend/.env` if applicable.
+
+### Troubleshooting: container can't reach FastAPI on the host
+
+Symptom: agent calls fail with `ECONNREFUSED` or `Couldn't connect to
+server` against `host.docker.internal:<port>`.
+
+Diagnostic from inside the container:
+
+```
+docker exec openclaw-gateway sh -c \
+  'getent hosts host.docker.internal && \
+   curl -sS -o /dev/null -w "HTTP %{http_code}\n" --max-time 3 \
+        http://host.docker.internal:8002/mcp'
+```
+
+Common causes (in order):
+
+1. **FastAPI bound to `127.0.0.1` instead of `0.0.0.0`.** The dev replicas on
+   `:8767/:8768/:8769` bind loopback only and are unreachable from any
+   container. Confirm with `ss -tlnp | grep 8002` on the host - it must show
+   `0.0.0.0:8002`, not `127.0.0.1:8002`.
+2. **Host iptables INPUT REJECT.** This host has a default
+   `REJECT all reject-with icmp-host-prohibited` at the bottom of the INPUT
+   chain. The current allow-list is ports 22 / 80 / 8001 / 18790 only; port
+   8002 is NOT explicitly accepted, which blocks traffic arriving from the
+   container's veth onto the host bridge. Verify with:
+
+   ```
+   sudo iptables -L INPUT -n --line-numbers
+   ```
+
+   If 8002 is missing and you've confirmed FastAPI is on `0.0.0.0:8002`,
+   coordinate with the host owner before adding a rule. A minimal,
+   docker-bridge-only allow looks like:
+
+   ```
+   sudo iptables -I INPUT -p tcp -s 172.17.0.0/16 --dport 8002 -j ACCEPT
+   sudo iptables -I INPUT -p tcp -s 172.19.0.0/16 --dport 8002 -j ACCEPT
+   ```
+
+   Persist with `iptables-save` per the host's existing pattern. Do **not**
+   open 8002 to `0.0.0.0/0`.
+3. **Wrong host port in `openclaw.json`.** The URL must match the live
+   FastAPI port. As of 2026-05-06 that is `:8002`. Hot reload picks this up
+   without a restart.
+
+### Verification checklist (post-edit)
+
+- [ ] `cat .openclaw/openclaw.json | jq -r .mcp.servers."oci-insights".url`
+      returns `http://host.docker.internal:8002/mcp`.
+- [ ] `docker compose -f docker-compose.openclaw.yml ps` shows
+      `Up (healthy)` for `openclaw-gateway`.
+- [ ] `docker compose -f docker-compose.openclaw.yml logs openclaw-gateway
+      --tail 80` contains `[reload] config hot reload applied (mcp.*)` OR
+      a fresh `[gateway] ready` after the edit.
+- [ ] `curl -fsS http://localhost:7474/healthz` returns 200.
+- [ ] (Optional, requires firewall fix above) From inside the container,
+      `curl --max-time 3 http://host.docker.internal:8002/mcp` returns HTTP
+      307 / 200 (NOT a connection refused).
+
+---
+
 *End of 11 - OpenClaw deployment runbook.*
