@@ -669,7 +669,12 @@ class InsightOrchestrator:
                 cron_run_date=cron_run_date,
             )
             self.db.add(session)
-            await self.db.flush()
+            await self.db.commit()
+            # IMPORTANT: must commit (not just flush) so the OpenClaw-side
+            # MCP server (separate DB connection) can see the AISession row
+            # when the agent calls persist_insight / finalize_session. With a
+            # flush-only the row is invisible across connections, agent gets
+            # ai_session_not_found, and the synthesis loop produces 0 insights.
         except Exception as exc:
             logger.warning("ai_insights.orchestrator.persist_start_failed", extra={"err": str(exc)})
 

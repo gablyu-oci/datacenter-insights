@@ -58,24 +58,32 @@ async def build_skill_ctx(
     from agents.insights.db.models import AIInsight
     from sqlalchemy import select
 
-    # Resolve thread_id (creating one if absent).
+    # During SYNTHESIS the agent calls tools BEFORE any AIInsight has been
+    # persisted, so insight_id is a placeholder that doesn't exist yet.
+    # In that case we skip thread creation (chat threads are a chat-lane
+    # concern) and reuse session_id_hint as the synthetic thread scope.
+    insight_row = (
+        await db.execute(select(AIInsight).where(AIInsight.id == insight_id))
+    ).scalar_one_or_none()
+
     if thread_id_hint:
         thread_id_str = thread_id_hint
-    else:
+    elif insight_row is not None:
         thread = await _get_or_create_thread(db, insight_id=insight_id)
         thread_id_str = str(thread.id)
+    elif session_id_hint:
+        # Synthesis lane: no chat thread needed; use session_id as scope.
+        thread_id_str = session_id_hint
+    else:
+        # Last resort: synthesise a thread_id from the insight uuid itself.
+        thread_id_str = str(insight_id)
 
-    # Resolve parent session_id (FK on agent_message). Use the explicit
-    # hint when supplied; otherwise read the insight's parent session.
     if session_id_hint:
         session_id_str = session_id_hint
-    else:
-        insight_row = (
-            await db.execute(select(AIInsight).where(AIInsight.id == insight_id))
-        ).scalar_one_or_none()
-        if insight_row is None:
-            raise HTTPException(status_code=404, detail="insight_not_found")
+    elif insight_row is not None:
         session_id_str = str(insight_row.session_id)
+    else:
+        raise HTTPException(status_code=404, detail="insight_not_found")
 
     return SkillContext(
         session_id=session_id_str,

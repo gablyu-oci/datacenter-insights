@@ -255,25 +255,39 @@ def _build_session_key(
 
 
 def _factpack_digest(fact_pack: FactPack | None) -> dict[str, Any]:
-    """Lightweight FactPack summary used in the user-prompt body.
+    """Full FactPack payload for the synthesis prompt.
 
-    The agent receives section names + per-section row counts only;
-    full row bodies stay in Postgres reachable via `query_database`.
+    The agent needs the actual row bodies (entity, metric, value, detail) to
+    ground insights — sending only section names + counts forced the agent
+    to drill via query_database without knowing what to look for, which
+    consistently produced 0 insights. Inline the full pack: ~100 rows
+    typical, ~10KB serialized, well under the 200K context budget. The
+    agent can still call query_database for follow-on drill-down.
     """
     if fact_pack is None:
-        return {"section_names": [], "row_count_by_section": {}, "total_rows": 0}
+        return {"sections": [], "total_rows": 0}
 
-    section_names: list[str] = []
-    row_count_by_section: dict[str, int] = {}
+    sections_payload: list[dict[str, Any]] = []
     total = 0
     for section in fact_pack.sections:
-        section_names.append(section.name)
-        n = len(section.rows or [])
-        row_count_by_section[section.name] = n
-        total += n
+        rows_out: list[dict[str, Any]] = []
+        for r in (section.rows or []):
+            rows_out.append({
+                "row_id": r.row_id,
+                "entity": r.entity,
+                "metric": r.metric,
+                "value": r.value,
+                "delta": r.delta,
+                "detail": r.detail or {},
+            })
+        total += len(rows_out)
+        sections_payload.append({
+            "name": section.name,
+            "description": section.description,
+            "rows": rows_out,
+        })
     return {
-        "section_names": section_names,
-        "row_count_by_section": row_count_by_section,
+        "sections": sections_payload,
         "total_rows": total,
     }
 

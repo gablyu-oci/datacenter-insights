@@ -215,12 +215,20 @@ async def _invoke(
     Mirrors ``backend/routers/agent_tools.py::_invoke_tool`` so the
     OpenClaw lane and the curl-test lane share identical envelopes.
     """
-    # Validate insight_id up front; the tool registry expects a real UUID
-    # threaded through the SkillContext.
-    try:
-        insight_uuid = uuid.UUID(insight_id)
-    except (ValueError, TypeError, AttributeError) as exc:
-        return {"ok": False, "error": f"bad_insight_id: {exc}", "code": "TOOL_FAILED"}
+    # Validate insight_id when present. During SYNTHESIS the agent has no
+    # insight_id yet (that's literally what persist_insight will create),
+    # so accept "" / None / missing and synthesise a placeholder UUID.
+    # build_skill_ctx already handles the case where the insight row does
+    # not exist (the synthesis lane).
+    if insight_id and insight_id != "00000000-0000-0000-0000-000000000000":
+        try:
+            insight_uuid = uuid.UUID(insight_id)
+        except (ValueError, TypeError, AttributeError) as exc:
+            return {"ok": False, "error": f"bad_insight_id: {exc}", "code": "TOOL_FAILED"}
+    else:
+        # Synthesis lane: synthesise a deterministic placeholder so downstream
+        # ctx wiring still has a UUID to put in correlation_id etc.
+        insight_uuid = uuid.UUID("00000000-0000-0000-0000-000000000000")
 
     # Lazy import — these modules pull in the agents stack which is
     # heavy; defer until first call so module import stays cheap.
