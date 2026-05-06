@@ -528,6 +528,119 @@ async def persist_brief(
 
 
 @mcp.tool()
+async def update_memory(
+    category: str,
+    fact: str,
+) -> dict[str, Any]:
+    """Append a curated long-term-memory entry to the OpenClaw workspace.
+
+    Use this when the user explicitly says "remember this", or when
+    you observe a recurring pattern across sessions worth preserving
+    (a player to track, a platform quirk, a stable user preference,
+    an open thread to revisit).
+
+    Args:
+      category: which MEMORY.md section to append to. Must be one of:
+        - "players" (companies / players being tracked)
+        - "patterns" (recurring questions / decision patterns)
+        - "quirks"   (platform quirks worth knowing)
+        - "preferences" (user preferences observed)
+        - "threads"  (threads to revisit when new data lands)
+      fact: a single concise line (≤ 200 chars). Will be appended
+        verbatim with a UTC datestamp; do not pre-format with bullets
+        or quotes.
+
+    Returns:
+      ``{ok: True, category, written_to, byte_offset, code: 0}`` on
+      success. ``{ok: False, error, code}`` on validation failure
+      (unknown category, fact too long, file unwritable, etc.).
+    """
+    valid = {
+        "players": "## Players being tracked",
+        "patterns": "## Recurring questions / decision patterns",
+        "quirks": "## Platform quirks worth knowing",
+        "preferences": "## User preferences observed",
+        "threads": "## Threads to revisit",
+    }
+    if category not in valid:
+        return {
+            "ok": False,
+            "error": f"unknown_category: {category!r}; must be one of {sorted(valid)}",
+            "code": "BAD_INPUT",
+        }
+    fact = (fact or "").strip()
+    if not fact:
+        return {"ok": False, "error": "fact is empty", "code": "BAD_INPUT"}
+    if len(fact) > 200:
+        return {"ok": False, "error": "fact > 200 chars", "code": "BAD_INPUT"}
+
+    # Resolve workspace path. Mounted under .openclaw/workspace from
+    # the host repo. We write here from the FastAPI host (not the
+    # OpenClaw container) since the MCP server runs in the FastAPI
+    # process. Permissions: container is uid 1000, host runtime is
+    # also opc(1000); writes from this process land with the FastAPI
+    # uid. As long as the file is group-writable (775), both sides
+    # can update.
+    import os as _os
+    from datetime import datetime as _dt
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parent.parent
+    memory_path = repo_root / ".openclaw" / "workspace" / "MEMORY.md"
+    if not memory_path.exists():
+        return {
+            "ok": False,
+            "error": f"memory_file_missing: {memory_path}",
+            "code": "TOOL_FAILED",
+        }
+    try:
+        body = memory_path.read_text(encoding="utf-8")
+        section_header = valid[category]
+        idx = body.find(section_header)
+        if idx == -1:
+            # Section was renamed or removed — append new section at end
+            section_block = f"\n\n{section_header}\n\n"
+            body = body + section_block
+            idx = body.find(section_header)
+
+        # Find next section boundary (next "## " line) so we insert
+        # before it, not at the end of the file.
+        after = body.find("\n## ", idx + 1)
+        if after == -1:
+            # Last section — insert before the trailing "_Last reviewed_" line
+            after = body.rfind("\n---")
+        if after == -1:
+            after = len(body)
+
+        stamp = _dt.utcnow().strftime("%Y-%m-%d")
+        new_line = f"- {fact}  _<{stamp}>_\n"
+        # Insert just before `after`, ensuring a blank line above
+        insert_at = body.rfind("\n", 0, after)
+        if insert_at == -1:
+            insert_at = after
+        # Replace any "(no current entries)" placeholder to keep it tidy
+        body_before = body[:after]
+        body_after = body[after:]
+        if "(no current entries)" in body_before[idx:]:
+            body_before = body_before[:idx] + body_before[idx:].replace(
+                "(no current entries)\n", new_line, 1
+            )
+        else:
+            body_before = body_before.rstrip() + "\n" + new_line + "\n"
+        memory_path.write_text(body_before + body_after, encoding="utf-8")
+        return {
+            "ok": True,
+            "category": category,
+            "written_to": str(memory_path),
+            "byte_offset": memory_path.stat().st_size,
+            "code": 0,
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("mcp.update_memory_failed", extra={"category": category})
+        return {"ok": False, "error": str(exc), "code": "TOOL_FAILED"}
+
+
+@mcp.tool()
 async def propose_qa_chart(
     chart_type: str,
     x: str,
