@@ -204,6 +204,13 @@ def patched_app(monkeypatch: pytest.MonkeyPatch, session_factory):
     monkeypatch.setattr(db_session_mod, "async_session_factory", session_factory)
     monkeypatch.setattr(insights_router, "async_session_factory", session_factory)
 
+    # Force the chat dispatcher onto the legacy ToolLoopDriver path. These
+    # tests pre-date the OpenClaw migration and assert against ToolLoopDriver
+    # construction; the new dispatcher in post_insight_chat would route to
+    # _openclaw_chat_handler when settings.openclaw_enabled == 1 (the default).
+    # See docs/plans/ai-insights-automation/12-openclaw-test-plan.md §11 #1.
+    monkeypatch.setattr(insights_router.settings, "openclaw_enabled", 0)
+
     # Override the get_db dependency.
     async def _get_db_override():
         async with session_factory() as s:

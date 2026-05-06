@@ -37,3 +37,56 @@ logs/
 .DS_Store
 Thumbs.db
 cdx2.json
+
+# Root-level secrets (compose interpolation file). The repo's canonical
+# secrets file is backend/.env (already git-ignored above). The root .env
+# is an optional mirror; if it exists it MUST NOT be committed.
+/.env
+!/.env.example
+
+# OpenClaw runtime state
+# ---------------------------------------------------------------------------
+# The /.openclaw tree holds container-mounted state. Most of it is
+# runtime-mutable (sessions, JSONL transcripts, SQLite session-stores, dynamic
+# agent dirs) and MUST NOT be committed. A handful of declarative files DO
+# need to be in git so first-boot is reproducible:
+#   - /.openclaw/openclaw.json                     (provider + gateway config)
+#   - /.openclaw/workspace/SOUL.md                 (persona)
+#   - /.openclaw/extensions/**/*                   (TS plugin source)
+#   - /.openclaw/.gitkeep                          (anchor for empty repo)
+# Everything else under /.openclaw is ignored.
+/.openclaw/agents/
+/.openclaw/sessions/
+/.openclaw/**/sessions/
+/.openclaw/**/*.jsonl
+/.openclaw/**/*.sqlite
+/.openclaw/**/*.sqlite-*
+/.openclaw/**/*.db
+/.openclaw/**/*.db-*
+/.openclaw/cache/
+/.openclaw/logs/
+/.openclaw/tmp/
+/.openclaw/workspace/sessions/
+/.openclaw/workspace/cache/
+/.openclaw/workspace/.openclaw/
+# Also ignore everything the gateway auto-generates on first boot that
+# might leak secrets (the auto-stub openclaw.json contains a generated
+# bearer token; the .bak / .last-good are copies of same):
+/.openclaw/openclaw.json.bak
+/.openclaw/openclaw.json.last-good
+/.openclaw/openclaw.json.*.tmp
+/.openclaw/update-check.json
+/.openclaw/identity/
+/.openclaw/canvas/
+# Explicit allows for the declarative files we DO want in git:
+!/.openclaw/.gitkeep
+!/.openclaw/workspace/
+!/.openclaw/workspace/SOUL.md
+!/.openclaw/extensions/
+!/.openclaw/extensions/**/*
+# NOTE: /.openclaw/openclaw.json is intentionally NOT explicitly
+# allow-listed. The backend agent's deliverable is a committed JSON5
+# config at that path WITH NO BAKED-IN SECRETS (it references env vars
+# via ${OPENCLAW_GATEWAY_TOKEN}, ${LLAMA_STACK_API_KEY}). When that file
+# is committed, the operator must `git add -f .openclaw/openclaw.json`
+# the FIRST time and verify by-eye there is no literal secret in it.

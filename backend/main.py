@@ -37,6 +37,7 @@ from routers.edgar_frames import router as edgar_frames_router
 from routers.anomalies import router as anomalies_router
 from routers.press_releases import router as press_releases_router
 from routers.insights import router as insights_router
+from routers.agent_tools import router as agent_tools_router
 # oci_share has a wildcard {tab} path -- register last to avoid shadowing
 from routers.oci_share import router as oci_share_router
 
@@ -139,5 +140,8 @@ app.include_router(edgar_frames_router)
 app.include_router(anomalies_router)
 app.include_router(press_releases_router)
 app.include_router(insights_router)
+# OpenClaw plugin webhooks (PRD 11a / ARCH 11b §3). Registered before
+# oci_share to keep the broad-match router last.
+app.include_router(agent_tools_router)
 # oci_share must be last -- its /api/{tab}/oci-share pattern is broad
 app.include_router(oci_share_router)

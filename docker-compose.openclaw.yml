@@ -1,0 +1,108 @@
+# =============================================================================
+# OpenClaw Gateway — single-service compose file
+# =============================================================================
+# This compose file provisions the self-hosted OpenClaw Gateway used by the
+# AI Insights chat path (per docs/plans/ai-insights-automation/11b + 11c).
+#
+# Boot:     docker compose -f docker-compose.openclaw.yml up -d
+#           (or, if the v2 plugin is unavailable on this host:
+#                docker-compose -f docker-compose.openclaw.yml up -d )
+#
+# Health:   curl -fsS http://localhost:7474/healthz   # expect 200 OK
+# Logs:     docker compose -f docker-compose.openclaw.yml logs -f openclaw-gateway
+# Stop:     docker compose -f docker-compose.openclaw.yml down
+#
+# Persistence: container state lives under ${REPO}/.openclaw on the host.
+# Boot persistence: restart: unless-stopped + Docker daemon enabled by systemd
+# means the container comes back automatically across host reboots.
+# =============================================================================
+
+services:
+  openclaw-gateway:
+    # -------------------------------------------------------------------------
+    # Image
+    # -------------------------------------------------------------------------
+    # Pinned to :latest per researcher §1 (upstream public image on GHCR).
+    # The `:stable` tag referenced in 11b §1.1 was a placeholder; the addendum
+    # 11c §A is authoritative.
+    image: ghcr.io/openclaw/openclaw:latest
+    container_name: openclaw-gateway
+
+    # -------------------------------------------------------------------------
+    # env_file — secrets and provider credentials
+    # -------------------------------------------------------------------------
+    # We source from backend/.env (which is git-ignored). This file holds:
+    #   - OPENCLAW_GATEWAY_TOKEN  (bearer the FastAPI forwarder presents)
+    #   - LLAMA_STACK_API_KEY     (LLM provider credential, used by openclaw.json)
+    #   - AGENT_TOOLS_BEARER      (NOT consumed by the gateway itself, but the
+    #                              plugin code reads it from process.env to call
+    #                              back to FastAPI on host.docker.internal:8000)
+    # If a value is missing the container will start but provider calls / auth
+    # will fail at first request — see runbook §11.
+    env_file:
+      - ./backend/.env
+
+    # -------------------------------------------------------------------------
+    # environment — gateway-internal knobs
+    # -------------------------------------------------------------------------
+    # OPENCLAW_CONFIG_DIR / OPENCLAW_WORKSPACE_DIR mirror the upstream defaults
+    # (researcher §1). They are set explicitly so future image updates that
+    # change defaults do not silently move our state.
+    environment:
+      OPENCLAW_CONFIG_DIR: /home/node/.openclaw
+      OPENCLAW_WORKSPACE_DIR: /home/node/.openclaw/workspace
+      OPENCLAW_GATEWAY_BIND: lan
+      TZ: UTC
+
+    # -------------------------------------------------------------------------
+    # ports — host:container
+    # -------------------------------------------------------------------------
+    # Container's gateway HTTP+WS port is 18789 (researcher §1 verbatim from
+    # upstream compose). User spec R1 fixes the host-side port at 7474.
+    # The bridge port 18790 is NOT exposed (not used by our integration).
+    ports:
+      - "7474:18789"
+
+    # -------------------------------------------------------------------------
+    # volumes — host-mounted persistent state under ${REPO}/.openclaw
+    # -------------------------------------------------------------------------
+    # Per user R1: state lives under repo /.openclaw, NOT under container HOME.
+    # The two-mount layout matches the upstream image's expected dirs.
+    volumes:
+      - ./.openclaw:/home/node/.openclaw
+      - ./.openclaw/workspace:/home/node/.openclaw/workspace
+
+    # -------------------------------------------------------------------------
+    # extra_hosts — let plugins reach FastAPI on the host
+    # -------------------------------------------------------------------------
+    # Plugins inside the container POST back to FastAPI at
+    #   http://host.docker.internal:8000/api/agent-tools/<tool>
+    # On Linux Docker this hostname does NOT exist by default; the host-gateway
+    # mapping below makes it resolve to the host's bridge IP.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+    # -------------------------------------------------------------------------
+    # healthcheck — /healthz on the in-container gateway port
+    # -------------------------------------------------------------------------
+    # Per researcher §1: GET http://127.0.0.1:18789/healthz inside the container.
+    # 127.0.0.1 here refers to the container's loopback, NOT the host.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:18789/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+    # -------------------------------------------------------------------------
+    # restart policy — survive Docker daemon restarts and host reboots
+    # -------------------------------------------------------------------------
+    # `unless-stopped` means the container restarts automatically unless the
+    # operator explicitly stopped it with `docker stop` / `docker compose down`.
+    # Combined with `systemctl is-enabled docker` (verified on this host),
+    # this satisfies user R1 ("starts on host boot").
+    restart: unless-stopped
+
+# Default network (bridge). Explicit declaration omitted; Compose creates one
+# named after the project. The user spec mandates bridge (not host) networking
+# so plugins can reach the host via host.docker.internal.

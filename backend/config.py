@@ -51,5 +51,21 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     log_level: str = "INFO"
 
+    # ------------------------------------------------------------------
+    # OpenClaw migration (PRD 11a, ARCH 11b, ADDENDUM 11c).
+    # The chat path can be served either by the legacy ToolLoopDriver
+    # (rollback target) or by the OpenClaw gateway forwarder. The flag
+    # below picks which lane runs at request time. Defaults: 1 in dev,
+    # 0 in prod; flip in environment / .env.
+    # ------------------------------------------------------------------
+    openclaw_enabled: int = 1
+    openclaw_gateway_url: str = "http://localhost:7474"
+    openclaw_gateway_token: str = ""  # OPENCLAW_GATEWAY_TOKEN env
+    agent_tools_bearer: str = ""  # AGENT_TOOLS_BEARER env (Bearer the
+    # OpenClaw plugins present on calls back into FastAPI)
+    llama_stack_api_key: str = ""  # LLAMA_STACK_API_KEY env (used by
+    # the OpenClaw provider config; FastAPI itself does not need it)
+    openclaw_session_prefix: str = "agent:main:insight:"
+
 
 settings = Settings()

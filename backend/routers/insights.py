@@ -56,6 +56,8 @@ from agents.insights.db.models import (
     InsightThread,
 )
 from db.session import async_session_factory, get_db
+from config import settings
+from openclaw.forwarder import forward_chat as _openclaw_forward_chat
 
 logger = logging.getLogger(__name__)
 
@@ -910,7 +912,27 @@ async def post_insight_chat(
     request: Request,
     body: ChatTurnBody = Body(...),
 ):
-    """Chat one turn with the agent scoped to a single insight (V2, SSE).
+    """Per-insight chat dispatcher (PRD 11a R9, ARCH 11b §5.1).
+
+    Routes to the OpenClaw lane when `settings.openclaw_enabled` is on,
+    or to the legacy in-process ToolLoopDriver lane when off. Both
+    lanes return `text/event-stream` with the same on-the-wire SSE
+    event taxonomy so the frontend hook is unchanged.
+
+    The legacy lane (`_legacy_chat_handler`) is preserved as the
+    rollback target per PRD R9 — do NOT delete it.
+    """
+    if int(getattr(settings, "openclaw_enabled", 0)) == 1:
+        return await _openclaw_chat_handler(insight_id, request, body)
+    return await _legacy_chat_handler(insight_id, request, body)
+
+
+async def _legacy_chat_handler(
+    insight_id: uuid.UUID,
+    request: Request,
+    body: ChatTurnBody,
+):
+    """Legacy chat lane: in-process ToolLoopDriver (rollback path).
 
     Reuses the platform ToolLoopDriver with caps `max_turns=12, max_parallel=4`
     (chat stays at 48 per turn). Web-search counter is shared with the
@@ -1235,6 +1257,76 @@ async def post_insight_chat(
         "X-Insight-Thread-Id": str(thread_id),
     }
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw chat lane (PRD 11a, ARCH 11b §5.2, ADDENDUM 11c §B)
+# ---------------------------------------------------------------------------
+
+
+async def _openclaw_chat_handler(
+    insight_id: uuid.UUID,
+    request: Request,
+    body: ChatTurnBody,
+):
+    """OpenClaw lane: forward the user turn through the OpenClaw gateway.
+
+    The user message is persisted BEFORE we dial OpenClaw so the audit
+    trail survives a gateway outage. The streaming SSE response is
+    produced by `backend.openclaw.forwarder.forward_chat`, which
+    translates OpenClaw chunks into our existing event taxonomy. The
+    frontend wire contract is unchanged (PRD R5).
+    """
+    db_session = async_session_factory()
+    try:
+        # Resolve insight, thread, and parent session up front so we can
+        # 404 deterministically before kicking off any streaming. This
+        # mirrors the legacy handler's prelude.
+        ctx_payload = await _build_chat_context(db_session, insight_id)  # noqa: F841
+        thread = await _get_or_create_thread(
+            db_session, insight_id=insight_id, session_id_hint=None
+        )
+        thread_id = thread.id
+        insight_row = (
+            await db_session.execute(
+                select(AIInsight).where(AIInsight.id == insight_id)
+            )
+        ).scalar_one()
+        parent_session_id = insight_row.session_id
+        await db_session.commit()
+    except HTTPException:
+        await db_session.close()
+        raise
+    except Exception:
+        await db_session.close()
+        raise
+
+    user_text = body.message
+
+    async def _stream() -> AsyncIterator[bytes]:
+        try:
+            async for chunk in _openclaw_forward_chat(
+                insight_id=insight_id,
+                user_text=user_text,
+                db=db_session,
+                thread_id=thread_id,
+                session_id=parent_session_id,
+            ):
+                if await request.is_disconnected():
+                    break
+                yield chunk
+        finally:
+            try:
+                await db_session.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+        "X-Insight-Thread-Id": str(thread_id),
+    }
+    return StreamingResponse(_stream(), media_type="text/event-stream", headers=headers)
 
 
 @router.get(
