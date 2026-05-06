@@ -249,11 +249,7 @@ async def _persist_insight_handler(
     await db.flush()
 
     # Bump the parent session's insights_emitted counter so the
-    # Past Sessions UI shows an accurate count without having to
-    # re-count ai_insight rows on every render. Use an explicit
-    # UPDATE rather than ORM attribute assignment because the
-    # session_row may already be detached from this AsyncSession's
-    # identity map after the AIInsight flush above.
+    # Past Sessions UI shows an accurate count.
     from sqlalchemy import update as _sa_update
     from .db.models import AISession as _AISession
 
@@ -262,31 +258,42 @@ async def _persist_insight_handler(
         .where(_AISession.id == session_uuid)
         .values(insights_emitted=idx + 1)
     )
-    await db.flush()
 
-    # Auto-attach a deterministic bar/pie/kpi chart from the cited
-    # supporting rows. The V1 orchestrator did this server-side; the
-    # agentic loop also benefits because the agent rarely thinks to
-    # call emit_chart explicitly.
-    await _auto_emit_chart(
-        db,
-        session_uuid=session_uuid,
-        insight_id=new_id,
-        headline=insight.headline,
-        chart_type_hint=getattr(insight, "chart_type", None),
-        y_label_hint=getattr(insight, "chart_y_label", None),
-        supporting_row_ids=filtered_row_ids or [],
-    )
+    # COMMIT NOW so the AIInsight row is durable. If the optional
+    # decorations below (chart + citations) fail and poison the SA
+    # session, a subsequent commit would error and _session_invoke
+    # would rollback EVERYTHING — wiping the insight the agent thinks
+    # it just wrote. Two commits = two transactions: insight is
+    # protected from decoration failures.
+    await db.commit()
 
-    # Prefetch up to 3 web citations per insight via Brave (cap shared
-    # session-wide so we do not burn the quota). Same V1 behaviour we
-    # need to preserve in the agentic path.
-    await _auto_prefetch_citations(
-        db, insight_id=new_id, headline=insight.headline
-    )
-
-    await db.commit()  # MCP runs in its own connection; commit so the
-    # frontend's /api/insights/latest can see the chart + citations.
+    # Best-effort decorations. Each helper has its own try/except,
+    # but flush errors inside them can poison the session. We rollback
+    # any aborted state at the boundary so a later finalize_session in
+    # the same connection does not inherit a busted transaction.
+    try:
+        await _auto_emit_chart(
+            db,
+            session_uuid=session_uuid,
+            insight_id=new_id,
+            headline=insight.headline,
+            chart_type_hint=getattr(insight, "chart_type", None),
+            y_label_hint=getattr(insight, "chart_y_label", None),
+            supporting_row_ids=filtered_row_ids or [],
+        )
+        await _auto_prefetch_citations(
+            db, insight_id=new_id, headline=insight.headline
+        )
+        await db.commit()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "mcp.persist_insight.decorations_failed",
+            extra={"err": str(exc), "insight_id": str(new_id)},
+        )
+        try:
+            await db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
 
     logger.info(
         "mcp.persist_insight",
