@@ -694,6 +694,13 @@ class InsightOrchestrator:
 
             from .db.models import AISession
 
+            # NOTE: insights_emitted is NOT written here. The agentic path
+            # owns that field via the persist_insight + finalize_session
+            # MCP handlers (session_tools.py). self._emitted_count stays 0
+            # in the agentic mode because the orchestrator never sees the
+            # per-insight completes (those happen inside OpenClaw -> MCP),
+            # so writing it here would clobber the correct value the MCP
+            # handlers already persisted.
             stmt = (
                 update(AISession)
                 .where(AISession.id == self.session_id)
@@ -702,7 +709,6 @@ class InsightOrchestrator:
                     finished_at=_utcnow().replace(tzinfo=None),
                     duration_ms=duration_ms,
                     budget_status=budget_status,
-                    insights_emitted=self._emitted_count,
                 )
             )
             await self.db.execute(stmt)

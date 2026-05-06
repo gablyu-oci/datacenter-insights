@@ -248,6 +248,22 @@ async def _persist_insight_handler(
     db.add(row)
     await db.flush()
 
+    # Bump the parent session's insights_emitted counter so the
+    # Past Sessions UI shows an accurate count without having to
+    # re-count ai_insight rows on every render. Use an explicit
+    # UPDATE rather than ORM attribute assignment because the
+    # session_row may already be detached from this AsyncSession's
+    # identity map after the AIInsight flush above.
+    from sqlalchemy import update as _sa_update
+    from .db.models import AISession as _AISession
+
+    await db.execute(
+        _sa_update(_AISession)
+        .where(_AISession.id == session_uuid)
+        .values(insights_emitted=idx + 1)
+    )
+    await db.flush()
+
     # Auto-attach a deterministic bar/pie/kpi chart from the cited
     # supporting rows. The V1 orchestrator did this server-side; the
     # agentic loop also benefits because the agent rarely thinks to
@@ -327,6 +343,22 @@ async def _finalize_session_handler(
             "idempotent": True,
         }
 
+    # Defensive: re-count actual insight rows so the counter on the
+    # session row matches what the user will see. The per-call
+    # persist_insight bump should have done this already, but if a
+    # prior in-flight write was rolled back we still want truth.
+    from .db.models import AIInsight as _AIInsight
+    from sqlalchemy import func as _sa_func
+
+    actual_count_row = (
+        await db.execute(
+            select(_sa_func.count()).select_from(_AIInsight).where(
+                _AIInsight.session_id == session_uuid
+            )
+        )
+    ).scalar_one()
+    actual_count = int(actual_count_row or 0)
+
     stmt = (
         update(AISession)
         .where(AISession.id == session_uuid)
@@ -334,6 +366,7 @@ async def _finalize_session_handler(
             status=status,
             finished_at=datetime.utcnow(),
             token_estimate=token_estimate,
+            insights_emitted=actual_count,
         )
     )
     await db.execute(stmt)
