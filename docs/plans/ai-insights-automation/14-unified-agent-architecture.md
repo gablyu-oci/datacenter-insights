@@ -1023,4 +1023,38 @@ During Phases 2-4: `SYNTHESIS_MODE=legacy|agentic` (default `agentic` once Phase
 
 ---
 
+## Appendix B — Completed Migration Sites
+
+This table records the five LLM call-sites that the unified-agent
+migration touched, and what they look like after Phase 5-followup
+(ARCH 15) cleanup. Each callsite either drives `_drive_openclaw_stream`
+directly or goes through one of two thin event generators
+(`forward_chat`, `iter_qa_events`).
+
+| # | Callsite                                                       | Lane          | Forwarder layer                                         | Translator                  | Prompt file                              | Namespace                  |
+|---|----------------------------------------------------------------|---------------|---------------------------------------------------------|-----------------------------|------------------------------------------|----------------------------|
+| 1 | `routers/insights.py::_openclaw_chat_handler`                  | Chat          | `openclaw/forwarder.py::forward_chat`                   | `translate_chunk`           | (inline persona context)                 | `agent:main:insight:<id>`  |
+| 2 | `agents/insights/agentic_synthesis.py::run_agentic_synthesis`  | Synthesis     | `openclaw/forwarder.py::_drive_openclaw_stream` (direct) | `translate_synthesis_chunk` | `agents/insights/prompts/synthesis_rules.md` | `agent:main:synthesis:<session>` |
+| 3 | `agents/datacenter_qa.py::answer_question`                     | QA-global     | `openclaw/qa_forwarder.py::iter_qa_events`              | `translate_qa_chunk`        | `agents/insights/prompts/qa_global_rules.md` | `agent:main:qa:global:<id>`    |
+| 4 | `agents/triangulation_qa.py::answer_question_stream`           | Triangulation | `openclaw/qa_forwarder.py::iter_qa_events`              | `translate_qa_chunk`        | `agents/insights/prompts/triangulation_rules.md` | `agent:main:triangulation:<id>` |
+| 5 | `agents/weekly_brief.py` (brief generator)                     | Brief         | `openclaw/forwarder.py::_drive_openclaw_stream` (direct) | `translate_synthesis_chunk` | `agents/insights/prompts/brief_rules.md`  | `agent:main:brief:<run>`   |
+
+Removed in this phase:
+- `routers/insights.py::_legacy_chat_handler` — deleted (was the
+  rollback path; the in-process `ToolLoopDriver` chat lane).
+- `routers/insights.py::_chat_system_prompt` — deleted (the chat-lane
+  persona is now built inside OpenClaw / MCP tooling).
+- `config.py::openclaw_enabled` and `OPENCLAW_ENABLED` env var — both
+  deleted; OpenClaw is the only chat / QA / synthesis driver.
+- `tests/test_openclaw_forwarder.py::test_openclaw_disabled_routes_to_legacy_handler`
+  — deleted along with its monkeypatches of `openclaw_enabled`.
+
+Wire-format invariants:
+- Chat lane: `to_sse_text(event)` (multi-line `event:` + `data:` + `\n\n`).
+- QA lane: `data: {json.dumps(event.model_dump())}\n\n` only — never
+  `to_sse_text(...)`. Documented in the QA translator header and in
+  `15-qa-translator-research.md` §5.
+
+---
+
 **End of architecture document.**

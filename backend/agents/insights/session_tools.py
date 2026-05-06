@@ -248,6 +248,30 @@ async def _persist_insight_handler(
     db.add(row)
     await db.flush()
 
+    # Auto-attach a deterministic bar/pie/kpi chart from the cited
+    # supporting rows. The V1 orchestrator did this server-side; the
+    # agentic loop also benefits because the agent rarely thinks to
+    # call emit_chart explicitly.
+    await _auto_emit_chart(
+        db,
+        session_uuid=session_uuid,
+        insight_id=new_id,
+        headline=insight.headline,
+        chart_type_hint=getattr(insight, "chart_type", None),
+        y_label_hint=getattr(insight, "chart_y_label", None),
+        supporting_row_ids=filtered_row_ids or [],
+    )
+
+    # Prefetch up to 3 web citations per insight via Brave (cap shared
+    # session-wide so we do not burn the quota). Same V1 behaviour we
+    # need to preserve in the agentic path.
+    await _auto_prefetch_citations(
+        db, insight_id=new_id, headline=insight.headline
+    )
+
+    await db.commit()  # MCP runs in its own connection; commit so the
+    # frontend's /api/insights/latest can see the chart + citations.
+
     logger.info(
         "mcp.persist_insight",
         extra={
@@ -548,6 +572,93 @@ async def _persist_brief_handler(
         },
     )
     return {"brief_id": str(new_row.id), "idempotent": False}
+
+
+# ---------------------------------------------------------------------------
+# Auto-emit helpers — invoked from _persist_insight_handler so charts +
+# citations attach without requiring the agent to call emit_chart /
+# web_search explicitly. Mirrors the V1 orchestrator behaviour.
+# ---------------------------------------------------------------------------
+
+
+async def _auto_emit_chart(
+    db: AsyncSession,
+    *,
+    session_uuid: uuid.UUID,
+    insight_id: uuid.UUID,
+    headline: str,
+    chart_type_hint: Any,
+    y_label_hint: Any,
+    supporting_row_ids: list[str],
+) -> None:
+    """Build + persist a chart from cited FactPack rows. Best-effort."""
+    fact_pack = _get_fact_pack(session_uuid)
+    if fact_pack is None or not supporting_row_ids:
+        return
+    try:
+        from .orchestrator import _chart_from_supporting_rows
+        from .db.models import AgentChart
+
+        rows = fact_pack.lookup(supporting_row_ids)
+        chart = _chart_from_supporting_rows(
+            rows,
+            headline,
+            chart_type_hint=str(chart_type_hint) if chart_type_hint else None,
+            y_label_hint=str(y_label_hint) if y_label_hint else None,
+        )
+        if chart is None:
+            return
+        db.add(
+            AgentChart(
+                id=chart.chart_id,
+                session_id=session_uuid,
+                insight_id=insight_id,
+                spec=chart.model_dump(mode="json"),
+                data_source=chart.data_source.model_dump(mode="json"),
+                row_hash=chart.data_source.row_hash,
+            )
+        )
+        await db.flush()
+    except Exception as exc:  # noqa: BLE001 — never fail persist on chart
+        logger.warning(
+            "mcp.persist_insight.chart_failed",
+            extra={"err": str(exc), "insight_id": str(insight_id)},
+        )
+
+
+async def _auto_prefetch_citations(
+    db: AsyncSession,
+    *,
+    insight_id: uuid.UUID,
+    headline: str,
+) -> None:
+    """Run web_search on the headline and persist top hits as citations."""
+    try:
+        from .tools.web_search import web_search
+        from .db.models import AgentCitation
+        from datetime import datetime as _dt
+
+        result = await web_search(query=headline[:200], n=3, ctx=None)
+        if not result.get("ok"):
+            return
+        for r in result.get("results") or []:
+            db.add(
+                AgentCitation(
+                    insight_id=insight_id,
+                    url=r.get("url", ""),
+                    title=r.get("title"),
+                    snippet=r.get("snippet"),
+                    search_query=r.get("search_query"),
+                    retrieved_at=_dt.utcnow(),
+                    provider=r.get("provider", "brave"),
+                )
+            )
+        await db.flush()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "mcp.persist_insight.citation_prefetch_failed",
+            extra={"err": str(exc), "insight_id": str(insight_id)},
+        )
 
 
 # ---------------------------------------------------------------------------

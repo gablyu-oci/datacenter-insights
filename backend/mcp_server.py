@@ -10,7 +10,7 @@ Exposes the seven existing AI-Insights chat tools (defined in
 ``backend/agents/insights/tools/``) as MCP tools over streamable-HTTP,
 mounted at ``/mcp`` on the parent FastAPI app. The OpenClaw gateway,
 running in a sibling container, discovers these tools at startup and
-calls them on every chat turn (when ``OPENCLAW_ENABLED=1``).
+calls them on every chat / QA / synthesis turn.
 
 Tool bodies are NOT reimplemented here. Each ``@mcp.tool()`` handler
 is a thin shim that:
@@ -525,6 +525,55 @@ async def persist_brief(
         session_id,
         {"sections": sections, "citations": citations},
     )
+
+
+@mcp.tool()
+async def propose_qa_chart(
+    chart_type: str,
+    x: str,
+    y: str,
+    series: list[dict[str, Any]],
+    title: str,
+    source_table: str,
+    breakdown_by: Optional[str] = None,
+    reasoning: Optional[str] = None,
+) -> dict[str, Any]:
+    """Propose a chart for the QA lane (NO DB write).
+
+    This tool is a pure event signal — the QA-lane SSE translator
+    (``backend/openclaw/sse_translator.translate_qa_chunk``) inspects
+    the model's tool_call arguments, validates them against
+    ``schemas.qa.ChartSpec``, and emits a ``ChartSpecEvent`` to the
+    frontend. The MCP layer therefore does not persist anything; the
+    return is an ack so OpenClaw's tool-loop can move on.
+
+    This sits in the QA lane only — the chat lane uses ``emit_chart``
+    (which DOES persist via ``agent_chart``) and the synthesis lane
+    uses ``persist_insight``. Keeping the three lanes' chart paths
+    separate is documented in
+    ``docs/plans/ai-insights-automation/15-extraction-vs-agent-policy.md``.
+
+    Args:
+      chart_type: one of ``bar`` | ``pie`` | ``line`` | ``scatter`` |
+        ``table`` (validated client-side by ``ChartSpec``).
+      x: x-axis column / category label.
+      y: y-axis column / value label.
+      series: list of series dicts (shape mirrors Recharts).
+      title: human-readable chart title.
+      source_table: table name the data came from (for citations).
+      breakdown_by: optional secondary grouping column.
+      reasoning: optional short rationale shown in the UI.
+
+    Returns:
+      ``{ok: True, code: 0}`` — the QA translator handles validation
+      and emission. We do NOT echo the spec back; that would double
+      the wire payload.
+    """
+    # Intentional no-op at the MCP layer. The translator (which sees
+    # the same tool_call arguments stream) does the validation and the
+    # frontend rendering. Any failures (e.g. malformed series) surface
+    # as a translator log warning, not an MCP error.
+    return {"ok": True, "code": 0}
 
 
 # ---------------------------------------------------------------------------

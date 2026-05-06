@@ -60,6 +60,19 @@ from agents.insights.specs.sse_events import (
     ToolCallStartedData,
     ToolCallStartedEvent,
 )
+from pydantic import ValidationError as _PydanticValidationError
+
+from schemas.qa import (
+    ChartSpec as _QAChartSpec,
+    ChartSpecEvent as QAChartSpecEvent,
+    Citation as _QACitation,
+    CitationEvent as QACitationEvent,
+    DoneEvent as QADoneEvent,
+    ErrorEvent as QAErrorEvent,
+    TextChunkEvent as QATextChunkEvent,
+    ToolCallEvent as QAToolCallEvent,
+    ToolResultEvent as QAToolResultEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -763,3 +776,238 @@ def translate_sse_lines(
             continue
         for evt in translate_chunk(parsed, acc):
             yield evt
+
+
+# ---------------------------------------------------------------------------
+# Phase 5-followup (PRD/ARCH 15) — sibling QA-lane translator
+# ---------------------------------------------------------------------------
+#
+# This translator maps OpenClaw `chat.completion.chunk` frames into the
+# frozen `QAEvent` discriminated union from `schemas.qa`. It is consumed
+# by `backend/openclaw/qa_forwarder.py` (the QA-lane forwarder) and is a
+# sibling of `translate_chunk` (chat) and `translate_synthesis_chunk`
+# (synthesis).
+#
+# IMPORTANT WIRE-FORMAT NOTE: the QA lane uses single-line
+# `data: {json.dumps(event.model_dump())}\n\n` framing and MUST NOT use
+# the chat-lane's `to_sse_text(...)` multi-line framing. Do NOT call
+# `to_sse_text` from any code that consumes `translate_qa_chunk` —
+# that would silently break the frontend `useQA` hook. See research §5.
+# ---------------------------------------------------------------------------
+
+
+# Convenience alias for any QA-lane event that this translator can produce.
+# Includes the full QAEvent variants (sans DoneEvent — that is emitted by
+# the caller's `finally` block).
+QATranslatedEvent = (
+    QATextChunkEvent
+    | QAToolCallEvent
+    | QAToolResultEvent
+    | QAChartSpecEvent
+    | QACitationEvent
+    | QADoneEvent
+    | QAErrorEvent
+)
+
+
+@dataclass
+class QAChunkAccumulator:
+    """Mutable per-stream state for `translate_qa_chunk`.
+
+    Sibling of `ChunkAccumulator` (chat) and `SynthesisChunkAccumulator`
+    (synthesis). Tracks streaming tool-call partials, citation dedupe,
+    cap counters (so `_drive_openclaw_stream` can read them via duck-
+    typed getattr), and the terminal `finished` flag.
+    """
+
+    session_key: str = ""
+
+    # Streaming tool-call partials — same shape as the chat / synthesis
+    # accumulators (research §3 — defer the `_apply_tool_call_deltas`
+    # helper lift; inline here).
+    tool_calls_by_index: dict[int, _PendingToolCall] = field(default_factory=dict)
+    tool_calls_by_id: dict[str, _PendingToolCall] = field(default_factory=dict)
+
+    # Citation dedupe via (table, row_id). Same key the legacy generator
+    # used at `datacenter_qa.py:1224`.
+    seen_citations: set[tuple[str, Optional[str]]] = field(default_factory=set)
+
+    # Cap counters mirroring `SynthesisChunkAccumulator` so
+    # `_drive_openclaw_stream` can read them via getattr.
+    cap_counters: dict[str, Any] = field(
+        default_factory=lambda: {
+            "turns": 0,
+            "tool_calls": 0,
+            "wall_clock_started_at": None,
+        }
+    )
+
+    # Diagnostic — last chart emit succeeded (set when a ChartSpecEvent
+    # was successfully validated and emitted; observers may use this to
+    # detect repeated-emit cases).
+    last_chart_emitted: bool = False
+
+    # Terminal flag — set on `finish_reason="stop"`, `[DONE]` sentinel,
+    # or hard truncation. The driver checks `getattr(acc, "finished",
+    # False)` to break out of the SSE drain.
+    finished: bool = False
+
+
+def translate_qa_chunk(
+    chunk: Any, acc: QAChunkAccumulator
+) -> list[QATranslatedEvent]:
+    """Translate a single parsed OpenClaw chunk into QA-lane events.
+
+    Sibling of `translate_chunk` and `translate_synthesis_chunk`. Maps
+    chat.completion.chunk frames into the QAEvent union per the table in
+    `docs/plans/ai-insights-automation/15-qa-translator-research.md` §2.
+
+    The caller (`qa_forwarder.forward_qa`) wraps each emitted event into
+    `data: {json}\\n\\n` SSE bytes. The router's `gen()` `finally` clause
+    is responsible for the terminal `DoneEvent`; this translator never
+    emits one itself (would double up).
+
+    NEVER call `to_sse_text(...)` on these events — that is the chat-
+    lane wire format and would break the frontend `useQA` hook.
+    """
+    if chunk is DONE:
+        # `[DONE]` sentinel: idempotent close — caller's `finally`
+        # emits the terminal `DoneEvent`.
+        acc.finished = True
+        return []
+
+    if not isinstance(chunk, dict):
+        return []
+
+    # Gateway-level error frame.
+    if "error" in chunk and "choices" not in chunk:
+        err = chunk.get("error") or {}
+        return [
+            QAErrorEvent(
+                message=str(err.get("message") or "openclaw upstream error"),
+            )
+        ]
+
+    out: list[QATranslatedEvent] = []
+
+    choices = chunk.get("choices") or []
+    if not choices:
+        return out
+
+    choice = choices[0]
+    delta = choice.get("delta") or {}
+    finish_reason = choice.get("finish_reason")
+
+    # 1. Text deltas -> TextChunkEvent.
+    content_delta = delta.get("content")
+    if content_delta:
+        out.append(QATextChunkEvent(content=str(content_delta)))
+
+    # 2. Tool-call deltas — accumulate; emit ToolCallEvent on first sight.
+    tool_call_deltas = delta.get("tool_calls") or []
+    for tc_delta in tool_call_deltas:
+        idx = tc_delta.get("index")
+        if idx is None:
+            continue
+        idx_int = int(idx)
+
+        pending = acc.tool_calls_by_index.get(idx_int)
+        if pending is None:
+            pending = _PendingToolCall(
+                tool_call_id=tc_delta.get("id") or f"tc_{uuid.uuid4().hex[:10]}"
+            )
+            acc.tool_calls_by_index[idx_int] = pending
+            if pending.tool_call_id:
+                acc.tool_calls_by_id[pending.tool_call_id] = pending
+
+        if not pending.tool_call_id and tc_delta.get("id"):
+            pending.tool_call_id = tc_delta["id"]
+            acc.tool_calls_by_id[pending.tool_call_id] = pending
+
+        function_block = tc_delta.get("function") or {}
+        if "name" in function_block and function_block["name"]:
+            pending.name = function_block["name"]
+        if "arguments" in function_block and function_block["arguments"]:
+            pending.args_buffer += function_block["arguments"]
+
+        # First sight (id+name known): emit ToolCallEvent. The args
+        # buffer may be partial JSON; `_safe_parse_args` returns `{}`
+        # on parse failure (see research §3, edge cases).
+        if (
+            pending.name
+            and pending.tool_call_id
+            and not pending.started_emitted
+        ):
+            args_dict = _safe_parse_args(pending.args_buffer)
+            out.append(
+                QAToolCallEvent(tool_name=pending.name, args=args_dict)
+            )
+            pending.started_emitted = True
+
+    # 3. finish_reason transitions.
+    if finish_reason == "tool_calls":
+        # Each finish_reason="tool_calls" frame closes one model turn.
+        acc.cap_counters["turns"] = int(acc.cap_counters.get("turns", 0)) + 1
+
+        for pending in list(acc.tool_calls_by_id.values()):
+            if pending.completed_emitted:
+                continue
+            acc.cap_counters["tool_calls"] = (
+                int(acc.cap_counters.get("tool_calls", 0)) + 1
+            )
+            pending.completed_emitted = True
+
+            tool_name = pending.name or ""
+            parsed_args = _safe_parse_args(pending.args_buffer)
+
+            # Always emit a generic ToolResultEvent (placeholder summary —
+            # we never see the MCP body server-side in this lane).
+            out.append(
+                QAToolResultEvent(
+                    tool_name=tool_name, summary="ok", row_count=0
+                )
+            )
+
+            # Per-tool dispatch: chart proposals + citations.
+            if tool_name in ("propose_qa_chart", "emit_chart"):
+                try:
+                    spec = _QAChartSpec.model_validate(parsed_args)
+                except _PydanticValidationError as exc:
+                    logger.warning(
+                        "qa_translator.chart_validation_failed",
+                        extra={
+                            "tool_call_id": pending.tool_call_id,
+                            "errors": exc.errors()[:5],
+                        },
+                    )
+                else:
+                    out.append(QAChartSpecEvent(**spec.model_dump()))
+                    acc.last_chart_emitted = True
+            elif tool_name in ("emit_citation", "propose_qa_citation"):
+                try:
+                    cite = _QACitation.model_validate(parsed_args)
+                except _PydanticValidationError as exc:
+                    logger.warning(
+                        "qa_translator.citation_validation_failed",
+                        extra={
+                            "tool_call_id": pending.tool_call_id,
+                            "errors": exc.errors()[:5],
+                        },
+                    )
+                else:
+                    key = (cite.table, cite.row_id)
+                    if key not in acc.seen_citations:
+                        acc.seen_citations.add(key)
+                        out.append(QACitationEvent(**cite.model_dump()))
+
+    elif finish_reason == "stop":
+        acc.finished = True
+        # Caller's `finally` emits DoneEvent — emit nothing here.
+
+    elif finish_reason in ("length", "content_filter"):
+        acc.finished = True
+        out.append(
+            QAErrorEvent(message=f"truncated_or_filtered: {finish_reason}")
+        )
+
+    return out

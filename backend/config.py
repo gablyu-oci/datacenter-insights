@@ -52,13 +52,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # ------------------------------------------------------------------
-    # OpenClaw migration (PRD 11a, ARCH 11b, ADDENDUM 11c).
-    # The chat path can be served either by the legacy ToolLoopDriver
-    # (rollback target) or by the OpenClaw gateway forwarder. The flag
-    # below picks which lane runs at request time. Defaults: 1 in dev,
-    # 0 in prod; flip in environment / .env.
+    # OpenClaw gateway settings (PRD 11a, ARCH 11b, ADDENDUM 11c, ARCH 15).
+    # All chat / QA / synthesis traffic flows through the gateway. The
+    # legacy in-process ToolLoopDriver lane and its `openclaw_enabled`
+    # flag were removed in Phase 5-followup (ARCH 15).
     # ------------------------------------------------------------------
-    openclaw_enabled: int = 1
     openclaw_gateway_url: str = "http://localhost:7474"
     openclaw_gateway_token: str = ""  # OPENCLAW_GATEWAY_TOKEN env
     agent_tools_bearer: str = ""  # AGENT_TOOLS_BEARER env (Bearer the

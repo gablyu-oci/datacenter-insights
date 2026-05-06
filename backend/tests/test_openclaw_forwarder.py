@@ -1,16 +1,17 @@
 """Tests for the OpenClaw forwarder lane of the chat endpoint.
 
-Coverage map (PRD 11a R8, ARCH 11b §5):
-  1. With `settings.openclaw_enabled = 1`, POST /chat dials OpenClaw,
-     translates the canned SSE stream, and yields our event taxonomy
-     (assistant_message_token, tool_call_started, tool_call_complete,
-     message_complete) plus persists user + assistant `agent_message`
-     rows with monotonic seq.
+Coverage map (PRD 11a R8, ARCH 11b §5, ARCH 15 cleanup):
+  1. POST /chat dials OpenClaw, translates the canned SSE stream, and
+     yields our event taxonomy (assistant_message_token,
+     tool_call_started, tool_call_complete, message_complete) plus
+     persists user + assistant `agent_message` rows with monotonic seq.
   2. Forwarder uses correct headers (Bearer + x-openclaw-session-key).
-  3. With `settings.openclaw_enabled = 0`, the dispatcher hands off to
-     the legacy `_legacy_chat_handler` (rollback flag works).
-  4. OpenClaw 5xx -> the forwarder emits an `error` SSE event rather
+  3. OpenClaw 5xx -> the forwarder emits an `error` SSE event rather
      than 500'ing to the browser.
+
+The legacy in-process ToolLoopDriver lane and its `OPENCLAW_ENABLED`
+rollback flag were removed in Phase 5-followup (ARCH 15). The previous
+"flag=0 routes to legacy" test was deleted at the same time.
 
 Implementation notes
 --------------------
@@ -348,8 +349,6 @@ async def test_openclaw_lane_streams_text_and_persists_messages(
     state["lines"] = _build_canned_chunks(with_tool_call=False)
     state["status"] = 200
 
-    # Force the OpenClaw lane on for this test.
-    monkeypatch.setattr(settings, "openclaw_enabled", 1, raising=False)
     monkeypatch.setattr(settings, "openclaw_gateway_token", "test-gateway-token", raising=False)
     monkeypatch.setattr(settings, "openclaw_gateway_url", "http://oc.test:7474", raising=False)
 
@@ -419,8 +418,6 @@ async def test_openclaw_lane_emits_tool_call_events(
     state["lines"] = _build_canned_chunks(with_tool_call=True)
     state["status"] = 200
 
-    monkeypatch.setattr(settings, "openclaw_enabled", 1, raising=False)
-
     insight_id = seeded_insight["insight_id"]
     transport = ASGITransport(app=patched_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -460,58 +457,7 @@ async def test_openclaw_lane_emits_tool_call_events(
 
 
 # ---------------------------------------------------------------------------
-# Test 3: rollback flag — OPENCLAW_ENABLED=0 hands off to legacy handler
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_openclaw_disabled_routes_to_legacy_handler(
-    monkeypatch: pytest.MonkeyPatch,
-    patched_app,
-    seeded_insight,
-) -> None:
-    """With the flag off, `_legacy_chat_handler` is invoked.
-
-    We replace the legacy handler with a sentinel coroutine. If the
-    dispatcher routes correctly, our sentinel is hit and we get its
-    canned response; if it does not, the test fails because the real
-    legacy path will try to run a ToolLoopDriver against the in-memory
-    SQLite (and would not return our sentinel value).
-    """
-    from fastapi.responses import JSONResponse
-    from httpx import ASGITransport, AsyncClient
-
-    monkeypatch.setattr(settings, "openclaw_enabled", 0, raising=False)
-
-    sentinel = {"called": False}
-
-    async def _fake_legacy(insight_id, request, body):
-        sentinel["called"] = True
-        return JSONResponse({"lane": "legacy", "msg": body.message})
-
-    monkeypatch.setattr(insights_router, "_legacy_chat_handler", _fake_legacy)
-
-    # And verify the OpenClaw forwarder is NOT called when the flag is off.
-    async def _boom(*_a, **_kw):
-        raise AssertionError("OpenClaw forwarder must not be called when flag=0")
-        yield  # pragma: no cover - generator pose
-
-    monkeypatch.setattr(insights_router, "_openclaw_forward_chat", _boom)
-
-    insight_id = seeded_insight["insight_id"]
-    transport = ASGITransport(app=patched_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        r = await client.post(
-            f"/api/insights/insights/{insight_id}/chat",
-            json={"message": "rollback please"},
-        )
-    assert r.status_code == 200, r.text
-    assert sentinel["called"] is True, "legacy handler was not invoked despite flag=0"
-    assert r.json() == {"lane": "legacy", "msg": "rollback please"}
-
-
-# ---------------------------------------------------------------------------
-# Test 4: OpenClaw 5xx -> error event SSE, no 500 to browser
+# Test 3: OpenClaw 5xx -> error event SSE, no 500 to browser
 # ---------------------------------------------------------------------------
 
 
@@ -529,8 +475,6 @@ async def test_openclaw_5xx_emits_error_event_not_500(
     state["status"] = 503
     state["err_body"] = "gateway down"
     state["lines"] = []  # body never iterated on error path
-
-    monkeypatch.setattr(settings, "openclaw_enabled", 1, raising=False)
 
     insight_id = seeded_insight["insight_id"]
     transport = ASGITransport(app=patched_app)
@@ -570,7 +514,7 @@ async def test_openclaw_5xx_emits_error_event_not_500(
 
 
 # ---------------------------------------------------------------------------
-# Test 5: forwarder uses the configured session-prefix scheme
+# Test 4: forwarder uses the configured session-prefix scheme
 # ---------------------------------------------------------------------------
 
 
@@ -587,7 +531,6 @@ async def test_session_key_prefix_is_configurable(
     state["lines"] = _build_canned_chunks(with_tool_call=False)
     state["status"] = 200
 
-    monkeypatch.setattr(settings, "openclaw_enabled", 1, raising=False)
     # Override the prefix to verify the forwarder honours config.
     monkeypatch.setattr(settings, "openclaw_session_prefix", "custom-prefix:", raising=False)
 
