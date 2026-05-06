@@ -116,9 +116,19 @@ async def forward_chat(
     }
     if settings.openclaw_gateway_token:
         headers["Authorization"] = f"Bearer {settings.openclaw_gateway_token}"
+    # Build the message stack: chat rules persona + INSIGHT CONTEXT block
+    # + prior thread turns + this turn's user message. Without the rules
+    # the agent defaults to model-default terseness ("Which part?") and
+    # without the context it has no idea which insight the user means.
+    messages = await _build_chat_messages(
+        db=db,
+        insight_id=insight_id,
+        thread_id=thread_id,
+        user_text=user_text,
+    )
     body = {
         "model": "openclaw/default",
-        "messages": [{"role": "user", "content": user_text}],
+        "messages": messages,
         "stream": True,
     }
     url = f"{settings.openclaw_gateway_url.rstrip('/')}/v1/chat/completions"
@@ -255,6 +265,124 @@ async def forward_chat(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+async def _build_chat_messages(
+    *,
+    db: AsyncSession,
+    insight_id: uuid.UUID,
+    thread_id: uuid.UUID,
+    user_text: str,
+) -> list[dict[str, Any]]:
+    """Assemble the messages array for one chat turn.
+
+    Layout (top → bottom):
+      1. system: chat_rules.md persona
+      2. system: INSIGHT CONTEXT JSON block (headline, body,
+         supporting_row_ids, chart, citations) so the agent
+         knows what "this" / "the finding" refers to.
+      3. user/assistant pairs: last 20 prior turns from agent_message
+         so multi-turn references like "yes" / "explain again" work.
+      4. user: this turn's user_text.
+    """
+    from agents.insights.db.models import AgentChart, AgentCitation, AIInsight
+    from agents.insights.prompts import load_prompt
+
+    msgs: list[dict[str, Any]] = []
+
+    # 1. Persona / rules.
+    try:
+        rules = load_prompt("chat_rules")
+        if rules:
+            msgs.append({"role": "system", "content": rules})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openclaw.forwarder.chat_rules_load_failed: %s", exc)
+
+    # 2. INSIGHT CONTEXT block.
+    try:
+        insight_row = (
+            await db.execute(select(AIInsight).where(AIInsight.id == insight_id))
+        ).scalar_one_or_none()
+        if insight_row is not None:
+            chart_row = (
+                await db.execute(
+                    select(AgentChart).where(AgentChart.insight_id == insight_id)
+                )
+            ).scalar_one_or_none()
+            citation_rows = (
+                (
+                    await db.execute(
+                        select(AgentCitation)
+                        .where(AgentCitation.insight_id == insight_id)
+                        .order_by(AgentCitation.created_at.asc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            ctx_payload = {
+                "insight_id": str(insight_row.id),
+                "session_id": str(insight_row.session_id),
+                "idx": insight_row.idx,
+                "headline": insight_row.headline,
+                "body": insight_row.body,
+                "confidence": insight_row.confidence,
+                "materiality": insight_row.materiality,
+                "supporting_row_ids": insight_row.supporting_row_ids or [],
+                "chart": (
+                    {
+                        "spec": chart_row.spec,
+                        "row_count": (chart_row.data_source or {}).get("rows"),
+                    }
+                    if chart_row is not None
+                    else None
+                ),
+                "citations": [
+                    {"url": c.url, "title": c.title, "snippet": c.snippet}
+                    for c in citation_rows
+                ],
+            }
+            import json as _json
+
+            msgs.append(
+                {
+                    "role": "system",
+                    "content": (
+                        "INSIGHT CONTEXT (the user clicked Discuss on this insight; "
+                        "all of their pronouns refer to it):\n"
+                        + _json.dumps(ctx_payload, default=str, separators=(",", ":"))
+                    ),
+                }
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openclaw.forwarder.insight_context_load_failed: %s", exc)
+
+    # 3. Prior thread turns (last 20).
+    try:
+        history_rows = (
+            (
+                await db.execute(
+                    select(AgentMessage)
+                    .where(AgentMessage.thread_id == thread_id)
+                    .order_by(AgentMessage.seq.desc())
+                    .limit(20)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for m in reversed(history_rows):
+            if m.role not in ("user", "assistant"):
+                continue
+            if not m.content:
+                continue
+            msgs.append({"role": m.role, "content": m.content})
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("openclaw.forwarder.history_load_failed: %s", exc)
+
+    # 4. The new user message.
+    msgs.append({"role": "user", "content": user_text})
+    return msgs
 
 
 async def _next_seq(db: AsyncSession, *, thread_id: uuid.UUID) -> int:

@@ -374,7 +374,12 @@ async def test_openclaw_lane_streams_text_and_persists_messages(
     expected_session_key = f"agent:main:insight:{insight_id}"
     assert captured.headers.get("x-openclaw-session-key") == expected_session_key
     assert captured.json_body.get("stream") is True
-    assert captured.json_body.get("messages") == [{"role": "user", "content": "hi"}]
+    # Forwarder now prepends chat_rules system prompt + INSIGHT CONTEXT
+    # block + prior thread history before the user message. The user
+    # turn must always be the last message; system/history come before.
+    sent_messages = captured.json_body.get("messages") or []
+    assert sent_messages, "messages array must not be empty"
+    assert sent_messages[-1] == {"role": "user", "content": "hi"}
 
     # Persistence: 1 user + 1 assistant row, monotonic seq, correct insight_id.
     async with session_factory() as s:
