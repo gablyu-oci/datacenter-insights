@@ -111,13 +111,19 @@ export default function SessionRunner({
   }, [stream.events, onWebSearchUnavailable]);
 
   // Notify the parent the first time an insight_complete event lands per
-  // session (used by AIInsightsTab to swap snapshot -> live feed).
+  // session (used by AIInsightsTab to swap snapshot -> live feed). The
+  // agentic path persists insights via OpenClaw + MCP and does NOT
+  // emit per-insight insight_complete events on this stream — for that
+  // path session_complete is the trigger to flip. Either signal is
+  // enough to mean "stop showing the spinner; the new run is done."
   useEffect(() => {
     if (!onFirstInsightComplete) return;
     if (!sessionId) return;
     if (firstCompleteFiredRef.current === sessionId) return;
-    const hasComplete = stream.events.some((e) => e.event === "insight_complete");
-    if (hasComplete) {
+    const done = stream.events.some(
+      (e) => e.event === "insight_complete" || e.event === "session_complete",
+    );
+    if (done) {
       firstCompleteFiredRef.current = sessionId;
       onFirstInsightComplete();
     }

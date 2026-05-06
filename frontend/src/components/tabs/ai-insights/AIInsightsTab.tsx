@@ -213,7 +213,17 @@ export default function AIInsightsTab() {
 
   const onFirstInsightComplete = useCallback(() => {
     setFirstCompleteSeen(true);
-  }, []);
+    // Agentic path: insights live in Postgres + the /api/insights/latest
+    // snapshot endpoint, not in the SSE stream. Refetch so the snapshot
+    // picks up the new session, then drop the manual-run state so the
+    // "Generating insights…" banner clears and the snapshot renders the
+    // fresh insights.
+    latest.refetch();
+    setManualRunRequested(false);
+    setSessionId(null);
+    setActiveSessionId(null);
+    setFrozenSnapshot(null);
+  }, [latest]);
 
   const onStreamError = useCallback(
     (msg: string) => {
