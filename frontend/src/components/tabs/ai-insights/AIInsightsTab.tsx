@@ -265,14 +265,23 @@ export default function AIInsightsTab() {
       ? (lastSuccessful.session.max_insights ?? lastSuccessful.insights.length)
       : (latest.data?.session?.max_insights ?? snapshotInsights.length);
 
+  // True from click of Run-again through the agentic loop — flips to
+  // false once the first insight completes (and the LiveRunner takes
+  // over) OR if the request errors out. The initial-POST `creating`
+  // flag only covers the few hundred ms of session creation, NOT the
+  // ~30-60s of agent work; this covers the whole run so the user sees
+  // continuous feedback.
+  const runInProgress =
+    manualRunRequested && activeSessionId !== null && !firstCompleteSeen;
+
   // Run-again button label / styling.
-  const runAgainLabel = creating
-    ? "Running..."
+  const runAgainLabel = creating || runInProgress
+    ? "Generating insights…"
     : isColdStart
       ? "Generate insights"
       : "Run again";
-  const runAgainAriaLabel = creating
-    ? "Running"
+  const runAgainAriaLabel = creating || runInProgress
+    ? "Generating insights"
     : isColdStart
       ? "Generate insights"
       : "Run again";
@@ -385,18 +394,22 @@ export default function AIInsightsTab() {
           <button
             type="button"
             onClick={() => startSession()}
-            disabled={creating}
+            disabled={creating || runInProgress}
             aria-label={runAgainAriaLabel}
-            aria-busy={creating ? "true" : undefined}
-            style={buttonStyle}
+            aria-busy={creating || runInProgress ? "true" : undefined}
+            style={{
+              ...buttonStyle,
+              opacity: creating || runInProgress ? 0.7 : (buttonStyle.opacity ?? 1),
+              cursor: creating || runInProgress ? "not-allowed" : "pointer",
+            }}
           >
             {!isColdStart ? (
               <RefreshCw
                 size={14}
                 aria-hidden="true"
-                data-insight-spin={creating ? "true" : undefined}
+                data-insight-spin={creating || runInProgress ? "true" : undefined}
                 style={
-                  creating
+                  creating || runInProgress
                     ? { animation: "insightIconSpin 1.5s linear infinite" }
                     : undefined
                 }
@@ -591,13 +604,45 @@ export default function AIInsightsTab() {
               onStreamError={onStreamError}
             />
           ) : showSnapshot ? (
-            <SnapshotInsightFeed
-              insights={snapshotInsights}
-              total={snapshotTotal}
-              session={isFailedLatest && lastSuccessful
-                ? lastSuccessful.session
-                : (latest.data?.session ?? null)}
-            />
+            <>
+              {runInProgress ? (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "10px 14px",
+                    marginBottom: s.s4,
+                    background: c.bg.surfaceAlt,
+                    border: `1px solid ${c.border.default}`,
+                    borderLeft: `3px solid ${c.brand.primary}`,
+                    borderRadius: r.md,
+                    color: c.text.body,
+                    fontSize: t.body.fontSize,
+                  }}
+                >
+                  <RefreshCw
+                    size={14}
+                    aria-hidden="true"
+                    style={{ animation: "insightIconSpin 1.5s linear infinite" }}
+                  />
+                  <span>
+                    Generating new insights — agent is querying the warehouse,
+                    drilling into supply/demand-gap patterns, and grounding
+                    findings via web search. This can take 30-60 seconds.
+                  </span>
+                </div>
+              ) : null}
+              <SnapshotInsightFeed
+                insights={snapshotInsights}
+                total={snapshotTotal}
+                session={isFailedLatest && lastSuccessful
+                  ? lastSuccessful.session
+                  : (latest.data?.session ?? null)}
+              />
+            </>
           ) : (
             // Manual run is in flight but we have no snapshot to hold (rare;
             // only reached when /latest returned an empty insights array).
