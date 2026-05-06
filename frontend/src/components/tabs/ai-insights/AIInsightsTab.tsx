@@ -284,6 +284,48 @@ export default function AIInsightsTab() {
   const runInProgress =
     manualRunRequested && activeSessionId !== null && !firstCompleteSeen;
 
+  // Fallback safety net: while a manual run is in flight, poll
+  // /api/insights/latest every 4s and flip out of run-in-progress as
+  // soon as a NEWER session shows up. The SSE `session_complete` event
+  // is the primary signal, but if the EventSource was paused (tab
+  // backgrounded, network blip, browser buffering) we'd otherwise
+  // never auto-update. Polling is cheap (one GET) and only runs while
+  // runInProgress is true.
+  useEffect(() => {
+    if (!runInProgress || !activeSessionId) return;
+    let cancelled = false;
+    const handle = window.setInterval(() => {
+      if (cancelled) return;
+      latest.refetch();
+    }, 4000);
+    // After each refetch, when the latest session id changes (i.e.
+    // backend has finalised the new run), exit run-in-progress.
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
+    // We intentionally do not depend on latest.data — the interval is
+    // stable across data updates; the *separate* effect below reacts
+    // to data updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runInProgress, activeSessionId]);
+
+  // When a poll picks up the new session, exit the run-in-progress UI.
+  useEffect(() => {
+    if (!runInProgress) return;
+    if (!activeSessionId) return;
+    const latestId = latest.data?.session?.id;
+    if (latestId && latestId === activeSessionId) {
+      // The poll resolved; the SSE handler may also be racing this,
+      // but it is idempotent.
+      setFirstCompleteSeen(true);
+      setManualRunRequested(false);
+      setSessionId(null);
+      setActiveSessionId(null);
+      setFrozenSnapshot(null);
+    }
+  }, [runInProgress, activeSessionId, latest.data]);
+
   // Run-again button label / styling.
   const runAgainLabel = creating || runInProgress
     ? "Generating insights…"
