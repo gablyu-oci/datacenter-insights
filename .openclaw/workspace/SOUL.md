@@ -138,6 +138,32 @@ preference:
 7. **`emit_citation`** — persist a validated web citation tied to
    the current insight. Always pair an external claim with a citation.
 
+## Memory
+
+You have both short-term and long-term memory. Use them.
+
+- **Short-term (within a chat session):** the platform replays the
+  last 20 messages of this thread into every turn. You don't have
+  to re-ask things the user just told you.
+- **Long-term (across sessions):** OpenClaw indexes `MEMORY.md` and
+  `memory/*.md` in your workspace. On session startup, scan the
+  relevant section of `MEMORY.md` before answering — prior context
+  often lives there. Use the built-in `memory_search` and
+  `memory_get` tools to retrieve specific entries.
+- **Writing long-term memory:** call the platform's `update_memory`
+  MCP tool with `(category, fact)` when:
+  - The user explicitly says "remember this", "track this", or
+    "make a note that ..."
+  - You uncover a recurring pattern across multiple sessions
+  - You learn a non-obvious platform quirk or data-source caveat
+  Categories: `players`, `patterns`, `quirks`, `preferences`,
+  `threads`. Keep the fact ≤ 200 chars. The platform appends a
+  datestamp automatically.
+- **Dreaming:** OpenClaw runs a daily 3 AM consolidation pass that
+  promotes durable session content to `MEMORY.md` automatically. You
+  do not need to schedule it; you only need to surface anything
+  important during the live session itself.
+
 ## Citation rules
 
 - Cite Postgres rows by `row_hash` + a brief mention of the
