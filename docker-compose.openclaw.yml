@@ -103,6 +103,74 @@ services:
     # this satisfies user R1 ("starts on host boot").
     restart: unless-stopped
 
+  # ===========================================================================
+  # Ollama — local embedding server for OpenClaw memory search
+  # ===========================================================================
+  # Provides on-box embeddings (nomic-embed-text) for OpenClaw's memory-core
+  # plugin. Reached by openclaw-gateway over the compose-default bridge
+  # network at http://ollama:11434 — no host.docker.internal hop needed.
+  # All embedding inference is local; the only network call is the one-time
+  # model pull on first `up` (handled by the ollama-pull sidecar below).
+  #
+  # Model choice: nomic-embed-text (768d, 8192-token context, ~270 MB).
+  # Replaces mxbai-embed-large (1024d, 512-token context, ~670 MB) which was
+  # rejecting longer session-transcript chunks with HTTP 400 "input length
+  # exceeds the context length". Nomic's wider context fits our 512-token
+  # chunk size with headroom, and its smaller param count is ~2-3x faster
+  # on CPU.
+  # ---------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    volumes:
+      - ollama-models:/root/.ollama
+    # Port intentionally NOT published to the host; openclaw-gateway reaches
+    # it over the internal docker bridge. Uncomment to expose for debugging.
+    # ports:
+    #   - "11434:11434"
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ===========================================================================
+  # ollama-pull — one-shot sidecar that pulls the embedding model on first up
+  # ===========================================================================
+  # Runs once after `ollama` is healthy, downloads nomic-embed-text into the
+  # shared ollama-models volume, then exits. Subsequent `up` calls re-run it
+  # but the pull is a no-op (~1s) because the model is already cached.
+  #
+  # We use the HTTP API (`POST /api/pull`) via curl rather than the Ollama
+  # CLI: as of v0.23.x, `ollama pull` insists on rendering a TUI and exits
+  # with an error when no TTY is attached (which is the case for compose
+  # one-shots). The HTTP API has no such requirement and is the same
+  # endpoint the CLI uses under the hood.
+  #
+  # `restart: "no"` keeps the sidecar from looping after a clean exit.
+  # ---------------------------------------------------------------------------
+  ollama-pull:
+    image: curlimages/curl:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    entrypoint:
+      - sh
+      - -c
+      - |
+        curl -fsS -X POST http://ollama:11434/api/pull \
+          -H 'Content-Type: application/json' \
+          -d '{"model":"nomic-embed-text"}' >/dev/null \
+        && echo 'nomic-embed-text ready'
+    restart: "no"
+
 # Default network (bridge). Explicit declaration omitted; Compose creates one
 # named after the project. The user spec mandates bridge (not host) networking
 # so plugins can reach the host via host.docker.internal.
+
+volumes:
+  # Persists pulled Ollama models across container/host restarts.
+  # First-boot download is ~270 MB for nomic-embed-text.
+  ollama-models:
