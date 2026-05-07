@@ -2,7 +2,7 @@
 **Owner:** Strategic Insights team (OCI) · **Stakeholder:** the user
 **Status:** Draft v0.2 — **Track B (V2) implementation landed 2026-05-04** · **Date:** 2026-05-04
 **Cross-refs:** [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./UX.md`](./UX.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./TASKS.md`](./TASKS.md)
-**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
+**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../PRD.md)
 
 > **Track B / V2 status (2026-05-04):** ✅ shipped — web search (Brave-primary; Tavily *not* used as fallback in V2 per kickoff override of RESEARCH §1.3), `emit_citation` with substring + GW/MW/%/$ numeric gate, agree/disagree judge (gpt-5.4-mini, low effort), per-insight chat dock + SSE endpoints, 3 V2 skills (cohort-analysis, methodology-explainer, peer-review-template), tool-call cap raise (insight-discovery 12×4 → 20×4 = 80; chat stays 12×4 = 48), citation hover-card UX, low-external-support pill, V2 feature flag, `web_search_unavailable` banner. Skill registry now **15** (12 V1 + 3 V2). Alembic 011 dry-run clean. 27/27 V2 pytest pass. See [TASKS.md §T8](./TASKS.md#t8-v2-backlog-high-level) for the per-item ship table.
 
@@ -18,7 +18,7 @@ Add a 10th tab — **AI Insights** — where an LLM agent on OCI Llama Stack aut
 
 ### 1.1 Why now
 
-The platform today (per [parent PRD §2](../../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** the user currently has to:
+The platform today (per [parent PRD §2](../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** the user currently has to:
 
 1. Open each tab in turn,
 2. Eyeball the chart for anomalies,
@@ -71,12 +71,12 @@ V3 adds:
 | N1 | **No write access to the database** | Agent is strictly read-only. Mutations stay in the ingestion pipeline. |
 | N2 | **No model fine-tuning** | OCI Llama Stack hosts the models; we use them as-is. Prompt-engineering only. |
 | N3 | **No real-time / streaming insight regeneration** | Sessions are batch. Streaming protocol within a session (token-by-token UI) is acceptable; continuous re-eval is not. |
-| N4 | **Does not replace any existing tab** | Strictly additive; existing Power, Triangulation, Companies, Permits etc. tabs are unchanged. Per [parent PRD §S5](../../../PRD.md), the rule is additive-only. |
-| N5 | **No automated trading / external alerting** | Per [parent PRD §10](../../../PRD.md). |
+| N4 | **Does not replace any existing tab** | Strictly additive; existing Power, Triangulation, Companies, Permits etc. tabs are unchanged. Per [parent PRD §S5](../../PRD.md), the rule is additive-only. |
+| N5 | **No automated trading / external alerting** | Per [parent PRD §10](../../PRD.md). |
 | N6 | **No cross-customer learning** | Each session is stateless aside from per-session insight + thread persistence. |
 | N7 | **Not a replacement for `weekly_brief`** | Weekly brief is time-bounded narrative for execs; AI Insights is open-domain analytical surface. Both ship. |
 | N8 | **No PDF / email export in V1** | Deferred to V3 if the user asks. |
-| N9 | **No multi-user collaboration features (comments, sharing, ACLs)** | Per [parent PRD §8 Decision 5](../../../PRD.md): no auth in v1, internal-only. |
+| N9 | **No multi-user collaboration features (comments, sharing, ACLs)** | Per [parent PRD §8 Decision 5](../../PRD.md): no auth in v1, internal-only. |
 
 ---
 
@@ -292,10 +292,10 @@ The brief lists 33 skills under `~/.claude/skills/`. The brief explicitly highli
 | 21 | `dashboard-design` | **DROP** | Narrative | — | Out of scope: we're emitting individual cards, not dashboards. The 9 existing tabs are the dashboards. |
 | 22 | `kpi-tree` | **DROP** | Narrative | — | Useful for org-internal metrics; we don't have an internal-tree concept here. |
 | 23 | `data-cleaning` | **DROP** | EDA | — | Cleaning happens in the ingestion pipeline. Agent operates on cleaned data. |
-| 24 | `missing-data-imputation` | **DROP** | EDA | — | Per [parent PRD §S5](../../../PRD.md), the rule is honest coverage badges, not imputation. Imputing missing GW would silently fabricate signal. |
+| 24 | `missing-data-imputation` | **DROP** | EDA | — | Per [parent PRD §S5](../../PRD.md), the rule is honest coverage badges, not imputation. Imputing missing GW would silently fabricate signal. |
 | 25 | `outlier-detection` | **DROP** | EDA | — | Already covered by `anomaly_detector` agent (live in production). Agent reads anomaly outputs via `call_api`. |
 | 26 | `geospatial-analysis` | **DROP (V1) → reconsider V3** | Hypothesis | V3-maybe | Compelling for state/county clustering, but Recharts can't render maps; the existing Power Map tab uses Leaflet. V3 may add a map-emit path; not in V1/V2 scope. |
-| 27 | `forecasting` | **DROP** | Hypothesis | — | Per [parent PRD §2](../../../PRD.md), predictive forecasting is an explicit non-goal. |
+| 27 | `forecasting` | **DROP** | Hypothesis | — | Per [parent PRD §2](../../PRD.md), predictive forecasting is an explicit non-goal. |
 | 28 | `churn-analysis` | **DROP** | Hypothesis | — | No churn concept in competitive intel. |
 | 29 | `pricing-analysis` | **DROP** | Hypothesis | — | We have ASP assumptions in L2 model, but no pricing-curve data to analyze. |
 | 30 | `survey-analysis` | **DROP** | Hypothesis | — | No surveys in this product. |
@@ -401,7 +401,7 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 | R4 | **Skill conversion fidelity** — Claude Code skills behave differently on Llama Stack models. | High | Medium | Per-skill golden-output regression suite ([`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md)). Convert skills one at a time; ship V1 with the 6–8 highest-confidence ones first. |
 | R5 | **Latency** — 8-min budget breached on complex sessions. | Medium | Medium | (a) Parallelize independent tool calls. (b) Pre-warm bootstrap data via cache. (c) Stream insights as they finish (agent emits one card → frontend renders it → agent continues). Streaming protocol in [`./ARCHITECTURE.md`](./ARCHITECTURE.md). |
 | R6 | **DB query safety** — agent submits expensive or write-shaped SQL. | Low | Critical | (a) Read-only DB role. (b) SQL parser whitelist (SELECT only, no CTEs that touch `pg_*`, no `pg_sleep`). (c) Statement timeout 5 s. (d) Row cap 10 K. |
-| R7 | **Stale ingestion produces stale insights** — agent reports on data ingested 30 days ago. | Medium | Medium | `data-quality-audit` skill surfaces last-run-age per source; insights flagged `low_confidence` if any underlying source is older than its expected freshness band ([parent PRD §7](../../../PRD.md)). |
+| R7 | **Stale ingestion produces stale insights** — agent reports on data ingested 30 days ago. | Medium | Medium | `data-quality-audit` skill surfaces last-run-age per source; insights flagged `low_confidence` if any underlying source is older than its expected freshness band ([parent PRD §7](../../PRD.md)). |
 | R8 | **User over-trusts the agent** — treats output as ground truth. | Medium | High | Card-level "AI-generated" badge, prominent provenance footer, every chart click-throughs to source. the user pre-briefed at V1 demo. |
 | R9 | **Llama Stack outage** | Low | High | Graceful failure: insight tab shows last successful session with its `generated_at` timestamp. No silent fallbacks to mock data — banner shows "AI service unavailable." |
 | R10 | **Prompt injection via ingested data** (an EDGAR filing contains "ignore previous instructions"). | Low | Medium | Tool outputs are always serialized as JSON, not concatenated into the prompt as raw text. Skill prompts treat data fields as values, not instructions. Spot-audit V1. |
@@ -433,5 +433,5 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 - [`./UX.md`](./UX.md) — Card layout, provenance footer placement, chat panel docking, "subscribe" affordance, AI-generated badge.
 - [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) — Per-skill conversion plan from Claude Code skill format → Llama-Stack-native skill module; golden-output regression harness; reconciliation against actual `~/.claude/skills/` catalog.
 - [`./TASKS.md`](./TASKS.md) — V1 / V2 / V3 task breakdown; estimates; owner assignments.
-- [`/strategic-insights-tool/PRD.md`](../../../PRD.md) — Parent product PRD (existing 9 tabs, parent goals).
+- [`/strategic-insights-tool/PRD.md`](../../PRD.md) — Parent product PRD (existing 9 tabs, parent goals).
 - [`/strategic-insights-tool/docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md) — Live system inventory used to size data scope.

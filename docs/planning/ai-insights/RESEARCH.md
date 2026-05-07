@@ -825,7 +825,7 @@ V1 sequential; budget 70–95 s p50. V2 parallel sub-agents; budget 30–50 s p5
 
 **Local files referenced**
 - `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/docs/planning/ai-insights/PRD.md`
-- `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/PRD.md`
+- `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/docs/PRD.md`
 - `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/backend/llm/client.py`
 - `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/frontend/src/components/ChatPanel.tsx`
 - `/home/ubuntu/oci-ai-incubations/strategic-insights-tool/docs/llama_stack/openapi.json`

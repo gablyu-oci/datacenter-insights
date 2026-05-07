@@ -4,7 +4,7 @@ Eight living documents drive the project. Read in this order; each later doc ass
 
 | # | Document | Purpose |
 |---|---|---|
-| 1 | [`../PRD.md`](../PRD.md) | Product spec — goals, users, pillars, phased scope, success metrics. |
+| 1 | [`PRD.md`](PRD.md) | Product spec — goals, users, pillars, phased scope, success metrics. |
 | 2 | [`planning/00-DECISIONS-AND-CONSTRAINTS.md`](planning/00-DECISIONS-AND-CONSTRAINTS.md) | Locked decisions, locked tech stack, dataset inventory, EDGAR endpoints, UX hard rule, **role model** (§5.1), **Phase-1 MVP source set** (§5.2). Single source of truth for all constraints. |
 | 3 | [`OPEN-TENSIONS.md`](OPEN-TENSIONS.md) | **Read alongside #2.** Trade-offs deliberately deferred (APScheduler vs Dagster, VM filesystem vs Object Storage, rapidfuzz vs multi-signal LLC resolver, Sentinel-2 vs Maxar, Aterio one-time vs licensed feed, transcript-grade GPU inference). Each lists its trigger to revisit. |
 | 4 | [`research/DATA_SOURCE_LANDSCAPE_REPORT.md`](research/DATA_SOURCE_LANDSCAPE_REPORT.md) | Vendor / data-source landscape with cost, cadence, feasibility, ranked recommendations per pillar. |

@@ -2,7 +2,7 @@
 **Owner:** Product Designer · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./TASKS.md`](./TASKS.md)
-**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
+**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../PRD.md)
 
 > Planning document. ASCII wireframes, token tables, behaviour specs. No JSX, no CSS files, no real Figma frames. Exit criterion: a developer can implement V1 of `frontend/src/components/insights/` without inventing visual decisions.
 
@@ -1028,7 +1028,7 @@ This is why the provenance footer is collapsed by default (D6 resolution) and wh
 - [`./ARCHITECTURE.md`](./ARCHITECTURE.md) — Component layout under `frontend/src/components/insights/` (A12), SSE events the UI consumes (A5), error states (A13), designer hooks D1–D10 (A15.1).
 - [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) — Skills inform a "skills used" badge row in the provenance footer (U3.5).
 - [`./TASKS.md`](./TASKS.md) — to be authored; will pick up the U14 open questions and the implementation tickets implied by U2–U11.
-- [`/strategic-insights-tool/PRD.md`](../../../PRD.md) — the user's brand, OCI palette, existing tab visual language (PowerTab token map).
+- [`/strategic-insights-tool/PRD.md`](../../PRD.md) — the user's brand, OCI palette, existing tab visual language (PowerTab token map).
 - [`/strategic-insights-tool/frontend/src/components/ChatPanel.tsx`](../../../frontend/src/components/ChatPanel.tsx) — Visual conventions inherited (markdown components, chart renderer, tooltip styles, citation row).
 - [`/strategic-insights-tool/frontend/src/components/tabs/PowerTab.tsx`](../../../frontend/src/components/tabs/PowerTab.tsx) — Card chrome, brand palette, source badge, metric tile reference implementation.
 

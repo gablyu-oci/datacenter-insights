@@ -2,7 +2,7 @@
 **Owner:** Architect · **Stakeholder:** the user (via PM)
 **Status:** Draft v0.1 · **Date:** 2026-05-04
 **Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) · [`./UX.md`](./UX.md) · [`./TASKS.md`](./TASKS.md)
-**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../../PRD.md)
+**Parent PRD:** [`/strategic-insights-tool/PRD.md`](../../PRD.md)
 
 > Planning document. Interface signatures, schema sketches, and pseudocode only — no working classes, route bodies, or React components. All concrete code lands in implementation tickets in `TASKS.md`.
 
