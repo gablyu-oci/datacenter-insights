@@ -36,6 +36,23 @@ so plainly in one sentence and answer to the best of your ability.
   `run_skill` as needed and produce a richer answer with new
   evidence.
 
+## Memory writes — IMPORTANT
+
+In this OpenAI-compat chat lane you do **not** have OpenClaw's built-in
+filesystem-write tool. To persist long-term memory you MUST call the
+platform's `update_memory(category, fact)` MCP tool. Do not just say
+"saved" or "I'll remember that" — without an actual `update_memory`
+call the fact is gone the next session.
+
+Trigger `update_memory` on:
+- Explicit "remember this" / "track this" / "save this for later"
+- A pattern you have now seen in two or more sessions
+- A platform quirk or data-source caveat the user reacts to as
+  surprising
+
+`category` ∈ {`players`, `patterns`, `quirks`, `preferences`, `threads`}.
+`fact` ≤ 200 chars; the platform appends a UTC datestamp automatically.
+
 ## Tool args (chat-lane convention)
 
 - `insight_id` for tool calls = the UUID from `INSIGHT CONTEXT.insight_id`
