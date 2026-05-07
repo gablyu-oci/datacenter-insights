@@ -18,7 +18,7 @@ Add a 10th tab — **AI Insights** — where an LLM agent on OCI Llama Stack aut
 
 ### 1.1 Why now
 
-The platform today (per [parent PRD §2](../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** the user currently has to:
+The platform today (per [parent PRD §2](../../PRD.md) and [`docs/planning/DEMO_BRIEF_2026-05-01.md`](../../planning/DEMO_BRIEF_2026-05-01.md)) ships **9 tabs and 22 routers** of competitive-intel data: 6,973 sites, 1,247 companies, 4,150 generator permits, 345 building permits, 88 EDGAR-extracted rows, 23 curated power deals, plus a live L1/L2 triangulation model. **The data is there. The interpretation is not.** the user currently has to:
 
 1. Open each tab in turn,
 2. Eyeball the chart for anomalies,
@@ -434,4 +434,4 @@ Brief target: 14–17 keeps. **Final cut: 15 keeps**, lands in the middle of the
 - [`./SKILL_CONVERSION.md`](./SKILL_CONVERSION.md) — Per-skill conversion plan from Claude Code skill format → Llama-Stack-native skill module; golden-output regression harness; reconciliation against actual `~/.claude/skills/` catalog.
 - [`./TASKS.md`](./TASKS.md) — V1 / V2 / V3 task breakdown; estimates; owner assignments.
 - [`/strategic-insights-tool/PRD.md`](../../PRD.md) — Parent product PRD (existing 9 tabs, parent goals).
-- [`/strategic-insights-tool/docs/planning/DEMO_BRIEF_2026-05-01.md`](../DEMO_BRIEF_2026-05-01.md) — Live system inventory used to size data scope.
+- [`/strategic-insights-tool/docs/planning/DEMO_BRIEF_2026-05-01.md`](../../planning/DEMO_BRIEF_2026-05-01.md) — Live system inventory used to size data scope.

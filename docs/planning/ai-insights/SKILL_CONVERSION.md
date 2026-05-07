@@ -1,7 +1,15 @@
 # SKILL_CONVERSION — Claude-Code Skills → Llama-Stack Tool Functions
 **Owner:** Skill engineer · **Stakeholder:** the user (via PM)
-**Status:** Draft v0.1 · **Date:** 2026-05-04
-**Cross-refs:** [`./PRD.md`](./PRD.md) · [`./RESEARCH.md`](./RESEARCH.md) · [`./ARCHITECTURE.md`](./ARCHITECTURE.md) · [`./TASKS.md`](./TASKS.md)
+**Status:** Reference (kept post-2026-05-07 archive of the rest of the V1 plan) · **Date:** 2026-05-04
+
+> The other V1 ai-insights planning docs (PRD / RESEARCH / ARCHITECTURE /
+> UX / TASKS / V1_KICKOFF / RESEARCH_ADDENDUM / DESIGN_TOKENS_AUDIT) were
+> superseded by `docs/plans/ai-insights-automation/` and archived under
+> `docs/_archive/ai-insights-v1/`. This skill-porting plan stayed live
+> because `backend/agents/insights/specs/` still cites it as the
+> canonical mapping from global Claude skills to backend tool functions.
+
+**Cross-refs (archived):** [`../../_archive/ai-insights-v1/PRD.md`](../../_archive/ai-insights-v1/PRD.md) · [`../../_archive/ai-insights-v1/RESEARCH.md`](../../_archive/ai-insights-v1/RESEARCH.md) · [`../../_archive/ai-insights-v1/ARCHITECTURE.md`](../../_archive/ai-insights-v1/ARCHITECTURE.md) · [`../../_archive/ai-insights-v1/TASKS.md`](../../_archive/ai-insights-v1/TASKS.md)
 
 > Planning document. Schemas, signatures, and pseudocode only. No implementation code lands here.
 
