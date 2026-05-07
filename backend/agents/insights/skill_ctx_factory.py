@@ -19,7 +19,6 @@ from __future__ import annotations
 import uuid
 from typing import Any, Optional
 
-from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 
@@ -83,7 +82,11 @@ async def build_skill_ctx(
     elif insight_row is not None:
         session_id_str = str(insight_row.session_id)
     else:
-        raise HTTPException(status_code=404, detail="insight_not_found")
+        # QA lane: freeform Q&A has neither an insight nor an AISession.
+        # session_id is only used downstream for audit/correlation tags
+        # (e.g. web_search log rows), never dereferenced to a DB row, so
+        # a synthesised UUID is safe and lets read-only tools run.
+        session_id_str = str(uuid.uuid4())
 
     return SkillContext(
         session_id=session_id_str,
