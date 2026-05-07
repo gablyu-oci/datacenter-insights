@@ -1,9 +1,12 @@
 # Architecture Design -- Datacenter & Power Intelligence Platform
 
 **Version:** 1.0
-**Date:** 2026-04-28
+**Date:** 2026-04-28 (status updated 2026-05-07)
 **Author:** System Architect
-**Status:** Proposed
+**Status:** Shipped — most of the migration this doc proposed has landed.
+  The schema-design and role-edge sections (§5–§9) are still the canonical
+  reference; the pre-migration "Current State" snapshot is preserved below
+  for historical context only.
 **Scope:** Phase 1 target architecture with Phase 2 extension points
 
 ---
@@ -12,9 +15,22 @@
 
 The platform ingests public data about hyperscaler power contracts, GPU supply chains, county permits, and satellite imagery, normalizes it against a canonical entity hierarchy (company > site > county > state > country), stores it with full lineage metadata, and serves it through a structured API to a React dashboard. Every metric displayed in the UI must link to its primary source URL.
 
-### Current State Summary
+### As-built (2026-05-07)
 
-| Concern | Current | Problem |
+The reorganization the rest of this document proposes was executed during
+Phase 1, Phase 1.5, and Phase 2. Today:
+
+| Concern | As shipped |
+|---|---|
+| Data layer | Postgres (alembic head `013_*`) — sites / events / energy_projects / companies / aliases / `site_company_associations` role edges + AI Insights tables. `mock_data.py` retained behind `MOCK_DATA=1` for fixtures only. |
+| API | `backend/main.py` is a thin app factory; 22 modular APIRouters under `backend/routers/` are mounted via `app.include_router(...)`. No inline `@app.get` handlers. The MCP server is mounted at `/mcp`. |
+| Ingestion | 20 async adapters under `backend/ingestion/` (edgar, epa_echo, aterio, press_releases, pdf_parser, ISO/, permits_state/, permits_county/). APScheduler in `backend/pipeline/runner.py` runs daily / weekly / nightly jobs. |
+| Frontend | 10 tabs (added: **AI Insights**); `useApi` errors are now rendered via `ErrorPanel` everywhere; coverage badges and citation footers are standard. |
+| Ops | `backend/pyproject.toml` + `uv sync`; CORS allow-list via `ALLOWED_ORIGINS` env; secrets in `.env` (gitignored); reverse-proxy mounted via `start.sh`. |
+
+### Historical "Current State" (pre-migration, 2026-04-28)
+
+| Concern | Pre-migration | Problem it identified |
 |---|---|---|
 | Data layer | `mock_data.py` (7 functions, `random.*`) + `curated_deals.py` (22 verified deals) | 78% mock; values regenerate per request; no persistence |
 | API | Single `main.py`, 12 sync `@app.get` handlers | No modularity; sync handlers block the event loop |
