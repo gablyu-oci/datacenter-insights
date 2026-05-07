@@ -2,22 +2,23 @@
 
 Authoritative architecture: `docs/plans/ai-insights-automation/14-unified-agent-architecture.md` (esp. §11 test boundaries).
 
-This runbook validates that Phase 2 (the agentic-synthesis lane via OpenClaw + MCP write-tools) works end-to-end against a live OpenClaw gateway and the in-process MCP mount. Run it after every Phase 2 deploy and before flipping `SYNTHESIS_MODE` from `legacy` to `agentic` in any new environment.
+This runbook validates that the agentic-synthesis lane (OpenClaw + MCP write-tools) works end-to-end against a live OpenClaw gateway and the in-process MCP mount. Run it after every deploy that touches the synthesis path or the gateway.
 
 > Do NOT run this as part of automated CI. It depends on a live OpenClaw container plus model credentials.
+
+> **2026-05-07:** PRD-15 cleanup removed the `OPENCLAW_ENABLED` rollback flag — OpenClaw is now the only synthesis path. `SYNTHESIS_MODE` still exists with a default of `agentic` and a fallback `legacy` value documented in §6 below.
 
 ---
 
 ## 1. Preconditions
 
-Set the environment so the orchestrator picks the agentic lane and OpenClaw is reachable:
+Set the environment for the gateway + MCP bearer tokens. `OPENCLAW_GATEWAY_URL` falls back to `http://localhost:7474` if unset; `SYNTHESIS_MODE` defaults to `agentic`, so it only needs to be exported when explicitly forcing the legacy fallback for rollback testing.
 
 ```bash
-export OPENCLAW_ENABLED=1
-export SYNTHESIS_MODE=agentic
-export OPENCLAW_GATEWAY_URL="http://localhost:7474"
+export OPENCLAW_GATEWAY_URL="http://localhost:7474"     # optional; default
 export OPENCLAW_GATEWAY_TOKEN="<gateway bearer>"
 export AGENT_TOOLS_BEARER="<MCP bearer>"
+# export SYNTHESIS_MODE=agentic                          # default; only set to override
 ```
 
 Verify the two services are up:
