@@ -1,23 +1,89 @@
 # AI Insights Automation & Real-Data Synthesis — Plan Index
 
-**Status:** Planning complete, awaiting user review.
-**Date:** 2026-05-04
+**Status (2026-05-07):** Plans 01–15 are all shipped. The Phase 4 follow-ups (`08-prd-phase4-followups`, `09-arch-phase4-followups`), the Phase 2-3 handoff (`05-phase2-3-handoff`), the Phase-4 QA plan (`07-qa-test-plan-phase4`), and the rejected ADR-010 (`10-openclaw-integration-evaluation`) have been moved to [`../../_archive/ai-insights-automation/`](../../_archive/ai-insights-automation/).
+**Original date:** 2026-05-04
 **Owner (product):** the user (primary stakeholder)
 **Scope:** Make the AI Insights tab generate real, data-grounded insights from Postgres on a daily auto-schedule, instead of canned text behind a manual button.
 
 ---
 
-## What this folder contains
+## What this folder contains (post-cleanup)
 
-| # | Doc | Author | Purpose |
-|---|---|---|---|
-| 00 | `00-index.md` (this file) | orchestrator | One-page synthesis + reading order |
-| 01 | `01-prd.md` | pm | Goals, FRs (FR1–FR7), NFRs, acceptance criteria, open questions |
-| 02 | `02-research.md` | researcher | 4-question tech-stack investigation; final recommendations table in §G |
-| 03 | `03-architecture.md` | architect | Component diagram, hypothesizer module, schema migrations, scheduler wiring, /api/insights/latest, phased rollout, decision log |
-| 04 | `04-ux.md` | designer | IA, 8 visual states, InsightCard variants, copy deck, a11y, ASCII wireframes |
+### Foundational plan (00–04)
 
-**Reading order for a new engineer:** 01 → 03 → 02 (deep-dive) → 04 (frontend handoff). Each doc is self-contained.
+| # | Doc | Purpose |
+|---|---|---|
+| 00 | `00-index.md` (this file) | One-page synthesis + reading order |
+| 01 | `01-prd.md` | Goals, FRs (FR1–FR7), NFRs, acceptance criteria |
+| 02 | `02-research.md` | 4-question tech-stack investigation; recommendations table in §G |
+| 03 | `03-architecture.md` | Component diagram, hypothesizer module, schema migrations, scheduler wiring, `/api/insights/latest`, decision log |
+| 04 | `04-ux.md` | IA, 8 visual states, InsightCard variants, copy deck, a11y |
+| 04a | `04a-ux-delta-phase4-implementation.md` | UX delta: Run-again button, Auto-generated badge |
+
+### Phase 4 + supply-demand-gap (05–06)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 05 | `05-prd-addendum-phase4-and-supply-demand.md` | PRD addendum scoping Phase 4 frontend rework + supply/demand-gap pattern |
+| 06 | `06-supply-demand-gap-adr.md` | ADR-006 — SQL specs for the four new FactPack sections |
+
+### Future / deferred (08)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 08 | `08-v1.1-agentic-plan.md` | V1.1 agentic ToolLoopDriver path. **Specify, do not implement.** |
+
+### OpenClaw migration (11–12)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 11 | `11-openclaw-deployment.md` | Docker Compose + provisioning runbook |
+| 11a | `11a-openclaw-migration-prd.md` | Migration PRD (R1–R9) |
+| 11b | `11b-openclaw-migration-architecture.md` | Architecture (§3–§4 superseded by ADR-13) |
+| 11c | `11c-openclaw-migration-addendum.md` | §G abandoned per ADR-13; §A–§F, §H still authoritative |
+| 12 | `12-openclaw-test-plan.md` | Manual smoke runbook for the gateway |
+
+### MCP migration (13)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 13 | `13-mcp-migration.md` (ADR-13) | Accepted decision record for MCP tool routing |
+| 13 | `13-mcp-migration-prd.md` | Sub-PRD of 11a |
+| 13 | `13-mcp-migration-architecture.md` | Implementation contract for the MCP server |
+| 13 | `13-mcp-migration-research.md` | Research on the official `mcp` Python SDK |
+| 13 | `13-mcp-migration-test-evidence.md` | 2026-05-06 smoke evidence |
+
+### Unified agent (14)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 14 | `14-unified-agent-prd.md` | OpenClaw Phases 2–5 unification |
+| 14 | `14-unified-agent-research.md` | Researcher dossier |
+| 14 | `14-unified-agent-architecture.md` | Architecture spec for unified agent |
+| 14 | `14-unified-agent-smoke.md` | Phase-2 smoke runbook (PRD-15 cleanup applied) |
+
+### Cleanup (15)
+
+| # | Doc | Purpose |
+|---|---|---|
+| 15 | `15-agent-unification-cleanup-prd.md` | PRD-15 (drop `openclaw_enabled`, externalize prompts) |
+| 15 | `15-agent-unification-cleanup-architecture.md` | As-shipped architecture |
+| 15 | `15-qa-translator-research.md` | Translator research |
+| 15 | `15-extraction-vs-agent-policy.md` | **Live** code-placement policy — read this before adding new LLM calls |
+
+### Archived (executed and shipped)
+
+Moved to [`../../_archive/ai-insights-automation/`](../../_archive/ai-insights-automation/) on 2026-05-07:
+
+| # | Doc | Why archived |
+|---|---|---|
+| 05 | `05-phase2-3-handoff.md` | Schema migrations + insights_daily cron, shipped |
+| 07 | `07-qa-test-plan-phase4.md` | Phase 4 + supply-demand-gap test plan, executed |
+| 08 | `08-prd-phase4-followups.md` | Failed-latest UI + Vitest setup + tsc-clean, shipped |
+| 09 | `09-arch-phase4-followups.md` | AC-A7 ADR closing, shipped |
+| 10 | `10-openclaw-integration-evaluation.md` | ADR-010 SKIP decision, reversed by 11a |
+
+**Reading order for a new engineer:** 01 → 03 → 02 (deep-dive) → 04 (frontend handoff). For the OpenClaw + MCP layer that ships today, follow 11a → 11b → 13 (ADR-13) → 14 → 15.
 
 ---
 
