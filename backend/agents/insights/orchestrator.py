@@ -119,8 +119,17 @@ def _short_chart_id() -> str:
 
 
 _VALID_CHART_TYPES = {
-    "bar", "stacked_bar", "grouped_bar", "line", "area",
-    "pie", "scatter", "kpi_tile", "sparkline",
+    "bar", "stacked_bar", "grouped_bar", "line", "area", "stacked_area",
+    "pie", "donut", "scatter", "bubble", "kpi_tile", "sparkline",
+    "table", "treemap", "radar", "histogram",
+}
+
+# Types that render naturally from the FactPack's `entity → value` row shape
+# we synthesize here. Anything outside this set needs a different data
+# layout (time on x, two numeric axes, series dimension, etc.) so we
+# downgrade to bar rather than emit a malformed chart.
+_ENTITY_VALUE_NATIVE = {
+    "bar", "pie", "donut", "treemap", "table", "kpi_tile", "histogram",
 }
 _KPI_UNIT_MAP = {
     "MW": "MW", "GW": "GW", "USD": "USD", "%": "%",
@@ -173,9 +182,12 @@ def _chart_from_supporting_rows(
         chart_type = "kpi_tile" if n == 1 else "bar"
     if n == 1 and chart_type not in {"kpi_tile", "sparkline"}:
         chart_type = "kpi_tile"
-    # Charts that need a series/time/scatter axis we can't infer from the
-    # entity+value shape — fall back to bar so we still render something.
-    if chart_type in {"line", "area", "scatter", "stacked_bar", "grouped_bar"}:
+    # If the agent picked a type whose data shape we can't synthesize from
+    # entity+value supporting rows (needs time on x, two numeric axes, a
+    # series dimension, multi-axis polar, etc.), fall back to bar so the
+    # insight still renders. The native set covers bar / pie / donut /
+    # treemap / table / kpi_tile / histogram.
+    if chart_type not in _ENTITY_VALUE_NATIVE:
         chart_type = "bar"
 
     y_label = y_label_hint or "MW"
