@@ -133,3 +133,10 @@ QAEvent = Annotated[
 class AskRequest(BaseModel):
     question: str
     history: list[Message] = []
+    # Per-chat-panel-instance session id — namespaces OpenClaw memory so
+    # different panel instances asking identical questions don't collide
+    # in the gateway's per-session cache (which would short-circuit
+    # tool calls). Optional for backward compatibility; when omitted the
+    # forwarder hashes the question, with the documented downside that
+    # repeat questions hit the same memory partition.
+    session_id: Optional[str] = None

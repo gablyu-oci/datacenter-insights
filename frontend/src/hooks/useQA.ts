@@ -3,6 +3,16 @@ import type { QAEvent, QAMessage } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
 
+/** Generate a per-chat-panel-instance session id. The backend QA forwarder
+ * uses this to namespace OpenClaw memory; without it identical questions
+ * across different panel instances hash to the same memory partition and
+ * the second turn short-circuits without re-running tools. */
+function newQaSessionId(): string {
+  const cryptoRef = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (cryptoRef?.randomUUID) return cryptoRef.randomUUID();
+  return `qa-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
 /**
  * useQA — drives the /api/qa/ask streaming endpoint.
  *
@@ -14,6 +24,8 @@ export function useQA() {
   const [messages, setMessages] = useState<QAMessage[]>([]);
   const [streaming, setStreaming] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // One session id per useQA-instance lifetime. Reset on `clear()`.
+  const sessionIdRef = useRef<string>(newQaSessionId());
 
   const updateLastAssistant = useCallback(
     (mutator: (m: QAMessage) => QAMessage) => {
@@ -155,7 +167,11 @@ export function useQA() {
         const resp = await fetch(`${API_BASE}/api/qa/ask`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question, history: historySnapshot }),
+          body: JSON.stringify({
+            question,
+            history: historySnapshot,
+            session_id: sessionIdRef.current,
+          }),
           signal: ctrl.signal,
         });
 
@@ -227,6 +243,9 @@ export function useQA() {
     }
     setMessages([]);
     setStreaming(false);
+    // Rotate the session id so the next question opens a fresh OpenClaw
+    // memory namespace — otherwise the cached prior turn keeps surfacing.
+    sessionIdRef.current = newQaSessionId();
   }, []);
 
   return { messages, ask, stop, clear, streaming };

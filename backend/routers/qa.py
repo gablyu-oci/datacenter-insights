@@ -33,7 +33,12 @@ async def ask(body: AskRequest):
     async def gen():
         async with async_session_factory() as session:
             try:
-                async for event in answer_question(session, body.question, body.history):
+                async for event in answer_question(
+                    session,
+                    body.question,
+                    body.history,
+                    x_session_id=body.session_id,
+                ):
                     payload = event.model_dump()
                     yield f"data: {json.dumps(payload, default=str)}\n\n"
             except Exception as exc:  # noqa: BLE001
