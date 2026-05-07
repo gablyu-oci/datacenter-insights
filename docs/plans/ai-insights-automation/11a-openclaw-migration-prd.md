@@ -7,7 +7,7 @@
 **Predecessors:**
 - `01-prd.md` (PRD: AI Insights Automation & Real-Data Synthesis)
 - `03-architecture.md` (current SSE + ToolLoopDriver architecture, 7 chat tools)
-- `10-openclaw-integration-evaluation.md` (ADR-010, status SKIP — superseded here)
+- `../../_archive/ai-insights-automation/10-openclaw-integration-evaluation.md` (archived 2026-05-07) (ADR-010, status SKIP — superseded here)
 - `08-v1.1-agentic-plan.md` (V1.1 agentic-driver plan — unaffected by this migration)
 
 ---
@@ -665,7 +665,7 @@ Each phase has a corresponding acceptance subset:
 - `03-architecture.md` — current chat architecture and 7 chat tools.
 - `08-v1.1-agentic-plan.md` — V1.1 chat plan that narrows the tool
   surface; this migration must not loosen it.
-- `10-openclaw-integration-evaluation.md` — ADR-010, status SKIP.
+- `../../_archive/ai-insights-automation/10-openclaw-integration-evaluation.md` (archived 2026-05-07) — ADR-010, status SKIP.
   This PRD supersedes that recommendation by user direction.
 - OpenClaw docs: `docs.openclaw.ai` (per ADR-010 §2.1, the
   authoritative surface).

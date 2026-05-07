@@ -14,7 +14,7 @@
 **Date:** 2026-05-05
 **Owner (architecture):** AI Insights team
 **Predecessors:**
-- `10-openclaw-integration-evaluation.md` (ADR-010 §4 component-by-component map; this doc operationalizes that map under the user override)
+- `../../_archive/ai-insights-automation/10-openclaw-integration-evaluation.md` (archived 2026-05-07) (ADR-010 §4 component-by-component map; this doc operationalizes that map under the user override)
 - `03-architecture.md` (current chat path SSE + ToolLoopDriver)
 - `08-v1.1-agentic-plan.md` (the agentic path partially subsumed by this migration)
 - `11-openclaw-migration-prd.md` (R1-R9 requirements)
