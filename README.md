@@ -76,34 +76,77 @@ cd backend
 ```
 strategic-insights-tool/
   backend/
-    main.py              # FastAPI app, router registration, CORS
+    main.py              # FastAPI app, router registration, CORS, MCP mount
+    mcp_server.py        # MCP server (mounted at /mcp; OpenClaw tool bridge)
     config.py            # pydantic-settings configuration
+    cli.py               # `python cli.py ingest --source <name>` adapter runner
+    entity_resolution.py # rapidfuzz-based company alias resolver
     db/
-      models.py          # SQLModel ORM (15 tables)
+      models.py          # SQLModel ORM (sites, companies, events, etc.)
       session.py         # Async session factory + get_db() DI
-    routers/             # APIRouter modules (17 files)
+    routers/             # 22 APIRouter modules (insights, qa, brief, sites,
+                         #   companies, power, gpu, permits, triangulation, …)
+    agents/
+      edgar_agent.py, datacenter_qa.py, triangulation_qa.py, weekly_brief.py,
+      anomaly_detector.py, edgar_extractor.py, edgar_buyer_validator.py,
+      parent_resolver.py, vendor_supply_extractor.py
+      insights/          # AI Insights subsystem
+        orchestrator.py, agentic_synthesis.py, hypothesizer.py, dedup.py,
+        llm_adapter.py, session_tools.py, skill_ctx_factory.py
+        prompts/         # 5 system-prompt fragments (chat, brief, synthesis, qa, triangulation)
+        skills/          # 15 skills (cohort, segmentation, time-series, …)
+        specs/           # ChartSpec / SSE event / SkillContext schema contracts
+        tools/           # run_skill, get_chart_data, query_database, web_search, …
+        db/              # AI Insights persistence (insights, sessions, citations)
+    openclaw/            # Forwarders (chat / synthesis / qa) + SSE translator + SOUL.md
+    ingestion/           # 20 source adapters (edgar, epa_echo, aterio,
+                         #   press_releases, pdf_parser, iso/, permits_state/,
+                         #   permits_county/)
+    pipeline/
+      runner.py          # APScheduler — daily / weekly cron jobs
     schemas/
       common.py          # LineageEnvelope, CoverageEnvelope, PagedResponse
-    agents/
-      edgar_agent.py     # SEC EDGAR 8-K fetcher (async httpx)
+    seed/
+      canonical_companies.py, coverage_seed.py
     data/
-      curated_deals.py   # Verified power deal dataset
       mock_data.py       # Mock data (gated by MOCK_DATA=1)
     llm/
-      client.py          # Llama Stack client wrapper (Phase 1C shell)
-    alembic/             # Database migrations
+      client.py          # Llama Stack client (reasoning / extraction / vision / embedding)
+    alembic/             # Database migrations (head: 013_*)
     alembic.ini
     pyproject.toml
-    requirements.txt
+    tests/               # pytest suite (~34 tests)
   frontend/
     src/
+      App.tsx            # tab registry (10 tabs)
       components/
-        shared/
-          ErrorPanel.tsx  # Reusable error display component
+        tabs/            # PowerTab, DataCentersTab, GPUSupplyTab,
+                         #   NICsOpticsTab, TSMCTab, PermitsTab, TriangulationTab,
+                         #   CompaniesTab, SourcesTab, ai-insights/
+        agentchat/       # streaming chat primitives (MessageList, SourcePill, …)
+        layout/          # Header, TabNav
+        shared/          # ErrorPanel, NoDataPanel, CitationFooter, CoverageBadge,
+                         #   TabWrapper, SiteRoleBreakdown
+        ChatPanel.tsx    # Q&A chat dock
       hooks/
-        useApi.ts         # Fetch hook with retry + error classification
+        useApi.ts        # REST fetch + retry
+        useInsightStream.ts, useLatestInsightSession.ts, useQA.ts
+      styles/insightTokens.ts
   docs/
-    planning/            # Architecture, PRD, decision docs
+    PRD.md               # Product spec
+    OPEN-TENSIONS.md     # Trade-offs deferred with revisit triggers
+    planning/            # 00-DECISIONS, 02-TECH-STACK, 03-architecture-design,
+                         #   03-PIPELINE-ARCHITECTURE, 04-ux-evolution-plan,
+                         #   PHASE2_RESEARCH, SUPPLIER_VENDOR_SCOPE,
+                         #   STAKEHOLDER_REQUIREMENTS_AUDIT, DEMO_BRIEF
+                         # planning/ai-insights/SKILL_CONVERSION.md
+    plans/ai-insights-automation/   # Synthesis automation + OpenClaw + MCP
+    research/            # DATA_SOURCE_LANDSCAPE_REPORT, vitest-setup
+    qa/                  # Phase QA reports
+    _archive/            # Superseded historical docs
+  .openclaw/             # OpenClaw runtime (gateway config + persona; runtime
+                         # state is gitignored)
+  datasets/              # Aterio / data-dictionary / energy-project samples
   start.sh               # Dev launcher (pg check + alembic + backend + frontend)
 ```
 
@@ -116,14 +159,21 @@ curl http://localhost:8000/api/health
 
 ## Phase Roadmap
 
-- **Phase 0**: Infrastructure foundation -- DB, migrations, routers, envelopes ✅
+- **Phase 0**: Infrastructure foundation — DB, migrations, routers, envelopes ✅
 - **Phase 1**: Real data ingestion adapters (EIA, RCRA, ECHO, PJM queue, VA / TX / NY permits) ✅
 - **Phase 1.5**: LLM extraction agents (EDGAR 8-K, weekly brief) ✅
-- **Phase 2** (April 2026, current): Multi-form EDGAR (10-K + 10-Q), expanded vendor coverage,
-  IR press-release scraper, anomaly detection, bulk PDF parsing, ERCOT + MISO + Iowa + Ohio
-  adapters, L1 triangulation UI ✅
-- **Phase 3** (planned): Paid-source integrations (Aterio, NVIDIA shipments, Coherent/Lumentum
-  order books, Shovels.ai, Planet/Maxar imagery, Bloomberg/NewsAPI)
+- **Phase 2**: Multi-form EDGAR (10-K + 10-Q), expanded vendor coverage,
+  IR press-release scraper, anomaly detection, bulk PDF parsing, ERCOT + MISO +
+  Iowa + Ohio adapters, L1 triangulation UI ✅
+- **AI Insights v1 + automation** (May 2026): daily synthesis from FactPack,
+  per-insight chat, web-cited insights, supply-demand-gap pattern;
+  `/api/insights/*` + scheduler `insights_daily` cron ✅
+- **OpenClaw / MCP unification** (May 2026): all chat + synthesis + QA traffic
+  routes through the OpenClaw gateway; tool calls dispatched via the in-process
+  MCP server (`backend/mcp_server.py`) ✅
+- **Phase 3** (planned): Paid-source integrations (Aterio licensed feed, NVIDIA
+  shipments, Coherent/Lumentum order books, Shovels.ai, Planet/Maxar imagery,
+  Bloomberg/NewsAPI)
 
 ## Phase 2 — What's Ingested
 
