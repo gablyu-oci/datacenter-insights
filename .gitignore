@@ -73,11 +73,24 @@ cdx2.json
 # might leak secrets (the auto-stub openclaw.json contains a generated
 # bearer token; the .bak / .last-good are copies of same):
 /.openclaw/openclaw.json.bak
+/.openclaw/openclaw.json.bak.*
 /.openclaw/openclaw.json.last-good
 /.openclaw/openclaw.json.*.tmp
 /.openclaw/update-check.json
 /.openclaw/identity/
 /.openclaw/canvas/
+# Additional runtime-mutable state (devices/memory DBs/exec approvals/
+# auto-installed plugin-skills); persona-level files in workspace/
+# (SOUL/AGENTS/MEMORY/IDENTITY/USER/TOOLS/HEARTBEAT) are still tracked.
+/.openclaw/devices/
+/.openclaw/exec-approvals.json
+/.openclaw/memory/
+/.openclaw/plugin-skills/
+# Workspace dream-cycle outputs and daily notes are runtime drift:
+/.openclaw/workspace/DREAMS.md
+/.openclaw/workspace/QUERIES.md
+/.openclaw/workspace/SCHEMA.md
+/.openclaw/workspace/memory/
 # Explicit allows for the declarative files we DO want in git:
 !/.openclaw/.gitkeep
 !/.openclaw/workspace/

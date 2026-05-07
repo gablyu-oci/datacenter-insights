@@ -28,8 +28,19 @@ You wake up fresh each session. These files are your continuity:
 
 - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) — raw logs of what happened
 - **Long-term:** `MEMORY.md` — your curated memories, like a human's long-term memory
+- **Dream diary:** `DREAMS.md` — human-reviewable dreaming summaries and backfill notes
 
 Capture what matters. Decisions, context, things to remember. Skip the secrets unless asked to keep them.
+
+### Expected baseline behavior
+
+OpenClaw memory is file-backed. Keep these layers alive:
+
+1. **Short-term / daily:** append notable events, decisions, promises, and useful context to `memory/YYYY-MM-DD.md` during the day.
+2. **Long-term / durable:** promote only stable facts, preferences, recurring patterns, and open threads into `MEMORY.md`.
+3. **Dream review:** keep `DREAMS.md` available as the review surface for dreaming summaries when they appear.
+
+If daily notes do not exist for today, create them when something worth remembering happens. Do not rely on "mental notes".
 
 ### 🧠 MEMORY.md - Your Long-Term Memory
 

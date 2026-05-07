@@ -30,7 +30,7 @@ working draft; this file is the published version.
 _Append as patterns emerge. Format:_
 > `<company>` — `<one-line observation>` — _<date or session ref>_
 
-(no current entries)
+- Crusoe DC-1 Wyoming 360 MW  _<2026-05-06>_
 
 ## Recurring questions / decision patterns
 
@@ -44,7 +44,7 @@ anticipate the next one._
 _E.g. "FactPack section X is empty most days because adapter Y
 upserts without bumping `updated_at`." Concrete, actionable._
 
-(no current entries)
+- Current memory setup needed manual restoration of daily notes and DREAMS.md; dreaming enabled but artifacts absent at initial audit.  _<2026-05-06>_
 
 ## User preferences observed
 
@@ -59,8 +59,15 @@ USER.md, but USER.md is intent; this is observation._
 _Open questions where the answer wasn't yet available. When new
 data lands, come back here and resolve them._
 
-(no current entries)
+- Tracking Crusoe DC-1 in Wyoming as an offtake target.  _<2026-05-06>_
+- Track Crusoe DC-1 in Wyoming as an offtake target.  _<2026-05-06>_
+
 
 ---
 
 _Last reviewed: (initial seed; agent should refresh this line each time MEMORY.md is materially updated)_
+
+## Promoted From Short-Term Memory (2026-05-07)
+
+<!-- openclaw-memory-promotion:memory:memory/2026-05-06.md:1:20 -->
+- # Daily Memory — 2026-05-06 ## Context - Workspace memory audit performed. - Confirmed current state: `MEMORY.md` exists and is indexed; `memory/` was previously empty; dreaming is enabled in config. ## Findings - Short-term daily notes were missing before this file was created. - `DREAMS.md` was absent. - Dreaming recall/artifact state was empty at audit time. - Vector recall was degraded because sqlite-vec was unavailable. ## Actions taken - Created today’s daily memory file to restore the expected short-term note layer. - Updated `AGENTS.md` guidance so future turns explicitly maintain daily notes, long-term memory, and dream diary expectations. - Created `DREAMS.md` as the human-review surface for dreaming outputs. ## User intent - User asked to examine memory setup and then implement what OpenClaw should be doing for memory persistence. [score=0.804 recalls=10 avg=0.448 source=memory/2026-05-06.md:1-20]
