@@ -1,7 +1,7 @@
 # 03 -- Pipeline Architecture: Data-Source Ingestion System
 
 **Author:** System Architect | **Date:** 2026-04-28 | **Status:** Draft v1.0
-**Depends on:** [../../PRD.md](../../PRD.md), [00-DECISIONS-AND-CONSTRAINTS.md](00-DECISIONS-AND-CONSTRAINTS.md), [02-TECH-STACK-RESEARCH.md](02-TECH-STACK-RESEARCH.md). (The earlier `01-DATA-PIPELINE-PRD.md` has been archived under `docs/_archive/`; its content is folded into `PRD.md`.)
+**Depends on:** [../PRD.md](../PRD.md), [00-DECISIONS-AND-CONSTRAINTS.md](00-DECISIONS-AND-CONSTRAINTS.md), [02-TECH-STACK-RESEARCH.md](02-TECH-STACK-RESEARCH.md). (The earlier `01-DATA-PIPELINE-PRD.md` has been archived under `docs/_archive/`; its content is folded into `PRD.md`.)
 
 ---
 

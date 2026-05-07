@@ -379,7 +379,7 @@ async def test_mcp_bearer_accepted(client: httpx.AsyncClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: tools/list returns the eleven schemas
+# Test 3: tools/list returns the twelve schemas
 # ---------------------------------------------------------------------------
 
 
@@ -409,26 +409,33 @@ _EXPECTED_QA_TOOL_NAMES = {
     "propose_qa_chart",
 }
 
+# OpenClaw memory write — agent calls this from the chat lane to persist
+# long-term memory under a fixed category vocabulary.
+_EXPECTED_MEMORY_TOOL_NAMES = {
+    "update_memory",
+}
+
 _EXPECTED_TOOL_NAMES = (
     _EXPECTED_INSIGHT_SCOPED_TOOL_NAMES
     | _EXPECTED_SESSION_SCOPED_TOOL_NAMES
     | _EXPECTED_QA_TOOL_NAMES
+    | _EXPECTED_MEMORY_TOOL_NAMES
 )
 
 
-async def test_mcp_tools_list_returns_eleven_schemas(
+async def test_mcp_tools_list_returns_twelve_schemas(
     client: httpx.AsyncClient,
 ) -> None:
-    """`tools/list` returns the eleven registered tool schemas (7 insight-
+    """`tools/list` returns the twelve registered tool schemas (7 insight-
     scoped from Phase 1 + 3 session-scoped write tools from Phase 2 + 1
-    QA-lane chart proposal tool from ARCH 15) with name + description +
-    inputSchema fields populated."""
+    QA-lane chart proposal tool from ARCH 15 + 1 memory-write tool) with
+    name + description + inputSchema fields populated."""
     r = await client.post(MCP_PATH, headers=_headers(), json=_list_body())
     assert r.status_code == 200, r.text
     body = r.json()
     tools = (body.get("result") or {}).get("tools") or []
-    assert len(tools) == 11, (
-        f"expected 11 tools, got {len(tools)}: {[t.get('name') for t in tools]}"
+    assert len(tools) == 12, (
+        f"expected 12 tools, got {len(tools)}: {[t.get('name') for t in tools]}"
     )
 
     names = {t["name"] for t in tools}
@@ -465,6 +472,10 @@ async def test_mcp_tools_list_returns_eleven_schemas(
             assert "reasoning" in props, t
         elif t["name"] in _EXPECTED_SESSION_SCOPED_TOOL_NAMES:
             assert "session_id" in props, t
+        elif t["name"] in _EXPECTED_MEMORY_TOOL_NAMES:
+            # update_memory takes (category, fact); no insight or session id.
+            assert "category" in props, t
+            assert "fact" in props, t
         else:
             assert "insight_id" in props, t
 
