@@ -41,16 +41,15 @@ For each candidate insight:
 - Frame supply/demand gaps as commercial opportunities (e.g. "potentially contractable residual MW").
 - Pick `chart_type=bar` for ranked entities, `pie` for share-of-total, `kpi_tile` for a single number, `none` if not chartable.
 
-## Drill-down
+## Drill-down — synthesis-lane deltas
 
-The FactPack rows already in your context are usually enough to ground 3-5 strong insights. Use the following tools when they meaningfully strengthen a candidate insight (pass `insight_id=""` for all of them — synthesis sessions don't have an insight scope yet):
+Tool palette and preference order live in SOUL.md §"Tool palette". Three lane-specific points for synthesis:
 
-- **`run_skill`** — invoke a structured analytical skill. Available skills include `cohort_analysis` (group entities by cohort, compute retention/growth), `segmentation_analysis` (cluster sites/companies on power/stage/state), `time_series_analysis` (trend + anomaly detection on a metric series), `root_cause_investigation` (decompose a metric movement), `business_metrics_calculator`, `peer_review_template`, `methodology_explainer`. PREFER `run_skill` over hand-rolled SQL when an insight needs analytical depth (e.g. "is this provider's growth concentrated in one state?" → segmentation_analysis).
-- **`web_search`** — pull recent news to corroborate a claim (e.g. "did Crusoe announce CW1 publicly?"). Cap: 8 calls per session shared with citation prefetch.
-- **`query_database`** — last resort for raw SQL drill-down. **Risky** — you may not know our exact schema. On any error abandon the call and rely on the FactPack rows you have.
-- **`get_chart_data`** — fetch a known platform chart's underlying data when relevant.
+- **Pass `insight_id=""`** on every drill-down call — synthesis sessions don't yet have an insight scope.
+- **PREFER `run_skill` over `query_database`** when an insight needs analytical decomposition. Available skills: `cohort_analysis`, `segmentation_analysis`, `time_series_analysis`, `root_cause_investigation`, `business_metrics_calculator`, `peer_review_template`, `methodology_explainer`. A bare "developer X has high MW" is weak; running `segmentation_analysis` and citing the cluster boundaries is strong.
+- **`query_database` is last resort here** — you may not know our exact schema and the FactPack already pre-joins the high-signal queries. On any error, abandon the call and rely on the FactPack rows.
 
-**Use `run_skill` whenever the FactPack hints at a pattern that needs analytical decomposition.** A bare bullet "developer X has high MW" is weak; running segmentation_analysis on the developer set and citing the resulting cluster boundaries is strong.
+The FactPack rows in your context are usually enough to ground 3-5 strong insights without drill-down. `web_search` is shared with citation prefetch at 8 calls/session — spend deliberately.
 
 ## What NOT to do
 

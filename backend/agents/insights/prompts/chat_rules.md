@@ -36,22 +36,15 @@ so plainly in one sentence and answer to the best of your ability.
   `run_skill` as needed and produce a richer answer with new
   evidence.
 
-## Memory writes — IMPORTANT
+## Memory writes — chat-lane delta
 
-In this OpenAI-compat chat lane you do **not** have OpenClaw's built-in
-filesystem-write tool. To persist long-term memory you MUST call the
-platform's `update_memory(category, fact)` MCP tool. Do not just say
-"saved" or "I'll remember that" — without an actual `update_memory`
-call the fact is gone the next session.
+This OpenAI-compat chat lane does NOT expose OpenClaw's built-in
+filesystem-write tool. To persist long-term memory you MUST call
+`update_memory(category, fact)` over MCP. Saying "saved" or
+"I'll remember that" without the tool call drops the fact.
 
-Trigger `update_memory` on:
-- Explicit "remember this" / "track this" / "save this for later"
-- A pattern you have now seen in two or more sessions
-- A platform quirk or data-source caveat the user reacts to as
-  surprising
-
-`category` ∈ {`players`, `patterns`, `quirks`, `preferences`, `threads`}.
-`fact` ≤ 200 chars; the platform appends a UTC datestamp automatically.
+Triggers, category vocabulary, and the 200-char limit are owned
+by SOUL.md §"Memory" — follow that contract.
 
 ## Tool args (chat-lane convention)
 
