@@ -35,7 +35,24 @@ class ToolResultEvent(BaseModel):
 
 
 class ChartSpec(BaseModel):
-    chart_type: Literal["bar", "pie", "line", "scatter", "table"]
+    chart_type: Literal[
+        "bar",
+        "stacked_bar",
+        "grouped_bar",
+        "pie",
+        "donut",
+        "line",
+        "area",
+        "stacked_area",
+        "sparkline",
+        "scatter",
+        "bubble",
+        "kpi_tile",
+        "table",
+        "treemap",
+        "radar",
+        "histogram",
+    ]
     x: str
     y: str
     series: list[dict]
@@ -47,7 +64,24 @@ class ChartSpec(BaseModel):
 
 class ChartSpecEvent(BaseModel):
     type: Literal["chart_spec"] = "chart_spec"
-    chart_type: Literal["bar", "pie", "line", "scatter", "table"]
+    chart_type: Literal[
+        "bar",
+        "stacked_bar",
+        "grouped_bar",
+        "pie",
+        "donut",
+        "line",
+        "area",
+        "stacked_area",
+        "sparkline",
+        "scatter",
+        "bubble",
+        "kpi_tile",
+        "table",
+        "treemap",
+        "radar",
+        "histogram",
+    ]
     x: str
     y: str
     series: list[dict]

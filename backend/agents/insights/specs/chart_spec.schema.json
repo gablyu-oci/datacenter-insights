@@ -4,14 +4,22 @@
       "additionalProperties": false,
       "properties": {
         "type": {
-          "enum": ["line", "band", "point"],
+          "enum": [
+            "line",
+            "band",
+            "point"
+          ],
           "title": "Type",
           "type": "string"
         },
         "value": {
           "anyOf": [
-            {"type": "string"},
-            {"type": "number"}
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            }
           ],
           "title": "Value"
         },
@@ -20,7 +28,11 @@
           "type": "string"
         }
       },
-      "required": ["type", "value", "label"],
+      "required": [
+        "type",
+        "value",
+        "label"
+      ],
       "title": "Annotation",
       "type": "object"
     },
@@ -28,14 +40,29 @@
       "additionalProperties": false,
       "properties": {
         "field": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Field"
         },
         "scheme": {
           "anyOf": [
-            {"enum": ["categorical", "sequential"], "type": "string"},
-            {"type": "null"}
+            {
+              "enum": [
+                "categorical",
+                "sequential"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "title": "Scheme"
@@ -46,9 +73,14 @@
     },
     "DataSource": {
       "additionalProperties": false,
+      "description": "Provenance block \u2014 every chart cites where its rows came from.",
       "properties": {
         "kind": {
-          "enum": ["db_query", "router_call", "chart_data"],
+          "enum": [
+            "db_query",
+            "router_call",
+            "chart_data"
+          ],
           "title": "Kind",
           "type": "string"
         },
@@ -74,38 +106,63 @@
           "type": "string"
         }
       },
-      "required": ["kind", "spec", "rows", "fetched_at", "row_hash"],
+      "required": [
+        "kind",
+        "spec",
+        "rows",
+        "fetched_at",
+        "row_hash"
+      ],
       "title": "DataSource",
       "type": "object"
     },
     "Encoding": {
       "additionalProperties": false,
       "properties": {
-        "x": {"$ref": "#/$defs/XEncoding"},
-        "y": {"$ref": "#/$defs/YEncoding"},
+        "x": {
+          "$ref": "#/$defs/XEncoding"
+        },
+        "y": {
+          "$ref": "#/$defs/YEncoding"
+        },
         "series": {
           "anyOf": [
-            {"$ref": "#/$defs/SeriesEncoding"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/SeriesEncoding"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
         },
         "color": {
           "anyOf": [
-            {"$ref": "#/$defs/ColorEncoding"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/ColorEncoding"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
         },
         "size": {
           "anyOf": [
-            {"$ref": "#/$defs/SizeEncoding"},
-            {"type": "null"}
+            {
+              "$ref": "#/$defs/SizeEncoding"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null
         }
       },
-      "required": ["x", "y"],
+      "required": [
+        "x",
+        "y"
+      ],
       "title": "Encoding",
       "type": "object"
     },
@@ -117,7 +174,9 @@
           "type": "string"
         }
       },
-      "required": ["field"],
+      "required": [
+        "field"
+      ],
       "title": "SeriesEncoding",
       "type": "object"
     },
@@ -130,32 +189,51 @@
           "type": "string"
         }
       },
-      "required": ["field"],
+      "required": [
+        "field"
+      ],
       "title": "SizeEncoding",
       "type": "object"
     },
     "Styling": {
       "additionalProperties": false,
-      "description": "Formatting / palette block.",
+      "description": "Formatting / palette block (PRD \u00a75.2 calls this `formatting`; ARCH A4.1\nnames it `Styling`. We follow ARCH).",
       "properties": {
         "palette": {
+          "const": "oci_brand",
           "default": "oci_brand",
-          "enum": ["oci_brand"],
           "title": "Palette",
           "type": "string"
         },
         "y_unit": {
           "anyOf": [
-            {"enum": ["GW", "MW", "USD", "count", "%"], "type": "string"},
-            {"type": "null"}
+            {
+              "enum": [
+                "GW",
+                "MW",
+                "USD",
+                "count",
+                "%"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "title": "Y Unit"
         },
         "y_precision": {
           "anyOf": [
-            {"maximum": 6, "minimum": 0, "type": "integer"},
-            {"type": "null"}
+            {
+              "maximum": 6,
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
           ],
           "default": null,
           "title": "Y Precision"
@@ -172,22 +250,43 @@
           "type": "string"
         },
         "type": {
-          "enum": ["category", "time", "quantitative"],
+          "enum": [
+            "category",
+            "time",
+            "quantitative"
+          ],
           "title": "Type",
           "type": "string"
         },
         "label": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Label"
         },
         "tick_format": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Tick Format"
         }
       },
-      "required": ["field", "type"],
+      "required": [
+        "field",
+        "type"
+      ],
       "title": "XEncoding",
       "type": "object"
     },
@@ -199,34 +298,49 @@
           "type": "string"
         },
         "type": {
+          "const": "quantitative",
           "default": "quantitative",
-          "enum": ["quantitative"],
           "title": "Type",
           "type": "string"
         },
         "label": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Label"
         },
         "tick_format": {
-          "anyOf": [{"type": "string"}, {"type": "null"}],
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
           "default": null,
           "title": "Tick Format"
         }
       },
-      "required": ["field"],
+      "required": [
+        "field"
+      ],
       "title": "YEncoding",
       "type": "object"
     }
   },
   "additionalProperties": false,
-  "description": "ChartSpec v1 -- see ARCHITECTURE.md A4.",
+  "description": "ChartSpec v1 \u2014 see ARCHITECTURE.md A4.",
   "properties": {
     "chart_id": {
       "title": "Chart Id",
-      "type": "string",
-      "pattern": "^c_[0-9a-f]{8}$"
+      "type": "string"
     },
     "chart_type": {
       "enum": [
@@ -237,9 +351,15 @@
         "area",
         "stacked_area",
         "scatter",
+        "bubble",
         "pie",
+        "donut",
         "sparkline",
-        "kpi_tile"
+        "kpi_tile",
+        "table",
+        "treemap",
+        "radar",
+        "histogram"
       ],
       "title": "Chart Type",
       "type": "string"
@@ -252,35 +372,54 @@
     },
     "subtitle": {
       "anyOf": [
-        {"maxLength": 300, "type": "string"},
-        {"type": "null"}
+        {
+          "maxLength": 300,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
       ],
       "default": null,
       "title": "Subtitle"
     },
-    "data_source": {"$ref": "#/$defs/DataSource"},
+    "data_source": {
+      "$ref": "#/$defs/DataSource"
+    },
     "data": {
       "items": {
         "additionalProperties": true,
         "type": "object"
       },
-      "maxItems": 500,
       "title": "Data",
       "type": "array"
     },
-    "encoding": {"$ref": "#/$defs/Encoding"},
+    "encoding": {
+      "$ref": "#/$defs/Encoding"
+    },
     "annotations": {
       "anyOf": [
-        {"items": {"$ref": "#/$defs/Annotation"}, "type": "array"},
-        {"type": "null"}
+        {
+          "items": {
+            "$ref": "#/$defs/Annotation"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
       ],
       "default": null,
       "title": "Annotations"
     },
     "styling": {
       "anyOf": [
-        {"$ref": "#/$defs/Styling"},
-        {"type": "null"}
+        {
+          "$ref": "#/$defs/Styling"
+        },
+        {
+          "type": "null"
+        }
       ],
       "default": null
     }

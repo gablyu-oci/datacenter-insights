@@ -47,9 +47,15 @@ ChartType = Literal[
     "area",
     "stacked_area",
     "scatter",
+    "bubble",
     "pie",
+    "donut",
     "sparkline",
     "kpi_tile",
+    "table",
+    "treemap",
+    "radar",
+    "histogram",
 ]
 
 # Per ARCHITECTURE.md A4.1.

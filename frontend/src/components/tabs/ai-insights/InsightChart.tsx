@@ -8,8 +8,13 @@ import {
   Legend,
   Line,
   LineChart,
+  PolarAngleAxis,
+  PolarGrid,
+  PolarRadiusAxis,
   Pie,
   PieChart,
+  Radar,
+  RadarChart,
   ReferenceArea,
   ReferenceDot,
   ReferenceLine,
@@ -17,6 +22,7 @@ import {
   Scatter,
   ScatterChart,
   Tooltip,
+  Treemap,
   XAxis,
   YAxis,
   ZAxis,
@@ -282,13 +288,49 @@ export default function InsightChart({ spec, height = 220 }: InsightChartProps) 
     );
   }
 
-  if (spec.chart_type === "pie") {
+  if (spec.chart_type === "table") {
+    const xLabel = spec.encoding.x.label || xField;
+    const yLabel = spec.encoding.y.label || yField;
+    return (
+      <div
+        style={{
+          maxHeight: height,
+          overflowY: "auto",
+          background: c.bg.surface,
+          border: `1px solid ${c.border.default}`,
+          borderRadius: tokens.radius.lg,
+        }}
+      >
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ borderBottom: `1px solid ${c.border.default}`, background: c.bg.surface }}>
+              <th style={{ color: c.text.caption, textAlign: "left", padding: "8px 10px" }}>{xLabel}</th>
+              <th style={{ color: c.text.caption, textAlign: "right", padding: "8px 10px" }}>{yLabel}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.slice(0, 100).map((row, i) => (
+              <tr key={i} style={{ borderBottom: `1px solid ${c.border.default}` }}>
+                <td style={{ color: c.text.primary, padding: "6px 10px" }}>{String(row[xField] ?? "")}</td>
+                <td style={{ color: c.text.primary, padding: "6px 10px", textAlign: "right" }}>{fmt(row[yField])}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (spec.chart_type === "pie" || spec.chart_type === "donut") {
+    const isDonut = spec.chart_type === "donut";
     const sorted = [...data].sort((a, b) => Number(b[yField] ?? 0) - Number(a[yField] ?? 0));
     const slices = sorted.slice(0, PIE_TRUNCATE_AT).map((row) => ({
       name: String(row[xField] ?? ""),
       value: Number(row[yField] ?? 0),
     }));
     const total = slices.reduce((acc, r) => acc + r.value, 0) || 1;
+    const outerR = Math.min(height * 0.35, 90);
+    const innerR = isDonut ? outerR * 0.6 : 0;
     return (
       <ResponsiveContainer width="100%" height={height}>
         <PieChart>
@@ -296,7 +338,8 @@ export default function InsightChart({ spec, height = 220 }: InsightChartProps) 
             data={slices}
             dataKey="value"
             nameKey="name"
-            outerRadius={Math.min(height * 0.35, 90)}
+            outerRadius={outerR}
+            innerRadius={innerR}
             labelLine={false}
             label={(props: unknown) => {
               const p = props as {
@@ -343,12 +386,16 @@ export default function InsightChart({ spec, height = 220 }: InsightChartProps) 
     );
   }
 
-  if (spec.chart_type === "scatter") {
+  if (spec.chart_type === "scatter" || spec.chart_type === "bubble") {
+    const sizeField = spec.encoding.size?.field;
     const points = data.map((row) => ({
       x: Number(row[xField] ?? 0),
       y: Number(row[yField] ?? 0),
+      z: sizeField ? Number(row[sizeField] ?? 0) : 1,
       _row: row,
     }));
+    // For bubble: scale point size by the size field; clamp the visual range.
+    const isBubble = spec.chart_type === "bubble" && !!sizeField;
     return (
       <ResponsiveContainer width="100%" height={height}>
         <ScatterChart margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
@@ -387,12 +434,134 @@ export default function InsightChart({ spec, height = 220 }: InsightChartProps) 
                 : undefined
             }
           />
-          <ZAxis range={[60, 60]} />
+          <ZAxis
+            type="number"
+            dataKey="z"
+            range={isBubble ? [60, 600] : [60, 60]}
+            name={sizeField ?? ""}
+          />
           <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} formatter={fmt} />
           <Legend wrapperStyle={{ fontSize: 11, color: c.text.muted }} />
           <Scatter data={points} name={spec.encoding.y.label || yField} fill={c.brand.primary} />
           {annotations}
         </ScatterChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (spec.chart_type === "treemap") {
+    const items = data
+      .map((row) => ({
+        name: String(row[xField] ?? ""),
+        size: Number(row[yField] ?? 0),
+      }))
+      .filter((it) => it.size > 0);
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <Treemap
+          data={items}
+          dataKey="size"
+          stroke={c.chart.grid}
+          fill={c.brand.primary}
+          isAnimationActive={false}
+          content={(props: unknown) => {
+            const p = props as {
+              x: number; y: number; width: number; height: number;
+              index: number; name: string; value: number;
+            };
+            const colorIdx = p.index % 8;
+            const showLabel = p.width > 60 && p.height > 22;
+            return (
+              <g>
+                <rect
+                  x={p.x}
+                  y={p.y}
+                  width={p.width}
+                  height={p.height}
+                  fill={pickColor(colorIdx)}
+                  stroke={c.chart.grid}
+                />
+                {showLabel ? (
+                  <text
+                    x={p.x + 6}
+                    y={p.y + 14}
+                    fill={c.text.primary}
+                    fontSize={11}
+                  >
+                    {p.name}
+                  </text>
+                ) : null}
+                {showLabel && p.height > 36 ? (
+                  <text
+                    x={p.x + 6}
+                    y={p.y + 28}
+                    fill={c.text.muted}
+                    fontSize={10}
+                  >
+                    {fmt(p.value)}
+                  </text>
+                ) : null}
+              </g>
+            );
+          }}
+        />
+      </ResponsiveContainer>
+    );
+  }
+
+  if (spec.chart_type === "radar") {
+    // Radar shape: each row is one axis, optional series field gives multiple actors.
+    const wide = seriesField ? pivotToWide(data, xField, yField, seriesField) : null;
+    const radarData = wide
+      ? wide.rows.map((r) => ({ ...r, _axis: r[xField] }))
+      : data.map((r) => ({ _axis: String(r[xField] ?? ""), value: Number(r[yField] ?? 0) }));
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <RadarChart data={radarData} outerRadius={Math.min(height * 0.35, 90)}>
+          <PolarGrid stroke={c.chart.grid} />
+          <PolarAngleAxis dataKey="_axis" tick={{ fill: c.chart.axisTick, fontSize: 11 }} />
+          <PolarRadiusAxis tick={{ fill: c.chart.axisTick, fontSize: 10 }} tickFormatter={fmt} />
+          <Tooltip {...TOOLTIP_STYLES} formatter={fmt} />
+          {wide ? <Legend wrapperStyle={{ fontSize: 11, color: c.text.muted }} /> : null}
+          {wide ? (
+            wide.series.map((sName, i) => (
+              <Radar
+                key={sName}
+                name={sName}
+                dataKey={sName}
+                stroke={pickColor(i)}
+                fill={pickColor(i)}
+                fillOpacity={0.3}
+                isAnimationActive={false}
+              />
+            ))
+          ) : (
+            <Radar
+              name={spec.encoding.y.label || yField}
+              dataKey="value"
+              stroke={c.brand.primary}
+              fill={c.brand.primary}
+              fillOpacity={0.3}
+              isAnimationActive={false}
+            />
+          )}
+        </RadarChart>
+      </ResponsiveContainer>
+    );
+  }
+
+  if (spec.chart_type === "histogram") {
+    // Histogram: bars with no spacing. Agent passes pre-binned (bin_label, count) pairs.
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }} barCategoryGap={0}>
+          <CartesianGrid strokeDasharray="3 3" stroke={c.chart.grid} />
+          <XAxisFor encoding={spec.encoding} yFormat={fmt} />
+          <YAxisFor encoding={spec.encoding} yFormat={fmt} />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} formatter={fmt} />
+          <Bar dataKey={yField} fill={c.brand.primary} isAnimationActive={false} />
+          {annotations}
+        </BarChart>
       </ResponsiveContainer>
     );
   }

@@ -19,9 +19,15 @@ export type ChartType =
   | "area"
   | "stacked_area"
   | "scatter"
+  | "bubble"
   | "pie"
+  | "donut"
   | "sparkline"
-  | "kpi_tile";
+  | "kpi_tile"
+  | "table"
+  | "treemap"
+  | "radar"
+  | "histogram";
 
 export type DataSourceKind = "db_query" | "router_call" | "chart_data";
 

@@ -257,7 +257,7 @@ export type QAEvent =
   | { type: "tool_result"; tool_name: string; summary: string; row_count: number }
   | {
       type: "chart_spec";
-      chart_type: "bar" | "pie" | "line" | "scatter" | "table";
+      chart_type: QAChartType;
       x: string;
       y: string;
       series: Array<Record<string, unknown>>;
@@ -276,8 +276,30 @@ export type QAEvent =
   | { type: "done" }
   | { type: "error"; message: string };
 
+/** Chart-type vocabulary used by the QA / chat lane (`schemas.qa.ChartSpec`).
+ * Mirrors the SOUL.md §"Chart palette" catalog. The richer per-insight
+ * lane uses `frontend/src/types/chartSpec.ts::ChartType`; both stay in
+ * lockstep with the backend. */
+export type QAChartType =
+  | "bar"
+  | "stacked_bar"
+  | "grouped_bar"
+  | "pie"
+  | "donut"
+  | "line"
+  | "area"
+  | "stacked_area"
+  | "sparkline"
+  | "scatter"
+  | "bubble"
+  | "kpi_tile"
+  | "table"
+  | "treemap"
+  | "radar"
+  | "histogram";
+
 export interface ChartSpec {
-  chart_type: "bar" | "pie" | "line" | "scatter" | "table";
+  chart_type: QAChartType;
   x: string;
   y: string;
   series: Array<Record<string, unknown>>;

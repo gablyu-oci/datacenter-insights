@@ -667,8 +667,13 @@ async def propose_qa_chart(
     ``docs/plans/ai-insights-automation/15-extraction-vs-agent-policy.md``.
 
     Args:
-      chart_type: one of ``bar`` | ``pie`` | ``line`` | ``scatter`` |
-        ``table`` (validated client-side by ``ChartSpec``).
+      chart_type: pick the type that fits the data shape — see
+        SOUL.md §"Chart palette" for the decision rubric. Currently
+        accepted by ``schemas.qa.ChartSpec``: ``bar`` |
+        ``stacked_bar`` | ``grouped_bar`` | ``pie`` | ``donut`` |
+        ``line`` | ``area`` | ``stacked_area`` | ``sparkline`` |
+        ``scatter`` | ``bubble`` | ``kpi_tile`` | ``table`` |
+        ``treemap`` | ``radar`` | ``histogram``.
       x: x-axis column / category label.
       y: y-axis column / value label.
       series: list of series dicts (shape mirrors Recharts).

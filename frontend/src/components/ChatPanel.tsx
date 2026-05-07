@@ -4,7 +4,10 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LabelList,
   LineChart, Line,
+  AreaChart, Area,
   ScatterChart, Scatter, ZAxis,
+  Treemap,
+  RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis,
 } from "recharts";
 import {
   MessageSquare, Send, Square, Trash2, ExternalLink, ChevronDown, ChevronUp,
@@ -217,15 +220,20 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
       </ResponsiveContainer>
     );
   }
-  if (spec.chart_type === "scatter") {
-    const sd = (spec.series || []).map((s) => ({ x: Number(s.x), y: Number(s.y) }));
+  if (spec.chart_type === "scatter" || spec.chart_type === "bubble") {
+    const sd = (spec.series || []).map((s) => ({
+      x: Number(s.x),
+      y: Number(s.y),
+      z: spec.chart_type === "bubble" ? Number((s as Record<string, unknown>).size ?? 1) : 1,
+    }));
+    const isBubble = spec.chart_type === "bubble";
     return (
       <ResponsiveContainer width="100%" height={height}>
         <ScatterChart margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
           <XAxis type="number" dataKey="x" name={xLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
           <YAxis type="number" dataKey="y" name={ySeriesLabel} tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
-          <ZAxis range={[60, 60]} />
+          <ZAxis type="number" dataKey="z" range={isBubble ? [60, 600] : [60, 60]} name={isBubble ? "size" : ""} />
           <Tooltip {...TOOLTIP_STYLES} cursor={{ strokeDasharray: "3 3" }} formatter={(v) => fmt(Number(v))} />
           <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
           <Scatter data={sd} name={ySeriesLabel} fill="#3b82f6" />
@@ -233,6 +241,147 @@ function ChartRenderer({ spec, height = 240 }: { spec: ChartSpec; height?: numbe
       </ResponsiveContainer>
     );
   }
+  if (spec.chart_type === "area" || spec.chart_type === "stacked_area") {
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <AreaChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} label={{ value: xLabel, position: "insideBottom", offset: -4, fill: "#64748b", fontSize: 10 }} />
+          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
+          <Tooltip {...TOOLTIP_STYLES} formatter={(v) => [fmt(Number(v)), ySeriesLabel]} />
+          <Legend wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }} />
+          <Area type="monotone" dataKey="y" name={ySeriesLabel} stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.35} />
+        </AreaChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "sparkline") {
+    return (
+      <ResponsiveContainer width="100%" height={60}>
+        <LineChart data={data} margin={{ top: 4, right: 4, left: 4, bottom: 4 }}>
+          <Line type="monotone" dataKey="y" stroke="#3b82f6" strokeWidth={2} dot={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "kpi_tile") {
+    const value = data[0]?.y;
+    return (
+      <div style={{
+        height,
+        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+        gap: 6, background: "#0f172a", border: "1px solid #334155", borderRadius: 8,
+      }}>
+        <div style={{ color: "#94a3b8", fontSize: 11 }}>{ySeriesLabel}</div>
+        <div style={{ color: "white", fontSize: 28, fontWeight: 700 }}>{fmt(value)}</div>
+        <div style={{ color: "#64748b", fontSize: 10 }}>{xLabel}</div>
+      </div>
+    );
+  }
+  if (spec.chart_type === "treemap") {
+    const items = data.filter((r) => r.y > 0).map((r) => ({ name: r.x, size: r.y }));
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <Treemap
+          data={items}
+          dataKey="size"
+          stroke="#1e293b"
+          fill="#3b82f6"
+          isAnimationActive={false}
+          content={(props: unknown) => {
+            const p = props as { x: number; y: number; width: number; height: number; index: number; name: string; value: number };
+            const colorIdx = p.index % PIE_COLORS.length;
+            const showLabel = p.width > 60 && p.height > 22;
+            return (
+              <g>
+                <rect x={p.x} y={p.y} width={p.width} height={p.height} fill={PIE_COLORS[colorIdx]} stroke="#1e293b" />
+                {showLabel ? <text x={p.x + 6} y={p.y + 14} fill="white" fontSize={11}>{p.name}</text> : null}
+                {showLabel && p.height > 36 ? <text x={p.x + 6} y={p.y + 28} fill="#cbd5e1" fontSize={10}>{fmt(p.value)}</text> : null}
+              </g>
+            );
+          }}
+        />
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "radar") {
+    const radarData = data.map((r) => ({ axis: r.x, value: r.y }));
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <RadarChart data={radarData} outerRadius={Math.min(height * 0.35, 90)}>
+          <PolarGrid stroke="#1e293b" />
+          <PolarAngleAxis dataKey="axis" tick={{ fill: "#94a3b8", fontSize: 11 }} />
+          <PolarRadiusAxis tick={{ fill: "#94a3b8", fontSize: 10 }} tickFormatter={fmt} />
+          <Tooltip {...TOOLTIP_STYLES} formatter={(v) => fmt(Number(v))} />
+          <Radar name={ySeriesLabel} dataKey="value" stroke="#3b82f6" fill="#3b82f6" fillOpacity={0.3} />
+        </RadarChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "histogram") {
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <BarChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }} barCategoryGap={0}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" />
+          <XAxis dataKey="x" tick={{ fill: "#94a3b8", fontSize: 11 }} interval={0} angle={data.length > 6 ? -25 : 0} textAnchor={data.length > 6 ? "end" : "middle"} height={data.length > 6 ? 50 : 30} label={{ value: xLabel, position: "insideBottom", offset: -2, fill: "#64748b", fontSize: 10 }} />
+          <YAxis tick={{ fill: "#94a3b8", fontSize: 11 }} tickFormatter={fmt} label={{ value: ySeriesLabel, angle: -90, position: "insideLeft", fill: "#64748b", fontSize: 10 }} />
+          <Tooltip {...TOOLTIP_STYLES} cursor={{ fill: "#ffffff10" }} formatter={(v) => [fmt(Number(v)), ySeriesLabel]} />
+          <Bar dataKey="y" fill="#3b82f6" name={ySeriesLabel} />
+        </BarChart>
+      </ResponsiveContainer>
+    );
+  }
+  if (spec.chart_type === "donut") {
+    // Same as pie but with innerRadius. Reuse the pie label logic inline for simplicity.
+    const total = data.reduce((s, d) => s + d.y, 0) || 1;
+    const outerR = Math.min(height * 0.32, 86);
+    return (
+      <ResponsiveContainer width="100%" height={height}>
+        <PieChart>
+          <Pie
+            data={data}
+            dataKey="y"
+            nameKey="x"
+            outerRadius={outerR}
+            innerRadius={outerR * 0.6}
+            labelLine={false}
+            label={(props: unknown) => {
+              const p = props as { cx: number; cy: number; midAngle: number; outerRadius: number; payload: { x: string; y: number } };
+              const pct = (p.payload.y / total) * 100;
+              if (pct < 3) return null;
+              const RAD = Math.PI / 180;
+              const r = p.outerRadius + 16;
+              const px = p.cx + r * Math.cos(-p.midAngle * RAD);
+              const py = p.cy + r * Math.sin(-p.midAngle * RAD);
+              return <text x={px} y={py} fill="#cbd5e1" fontSize={11} textAnchor={px > p.cx ? "start" : "end"} dominantBaseline="central">{p.payload.x} {pct.toFixed(0)}%</text>;
+            }}
+          >
+            {data.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+          </Pie>
+          <Tooltip
+            {...TOOLTIP_STYLES}
+            formatter={(v, _n, props) => {
+              const num = Number(v);
+              const x = (props as { payload?: { x?: string } })?.payload?.x ?? "";
+              return [`${fmt(num)} ${ySeriesLabel}`, x];
+            }}
+          />
+          <Legend
+            verticalAlign="bottom" align="center"
+            wrapperStyle={{ fontSize: 11, color: "#cbd5e1" }}
+            formatter={(value: string) => {
+              const row = data.find((d) => d.x === value);
+              return row ? `${value} — ${fmt(row.y)}` : value;
+            }}
+          />
+        </PieChart>
+      </ResponsiveContainer>
+    );
+  }
+  // bar (default), stacked_bar, grouped_bar — for QA-lane series shape we
+  // don't have a separate "series" key, so stacked_bar / grouped_bar
+  // render the same as bar (single dimension). The agent should pivot
+  // server-side if it needs multi-series.
   return (
     <ResponsiveContainer width="100%" height={height}>
       <BarChart data={data} margin={{ top: 16, right: 24, left: 4, bottom: 4 }}>
