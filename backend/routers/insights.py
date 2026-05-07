@@ -695,12 +695,23 @@ async def get_latest_insights(
     todays = [s for s in recent_rows if _row_date(s) == today]
     chosen: AISession
     if todays:
-        scheduler_today = [s for s in todays if (s.created_by or "") == "scheduler"]
-        if scheduler_today:
-            # Prefer scheduler row; among those, the most recent wins.
-            chosen = scheduler_today[0]
-        else:
-            chosen = todays[0]
+        # Selection key (lower wins): (status_priority, scheduler_priority,
+        # negative-started_at). Effect:
+        #   1. complete rows beat non-complete (degraded/failed/cancelled)
+        #   2. within the same status tier, scheduler beats manual
+        #   3. within both ties, the most recent wins
+        # The default branch (include_failed=False) already filters to
+        # status='complete', so dimension 1 is uniform and the ordering
+        # is byte-identical to the old "prefer scheduler" logic. The
+        # include_failed=True branch now correctly surfaces a recent
+        # complete manual run instead of an earlier degraded scheduler run.
+        def _selection_key(s: AISession) -> tuple[int, int, float]:
+            status_priority = 0 if s.status == "complete" else 1
+            scheduler_priority = 0 if (s.created_by or "") == "scheduler" else 1
+            ts = -s.started_at.timestamp() if s.started_at is not None else 0.0
+            return (status_priority, scheduler_priority, ts)
+
+        chosen = sorted(todays, key=_selection_key)[0]
     else:
         # No row for today -> most recent in the candidate set.
         chosen = recent_rows[0]
