@@ -86,10 +86,11 @@ cdx2.json
 /.openclaw/exec-approvals.json
 /.openclaw/memory/
 /.openclaw/plugin-skills/
-# Workspace dream-cycle outputs and daily notes are runtime drift:
+# Workspace dream-cycle outputs and daily notes are runtime drift.
+# SCHEMA.md and QUERIES.md are durable reference docs the agent reads
+# at session boot — they ARE tracked; only DREAMS.md and the per-day
+# memory notes are drift.
 /.openclaw/workspace/DREAMS.md
-/.openclaw/workspace/QUERIES.md
-/.openclaw/workspace/SCHEMA.md
 /.openclaw/workspace/memory/
 # Explicit allows for the declarative files we DO want in git:
 !/.openclaw/.gitkeep
