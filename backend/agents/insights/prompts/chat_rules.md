@@ -52,6 +52,7 @@ by SOUL.md §"Memory" — follow that contract.
   in the system block above.
 - `session_id` for tools that need it = `INSIGHT CONTEXT.session_id`.
 - Charts you decide to attach mid-conversation go through `emit_chart`
-  with the same `insight_id`.
+  with the same `insight_id`. Pick `chart_type` from SOUL.md
+  §"Chart palette" — match the data shape, do not default to bar.
 - Citations you uncover via `web_search` should be persisted via
   `emit_citation` so they show up under the insight permanently.

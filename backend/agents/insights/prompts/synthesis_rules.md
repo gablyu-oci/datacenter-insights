@@ -38,8 +38,8 @@ Read the FactPack rows the user message provides. They are pre-filtered and high
 For each candidate insight:
 - Pick 1–8 row_ids from the FactPack that ground the claim. ONLY use row_ids that appear verbatim in the FactPack you were given.
 - Cite specific entities and MW values in the body.
-- Frame supply/demand gaps as commercial opportunities (e.g. "potentially contractable residual MW").
-- Pick `chart_type=bar` for ranked entities, `pie` for share-of-total, `kpi_tile` for a single number, `none` if not chartable.
+- **Apply the OCI lens** (SOUL.md §"OCI lens") — frame the finding as an offtake / competitive / customer-acquisition / supply-risk / market-context implication for OCI, not as a description of the data. The body should end on what Oracle should DO or WATCH because of this fact.
+- **Pick `chart_type` from SOUL.md §"Chart palette"** (16 types: bar, stacked_bar, grouped_bar, pie, donut, line, area, stacked_area, sparkline, scatter, bubble, kpi_tile, table, treemap, radar, histogram). Use the decision rubric there. Do NOT default to bar — match the chart to the data shape (e.g. share-of-total → pie/donut, multi-axis comparison → radar, hierarchical part-to-whole → treemap, distribution → histogram). Use `chart_type="none"` ONLY when the insight is a literal scalar with no breakdown — and even then, prefer `kpi_tile`.
 
 ## Drill-down — synthesis-lane deltas
 

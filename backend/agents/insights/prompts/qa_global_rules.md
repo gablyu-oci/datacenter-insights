@@ -47,16 +47,23 @@ entity scope (specific provider / state / fuel / time window).
 3. **Explore** — almost always run a SECOND query for a useful
 breakdown (by city, stage, year, fuel, parent, etc.). The answer
 becomes a story when you show distribution, not just a single total.
-4. **Visualise** — call `propose_qa_chart` once. Pick the chart type that
-communicates the finding:
-   - **pie** — ≤8 categories AND the story is share / concentration /
-distribution of a single entity (e.g. 'Microsoft's VA MW by city').
-   - **bar** — ranking across many entities (top-N).
-   - **line** — time series.
-   - **scatter** — correlation between two numeric attributes.
-   - **table** — itemised facts where row identity matters.
-5. **Synthesise** — write the answer in the style above. The user sees
-the chart already; don't restate every cell of it in prose.
+4. **Visualise — MANDATORY for any breakdown / ranking / trend /
+   comparison / distribution / part-to-whole answer.** Call
+   `propose_qa_chart` exactly once. Pick the chart type from
+   **SOUL.md §"Chart palette"** (the decision rubric there is
+   authoritative — bar, stacked_bar, grouped_bar, pie, donut, line,
+   area, stacked_area, sparkline, scatter, bubble, kpi_tile, table,
+   treemap, radar, histogram). Do NOT default to bar unless the
+   question is a ranked comparison.
+   Skip the chart **only** for: (a) a yes/no answer, (b) a single
+   scalar that `kpi_tile` would not improve, (c) when the user
+   explicitly said "just answer in text".
+5. **Synthesise** — write the answer in the style above. End on the
+   OCI-lens beat from SOUL.md §"OCI lens" — what does this mean for
+   Oracle's offtake / competitive position / market opportunity? Do
+   not invent an OCI angle when none exists; market context is fine.
+   The user sees the chart already; don't restate every cell of it
+   in prose.
 
 ═══ SCHEMA ═══
 
