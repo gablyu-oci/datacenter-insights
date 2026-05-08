@@ -5,6 +5,7 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import ErrorPanel from "../shared/ErrorPanel";
 import CitationFooter from "../shared/CitationFooter";
 import SiteDetail from "../SiteDetail";
+import RoleDistribution from "./companies/RoleDistribution";
 
 const CARD_STYLE = {
   background: "#1e293b",
@@ -15,6 +16,11 @@ const CARD_STYLE = {
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+interface CompanyRoleEntry {
+  role: string;
+  site_count: number;
+}
+
 interface CompanySummary {
   id: number;
   canonical_name: string;
@@ -23,6 +29,7 @@ interface CompanySummary {
   public_private: string | null;
   site_count: number;
   mw_total: number;
+  roles?: CompanyRoleEntry[];
 }
 
 interface CompaniesListResponse {
@@ -161,10 +168,34 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
           alignItems: "center",
         }}>
           <div>
-            <div style={{ color: "white", fontWeight: 700, fontSize: 18 }}>
-              {loading ? "Loading..." : (detail?.canonical_name ?? "Company")}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <div style={{ color: "white", fontWeight: 700, fontSize: 18 }}>
+                {loading ? "Loading..." : (detail?.canonical_name ?? "Company")}
+              </div>
+              {/* Role badges — derived from /role-summary roles map */}
+              {roleData?.data && Object.keys(roleData.data).length > 0 && (
+                <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                  {Object.entries(roleData.data)
+                    .sort(([, a], [, b]) => (b as any).site_count - (a as any).site_count)
+                    .map(([role, agg]) => (
+                      <span key={role} style={{
+                        padding: "1px 7px",
+                        borderRadius: 4,
+                        fontSize: "10px",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.04em",
+                        background: "#0f172a",
+                        border: "1px solid #334155",
+                        color: "#94a3b8",
+                      }} title={`${(agg as any).site_count} sites`}>
+                        {role.replace(/_/g, " ")} · {(agg as any).site_count}
+                      </span>
+                    ))}
+                </div>
+              )}
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 2 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
               {detail?.ticker && (
                 <span style={{ color: "#64748b", fontSize: "12px" }}>Ticker: <span style={{ color: "#94a3b8" }}>{detail.ticker}</span></span>
               )}
@@ -232,9 +263,7 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
                 </div>
               </div>
 
-              {/* Role Distribution — keep the per-role tiles (end_user / provider /
-                  operator / etc.) but no chart; the chart was visually redundant
-                  with the tiles. */}
+              {/* Role Distribution — per-role tiles + nested counterparty donut grid */}
               {roleData && Object.keys(roleData).length > 0 && (
                 <div style={{ marginBottom: 20 }}>
                   <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
@@ -257,38 +286,8 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
                       </div>
                     ))}
                   </div>
-                </div>
-              )}
-
-              {/* Sites by state */}
-              {sitesByState.length > 0 && (
-                <div style={{ marginBottom: 20 }}>
-                  <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
-                    Sites by State (top 10)
-                  </div>
-                  <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: 12 }}>
-                    <ResponsiveContainer width="100%" height={Math.max(140, sitesByState.length * 28)}>
-                      <BarChart data={sitesByState} layout="vertical" margin={{ left: 4, right: 50, top: 4, bottom: 4 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" horizontal={false} />
-                        <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
-                        <YAxis type="category" dataKey="state" tick={{ fill: "#94a3b8", fontSize: 11 }} width={36} />
-                        <Tooltip
-                          contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
-                          itemStyle={{ color: "#e2e8f0" }}
-                          labelStyle={{ color: "white" }}
-                          formatter={(v, _n, props) => [
-                            `${v} sites · ${(props as { payload?: { mw?: number } })?.payload?.mw?.toLocaleString() ?? 0} MW`,
-                            "By state",
-                          ]}
-                        />
-                        <Bar dataKey="sites" radius={[0, 4, 4, 0]}>
-                          {sitesByState.map((_, i) => (
-                            <Cell key={i} fill={`hsl(${210 + i * 14}, 70%, ${60 - i * 2}%)`} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
+                  {/* Counterparty donut grid — same section, more granular */}
+                  <RoleDistribution companyId={companyId} companyName={detail?.canonical_name ?? ""} />
                 </div>
               )}
 
@@ -346,6 +345,38 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
                   </div>
                 )}
               </div>
+
+              {/* Sites by state */}
+              {sitesByState.length > 0 && (
+                <div style={{ marginBottom: 20 }}>
+                  <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+                    Sites by State (top 10)
+                  </div>
+                  <div style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: 12 }}>
+                    <ResponsiveContainer width="100%" height={Math.max(140, sitesByState.length * 28)}>
+                      <BarChart data={sitesByState} layout="vertical" margin={{ left: 4, right: 50, top: 4, bottom: 4 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#0f172a" horizontal={false} />
+                        <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
+                        <YAxis type="category" dataKey="state" tick={{ fill: "#94a3b8", fontSize: 11 }} width={36} />
+                        <Tooltip
+                          contentStyle={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 8, fontSize: 12 }}
+                          itemStyle={{ color: "#e2e8f0" }}
+                          labelStyle={{ color: "white" }}
+                          formatter={(v, _n, props) => [
+                            `${v} sites · ${(props as { payload?: { mw?: number } })?.payload?.mw?.toLocaleString() ?? 0} MW`,
+                            "By state",
+                          ]}
+                        />
+                        <Bar dataKey="sites" radius={[0, 4, 4, 0]}>
+                          {sitesByState.map((_, i) => (
+                            <Cell key={i} fill={`hsl(${210 + i * 14}, 70%, ${60 - i * 2}%)`} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
 
               {/* Sites list */}
               <div>
@@ -415,8 +446,23 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
 
 // ── Main Component ─────────────────────────────────────────────────────────
 
+interface CompaniesAggregate {
+  total_companies: number;
+  total_sites: number;
+  total_mw: number;
+  stages_included: string[];
+}
+
 export default function CompaniesTab() {
   const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<CompaniesListResponse>("/api/companies/?order_by=site_count&page_size=50");
+  // KPI row queries operational and under-construction separately so each
+  // headline number is unambiguous about what stage it covers.
+  const { data: activeAgg } = useApi<CompaniesAggregate>(
+    `/api/companies/aggregate?stages=Active`,
+  );
+  const { data: constructionAgg } = useApi<CompaniesAggregate>(
+    `/api/companies/aggregate?stages=Construction`,
+  );
   const [sortField, setSortField] = useState<"site_count" | "mw_total" | "canonical_name">("site_count");
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
@@ -461,8 +507,16 @@ export default function CompaniesTab() {
     else { setSortField(field); setSortAsc(false); }
   };
 
-  const totalSites = companies.reduce((s, c) => s + (c.site_count ?? 0), 0);
-  const totalMW = companies.reduce((s, c) => s + (c.mw_total ?? 0), 0);
+  // Aggregates by stage. Both come from the dedicated endpoint that does
+  // COUNT(DISTINCT sites.id) + SUM(power_capacity_mw) — avoids the per-role
+  // double-counting the per-company reduce produces.
+  const activeBuildings = activeAgg?.total_sites ?? 0;
+  const activeMW = activeAgg?.total_mw ?? 0;
+  const constructionMW = constructionAgg?.total_mw ?? 0;
+  const totalCompanies = activeAgg?.total_companies ?? total;
+  const fmtPower = (mw: number) =>
+    mw >= 1000 ? `${(mw / 1000).toFixed(1)}` : `${Math.round(mw).toLocaleString()}`;
+  const fmtUnit = (mw: number) => (mw >= 1000 ? "GW" : "MW");
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -496,9 +550,6 @@ export default function CompaniesTab() {
           <span style={{ padding: "2px 8px", borderRadius: 4, background: "#0f172a", border: "1px solid #1d4ed8", color: "#60a5fa", fontSize: "10px", fontWeight: 600 }}>
             {total} companies tracked
           </span>
-          <span style={{ padding: "2px 8px", borderRadius: 4, background: "#052e16", border: "1px solid #16a34a", color: "#4ade80", fontSize: "9px", fontWeight: 600 }}>
-            LIVE
-          </span>
         </div>
       </div>
 
@@ -506,19 +557,25 @@ export default function CompaniesTab() {
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 160 }}>
           <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total Companies</div>
-          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{total}</div>
+          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{totalCompanies.toLocaleString()}</div>
         </div>
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 160 }}>
-          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total Sites</div>
-          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{totalSites.toLocaleString()}</div>
+          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total Active Buildings</div>
+          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{activeBuildings.toLocaleString()}</div>
         </div>
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 160 }}>
-          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total MW</div>
-          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{totalMW.toLocaleString()}<span style={{ color: "#64748b", fontSize: "13px", marginLeft: "3px" }}>MW</span></div>
+          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total Active {fmtUnit(activeMW)}</div>
+          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>
+            {fmtPower(activeMW)}
+            <span style={{ color: "#64748b", fontSize: "13px", marginLeft: "3px" }}>{fmtUnit(activeMW)}</span>
+          </div>
         </div>
         <div style={{ ...CARD_STYLE, flex: 1, minWidth: 160 }}>
-          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Showing</div>
-          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>{companies.length}<span style={{ color: "#64748b", fontSize: "13px", marginLeft: "3px" }}>of {total}</span></div>
+          <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>Total Under Construction {fmtUnit(constructionMW)}</div>
+          <div style={{ color: "white", fontSize: "28px", fontWeight: 700 }}>
+            {fmtPower(constructionMW)}
+            <span style={{ color: "#64748b", fontSize: "13px", marginLeft: "3px" }}>{fmtUnit(constructionMW)}</span>
+          </div>
         </div>
       </div>
 
@@ -565,6 +622,7 @@ export default function CompaniesTab() {
                   { label: "Company", field: "canonical_name" as const },
                   { label: "Ticker", field: null },
                   { label: "Type", field: null },
+                  { label: "Roles", field: null },
                   { label: "Sites", field: "site_count" as const },
                   { label: "Total MW", field: "mw_total" as const },
                 ].map(({ label, field }) => (
@@ -614,6 +672,30 @@ export default function CompaniesTab() {
                         {c.public_private.toUpperCase()}
                       </span>
                     ) : <span style={{ color: "#475569" }}>--</span>}
+                  </td>
+                  <td style={{ padding: "10px 14px" }}>
+                    <div style={{ display: "flex", gap: 3, flexWrap: "wrap", maxWidth: 220 }}>
+                      {(c.roles ?? []).slice(0, 4).map(r => (
+                        <span key={r.role} style={{
+                          padding: "1px 6px",
+                          borderRadius: 4,
+                          fontSize: "9px",
+                          fontWeight: 600,
+                          letterSpacing: "0.03em",
+                          background: "#0f172a",
+                          border: "1px solid #334155",
+                          color: "#94a3b8",
+                          whiteSpace: "nowrap",
+                        }} title={`${r.site_count} sites`}>
+                          {r.role.replace(/_/g, " ")}
+                        </span>
+                      ))}
+                      {(c.roles?.length ?? 0) > 4 && (
+                        <span style={{ color: "#475569", fontSize: 9 }}>
+                          +{(c.roles?.length ?? 0) - 4}
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{c.site_count}</td>
                   <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{(c.mw_total ?? 0).toLocaleString()}</td>

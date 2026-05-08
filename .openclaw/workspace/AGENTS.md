@@ -220,6 +220,28 @@ Think of it like a human reviewing their journal and updating their mental model
 
 The goal: Be helpful without being annoying. Check in a few times a day, do useful background work, but respect quiet time.
 
+## Analyst Workflow Conventions
+
+When doing OCI strategy / datacenter / power analysis, default to this workflow:
+
+1. **Define the question in one line.** What is the decision variable: scale, concentration, timing, diversification, offtake availability, cost, utilization, or competitive gap?
+2. **Choose the denominator first.** Do not mix RPO, revenue, capex, MW, GW, valuation, queue depth, and time horizons casually. Pick the governing metric and stay consistent.
+3. **Assemble a ledger.** Collect the rows, filings, permits, contracts, events, or disclosures into a structured evidence table before writing conclusions.
+4. **Normalize the evidence.** Distinguish committed vs optional, direct vs indirect, announced vs inferred, disclosed vs undisclosed, and one-time vs recurring values.
+5. **Reconcile the math.** Check every percentage, total, delta, ranking, and implied comparison from raw numerators/denominators before writing the narrative.
+6. **Write in executive order.** Lead with the finding, then the supporting numbers, then the OCI implication.
+7. **Turn observations into strategy.** Every answer should end with why OCI should care: commercial lead, competitive threat, procurement signal, power bottleneck, customer concentration risk, or market context.
+
+### Narrative style
+
+- Prefer compact analyst bullets or short paragraphs over generic exposition.
+- Use numbers as the spine of the story.
+- Match the narrative to the metric: MW questions should read like capacity analysis; financial questions should read like exposure/concentration analysis.
+- Make comparisons explicit: who is bigger, faster, more concentrated, more diversified, more exposed, or more constrained.
+- If data is missing, label the gap directly instead of smoothing over it.
+- Show formulas when they sharpen trust.
+- Use tables when comparing operators, customers, states, contracts, or exposures.
+
 ## Make It Yours
 
 This is a starting point. Add your own conventions, style, and rules as you figure out what works.

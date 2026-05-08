@@ -171,19 +171,7 @@ function DealRow({ deal, expanded, onToggle }: {
             <span style={{ padding: "2px 8px", borderRadius: "4px", background: `${buyerColor}22`, color: buyerColor, fontSize: "11px", fontWeight: 600 }}>
               {buyerName}
             </span>
-            {/* FE3: live provenance pill */}
-            {(deal.source ?? "live") === "live" && (
-              <span
-                style={{
-                  padding: "2px 6px", borderRadius: 4,
-                  background: "#16a34a", color: "white",
-                  fontSize: 10, fontWeight: 700, letterSpacing: 0.3,
-                }}
-                title="Sourced from live SEC EDGAR extraction"
-              >
-                LIVE
-              </span>
-            )}
+            {/* LIVE provenance pill removed — implicit on this tab. */}
           </div>
         </td>
         <td style={{ padding: "10px 12px", color: "#e2e8f0", fontSize: "12px", maxWidth: "340px" }}>
@@ -302,16 +290,16 @@ function ModalDealCard({ deal }: { deal: CuratedDeal }) {
             {isEdgar ? "SEC EDGAR" : "Press"}
           </div>
           {/* FE2: live-vs-archived provenance pill */}
-          {deal.source && (
+          {deal.source === "archive" && (
             <div style={{
               marginTop: 4,
               padding: "2px 6px", borderRadius: "4px",
               fontSize: "9px", fontWeight: 700, textAlign: "center",
-              background: deal.source === "live" ? "#052e1a" : "#1f1a0a",
-              border: `1px solid ${deal.source === "live" ? "#16a34a" : "#92400e"}`,
-              color: deal.source === "live" ? "#4ade80" : "#fbbf24",
+              background: "#1f1a0a",
+              border: "1px solid #92400e",
+              color: "#fbbf24",
             }}>
-              {deal.source === "live" ? "LIVE" : "ARCHIVED"}
+              ARCHIVED
             </div>
           )}
         </div>

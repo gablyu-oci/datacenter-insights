@@ -139,9 +139,9 @@ export default function TriangulationTab() {
             const accent = isLive ? "#22c55e" : isModelled ? "#eab308" : "#334155";
             const labelText =
               isLive
-                ? "LIVE"
+                ? ""
                 : isModelled
-                  ? "live (modelled — see assumptions)"
+                  ? "Modelled — see assumptions"
                   : "Paid data required";
             const clickable = !!anchor;
             return (

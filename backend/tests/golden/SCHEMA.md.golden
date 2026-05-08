@@ -1,0 +1,49 @@
+# Schema Digest — generated <TS> (migration test_rev)
+
+## Tables (3)
+
+### `companies` (3 rows)
+
+| column | type | nullable | fk |
+|---|---|---|---|
+| id | INTEGER | no | pk |
+| canonical_name | VARCHAR | no | — |
+| ticker | VARCHAR | yes | — |
+
+**Top 10 by `default order`:**
+| id | canonical_name | ticker |
+|---|---|---|
+| 1 | Crusoe Energy |  |
+| 2 | QTS Realty | QTS |
+| 3 | CoreWeave | CRWV |
+
+### `sites` (2 rows)
+
+| column | type | nullable | fk |
+|---|---|---|---|
+| id | INTEGER | no | pk |
+| power_capacity_mw | FLOAT | yes | — |
+| provider_name | VARCHAR | yes | — |
+| developer_company_id | INTEGER | yes | companies.id |
+
+**FKs:** developer_company_id -> companies.id
+
+**Top 10 by `power_capacity_mw`:**
+| id | power_capacity_mw |
+|---|---|
+| 11 | 720.0 |
+| 12 | 220.0 |
+
+### `events` (0 rows)
+
+| column | type | nullable | fk |
+|---|---|---|---|
+| id | INTEGER | no | pk |
+| event_date | DATE | yes | — |
+
+## High-signal join paths
+- companies <-(developer_companies[])- energy_projects -(state_code)-> sites
+- companies <-(buyer_company_id|seller_company_id)- edgar_extractions
+- power_projects <-(aterio_phase_uid)- power_deal_links -(edgar_extraction_id)-> edgar_extractions
+- sites -(state_code, county_fips)-> generator_permits (source='epa_echo')
+- sites -(state, county)-> building_permits

@@ -8,6 +8,7 @@ When MOCK_DATA=1, returns mock permit data.
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime
 from typing import Optional
 
@@ -27,6 +28,41 @@ MOCK_ENABLED = os.environ.get("MOCK_DATA", "0") == "1"
 DATACENTER_FUEL_TYPES = {"diesel", "natural_gas", "dual_fuel"}
 
 router = APIRouter(prefix="/api/permits", tags=["permits"])
+
+
+def _clean_url(u: Optional[str]) -> Optional[str]:
+    """Strip CR/LF/whitespace/control chars from a URL.
+
+    Some upstream feeds (notably TCEQ) embed `\\r` mid-URL which yields
+    HTTP 000 when curled and breaks browsers. URLs never carry legitimate
+    whitespace, so we scrub it here.
+    """
+    if not u:
+        return None
+    cleaned = re.sub(r"[\s\x00-\x1f\x7f]+", "", u)
+    return cleaned or None
+
+
+def _is_self_named_autoresolve(parent_name: Optional[str], permittee_raw: Optional[str]) -> bool:
+    """Return True if the joined parent name is just a near-duplicate of
+    the original permittee_raw_name (i.e. a self-resolution that
+    masquerades as parent resolution).
+
+    Example: permittee "AGRI DRAIN CORP" got auto-resolved to a Company
+    row literally named "AGRI DRAIN CORP" -- that's not a real parent
+    resolution and the UI should suppress it.
+    """
+    if not parent_name or not permittee_raw:
+        return False
+    a = re.sub(r"[^a-z0-9]+", "", parent_name.lower())
+    b = re.sub(r"[^a-z0-9]+", "", permittee_raw.lower())
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    if len(a) >= 6 and (a in b or b in a):
+        return True
+    return False
 
 
 def _permit_to_dict(p: GeneratorPermit, parent_name: Optional[str] = None) -> dict:
@@ -56,13 +92,27 @@ def _permit_to_dict(p: GeneratorPermit, parent_name: Optional[str] = None) -> di
             val = val.isoformat()
         d[col.name] = val
 
-    # ── 1. resolved_company_name with keyword fallback ────────────────
-    if parent_name:
+    # ── 1. resolved_company_name (suppress self-named auto-resolutions) ──
+    # The DB has 500+ epa_echo rows where resolved_company_id points at
+    # an auto-created Company row whose canonical_name == the permittee
+    # itself ("AGRI DRAIN CORP" -> "AGRI DRAIN CORP"). That's not a real
+    # parent resolution. Detect and suppress, then fall back to the
+    # keyword-derived parent if one matches.
+    keyword_parent = _keyword_canonical(p.permittee_raw_name)
+    if parent_name and not _is_self_named_autoresolve(parent_name, p.permittee_raw_name):
         d["resolved_company_name"] = parent_name
+    elif keyword_parent:
+        d["resolved_company_name"] = keyword_parent
     else:
-        d["resolved_company_name"] = _keyword_canonical(p.permittee_raw_name)
+        d["resolved_company_name"] = None
 
     # ── 2. source_url with per-source fallback ────────────────────────
+    # The previous fallback for PJM rows pointed every row at
+    # https://www.pjm.com/planning/services-requests/services-queue --
+    # which 302s through to a content-less SharePoint asset and is not
+    # row-addressable. PJM rows DO carry per-row PDF deep links inside
+    # raw_payload (FacilitiesStudy, FeasibilityStudy, SystemImpactStudy,
+    # Interim-InterconnectionService-...). We prefer those in order.
     raw = d.get("raw_payload") or {}
     raw_url = raw.get("source_url") if isinstance(raw, dict) else None
     fallback_url: Optional[str] = None
@@ -70,15 +120,44 @@ def _permit_to_dict(p: GeneratorPermit, parent_name: Optional[str] = None) -> di
     if not raw_url:
         if src == "epa_echo" and p.frs_id:
             fallback_url = f"https://echo.epa.gov/detailed-facility-report?fid={p.frs_id}"
-        elif src == "pjm":
-            # PJM new-services queue page; not row-addressable but clickable.
-            fallback_url = "https://www.pjm.com/planning/services-requests/services-queue"
+        elif src == "pjm" and isinstance(raw, dict):
+            # Order matters: ISA / construction agreement first (most
+            # legally-meaningful), then study PDFs in reverse chronology.
+            for k in (
+                "Interim-InterconnectionService-GenerationInterconnectionAgreement",
+                "ConstructionServiceAgreement",
+                "UpgradeConstructionServiceAgreement",
+                "SystemImpactStudy",
+                "FacilitiesStudy",
+                "FeasibilityStudy",
+            ):
+                v = raw.get(k)
+                if not isinstance(v, str) or not v.startswith("http"):
+                    continue
+                # Reject placeholder URLs like
+                # "https://www.pjm.com/pjmfiles/N/A" that PJM stores when a
+                # document hasn't been posted yet.
+                tail = v.rstrip("/").rsplit("/", 1)[-1].lower()
+                if tail in ("n/a", "na", "tba", "tbd", ""):
+                    continue
+                if v.lower().endswith("/n/a") or "/n/a/" in v.lower():
+                    continue
+                fallback_url = v
+                break
+            # Last resort: the PJM new-services queue landing page. It's
+            # not row-addressable, but it's a real, navigable page (200) --
+            # better than null. We avoid the deprecated planning-api
+            # endpoint which 404s.
+            if not fallback_url:
+                fallback_url = (
+                    "https://www.pjm.com/planning/services-requests/services-queue"
+                )
         elif src == "tceq" and p.source_permit_id:
             fallback_url = (
                 f"https://www.tceq.texas.gov/permitting/air/newsourcereview/"
                 f"airpermits-pendingpermit-apps#{p.source_permit_id}"
             )
-    d["source_url"] = raw_url or fallback_url or d.get("source_url")
+    d["source_url"] = _clean_url(raw_url or fallback_url or d.get("source_url"))
     return d
 
 
@@ -86,25 +165,74 @@ def _permit_to_dict(p: GeneratorPermit, parent_name: Optional[str] = None) -> di
 # still surface the obvious hyperscaler / OCI affiliation. Order matters
 # (most-specific first); first match wins.
 _CANONICAL_KEYWORDS: tuple[tuple[str, str], ...] = (
-    ("microsoft", "Microsoft"),
-    ("amazon",    "Amazon"),
-    (" aws ",     "Amazon"),  # space-padded so we don't catch "AWSON"
-    ("vadata",    "Amazon"),       # AWS shell company
-    ("google",    "Google"),
-    ("alphabet",  "Google"),
-    ("meta ",     "Meta"),
-    ("facebook",  "Meta"),
-    ("oracle",    "Oracle"),
-    ("apple",     "Apple"),
-    ("dominion",  "Dominion Energy"),
-    ("vistra",    "Vistra"),
-    ("nextera",   "NextEra"),
-    ("constellation", "Constellation Energy"),
-    ("talen",     "Talen Energy"),
-    ("entergy",   "Entergy"),
-    ("duke ener", "Duke Energy"),
-    ("nuscale",   "NuScale Power"),
-    ("oklo",      "Oklo"),
+    # ── Hyperscalers + their permitting LLCs (SEC Exhibit 21) ─────────
+    ("microsoft",        "Microsoft"),
+    ("msft",             "Microsoft"),
+    ("azure",            "Microsoft"),
+    ("amazon",           "Amazon"),
+    (" aws ",            "Amazon"),  # padded to avoid "AWSON"
+    ("vadata",           "Amazon"),  # AWS Exhibit 21 shell
+    ("ads-c01",          "Amazon"),  # AWS internal facility code
+    ("google",           "Google"),
+    ("alphabet",         "Google"),
+    ("raiden",           "Google"),  # Google Exhibit 21 LLC
+    ("bowman dev",       "Google"),  # Bowman Development LLC -> Google
+    ("meta ",            "Meta"),
+    ("facebook",         "Meta"),
+    ("mfnw",             "Meta"),    # Meta Exhibit 21 LLC
+    ("starbelt",         "Meta"),    # Meta Exhibit 21 LLC
+    ("oracle",           "Oracle"),
+    ("apple",            "Apple"),
+    # ── PJM Transmission Owner / utility codes (case-insensitive) ─────
+    # PJM permittee_raw_name is often a project name and TransmissionOwner
+    # an abbreviation -- catch the obvious ones so the user sees who is
+    # actually behind the project.
+    ("pseg",             "PSEG"),
+    ("pepco",            "Exelon"),         # PEPCO is an Exelon subsidiary
+    ("peco",             "Exelon"),         # PECO Energy is Exelon
+    ("comed",            "Exelon"),
+    ("exelon",           "Exelon"),
+    ("dominion",         "Dominion Energy"),
+    ("vistra",           "Vistra"),
+    ("nextera",          "NextEra Energy"),
+    ("fpl ",             "NextEra Energy"),
+    ("constellation",    "Constellation Energy"),
+    ("talen",            "Talen Energy"),
+    ("entergy",          "Entergy"),
+    ("duke ener",        "Duke Energy"),
+    ("duke energy",      "Duke Energy"),
+    ("southern co",      "Southern Company"),
+    ("georgia power",    "Southern Company"),
+    ("alabama power",    "Southern Company"),
+    ("aep ",             "American Electric Power"),
+    ("american electric","American Electric Power"),
+    ("firstenergy",      "FirstEnergy"),
+    ("first energy",     "FirstEnergy"),
+    ("ppl ",             "PPL"),
+    ("ppl electric",     "PPL"),
+    ("berkshire hath",   "Berkshire Hathaway Energy"),
+    ("midamerican",      "Berkshire Hathaway Energy"),
+    ("nv energy",        "Berkshire Hathaway Energy"),
+    ("tva ",             "TVA"),
+    ("tennessee valley", "TVA"),
+    # ── Met-Ed / Penelec / Penn Power (FirstEnergy subs) ──────────────
+    (" me ",             "FirstEnergy"),     # PJM short code for Met-Ed
+    ("met-ed",           "FirstEnergy"),
+    ("penelec",          "FirstEnergy"),
+    ("penn power",       "FirstEnergy"),
+    # ── JCP&L (FirstEnergy NJ sub) and Delmarva ───────────────────────
+    ("jcpl",             "FirstEnergy"),
+    ("jcp&l",            "FirstEnergy"),
+    (" dpl ",            "Exelon"),          # Delmarva Power -> Exelon
+    ("delmarva",         "Exelon"),
+    ("bge ",             "Exelon"),          # Baltimore Gas & Electric
+    # ── Generation companies and SMR / advanced reactor vendors ───────
+    ("nuscale",          "NuScale Power"),
+    ("oklo",             "Oklo"),
+    ("x-energy",         "X-energy"),
+    ("xenergy",          "X-energy"),
+    ("kairos",           "Kairos Power"),
+    ("terrapower",       "TerraPower"),
 )
 
 

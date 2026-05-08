@@ -1,527 +1,353 @@
-import { useState } from "react";
 import { useApi } from "../../hooks/useApi";
-import type { SourceRecord, AgentStatus } from "../../types";
-import { ExternalLink, Activity, CheckCircle, Clock, Grid3X3 } from "lucide-react";
 import ErrorPanel from "../shared/ErrorPanel";
 import CitationFooter from "../shared/CitationFooter";
+import { ExternalLink } from "lucide-react";
 
-interface SourcesResponse { sources: SourceRecord[]; agents: AgentStatus[]; }
+// ── Types ──────────────────────────────────────────────────────────────────
 
-interface CoverageRow {
-  pillar: string;
-  state_code: string;
-  source: string | null;
-  coverage_status: string;
-  last_ingested_at: string | null;
-  missing_reason: string | null;
-  notes: string | null;
-  roadmap: string | null;
-  record_count: number;
+interface Pipeline {
+  key: string;
+  name: string;
+  description: string;
+  source_system: string;
+  source_url: string;
+  last_run_at: string | null;
+  status: "ok" | "stale" | "error" | string;
+  row_count: number;
 }
 
-interface CoverageResponse {
-  data: CoverageRow[];
-  total: number;
+interface SourceLink {
+  pipeline: string;
+  name: string;
+  url: string;
 }
 
-const PILLAR_COLORS: Record<string, string> = {
-  Power: "#3b82f6",
-  "GPU Supply": "#f59e0b",
-  TSMC: "#8b5cf6",
-  Permits: "#22c55e",
-  Satellite: "#06b6d4",
-  "NICs & Optics": "#ec4899",
-  "Power / GPU": "#6366f1",
-  sites: "#3b82f6",
-  companies: "#f59e0b",
-  events: "#22c55e",
-  energy_projects: "#06b6d4",
-  permits: "#ec4899",
-  power_announcements: "#8b5cf6",
-};
+interface Agent {
+  name: string;
+  description: string;
+  used_by: string;
+  model: string;
+}
 
-const CARD_STYLE = {
+interface OverviewResponse {
+  pipelines: Pipeline[];
+  sources: SourceLink[];
+  agents: Agent[];
+}
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+
+const CARD_STYLE: React.CSSProperties = {
   background: "#1e293b",
   border: "1px solid #334155",
   borderRadius: "12px",
   padding: "20px",
 };
 
-const STATUS_CELL_COLORS: Record<string, { bg: string; text: string }> = {
-  full: { bg: "#052e16", text: "#4ade80" },
-  complete: { bg: "#052e16", text: "#4ade80" },
-  partial: { bg: "#451a03", text: "#fbbf24" },
-  federal_baseline: { bg: "#451a03", text: "#fbbf24" },
-  pending: { bg: "#1f2937", text: "#9ca3af" },
-  unavailable: { bg: "#450a0a", text: "#f87171" },
-  none: { bg: "#450a0a", text: "#f87171" },
-  empty: { bg: "#450a0a", text: "#f87171" },
+const TH_STYLE: React.CSSProperties = {
+  color: "#64748b",
+  textAlign: "left",
+  padding: "8px 12px",
+  fontWeight: 500,
+  fontSize: 11,
+  textTransform: "uppercase",
+  letterSpacing: "0.04em",
+  whiteSpace: "nowrap",
+  borderBottom: "1px solid #334155",
 };
 
-function CoverageMatrix() {
-  const { data: covData, loading: covLoading, error: covError, errorInfo: covErrorInfo, retry: covRetry, lineage: covLineage } = useApi<CoverageResponse | CoverageRow[]>("/api/coverage/");
+const TD_STYLE: React.CSSProperties = {
+  padding: "10px 12px",
+  fontSize: 12,
+  color: "#e2e8f0",
+  borderBottom: "1px solid #1e293b",
+  verticalAlign: "top",
+};
 
-  if (covLoading) {
-    return <div style={{ color: "#3b82f6", textAlign: "center", padding: "40px 0" }}>Loading coverage matrix...</div>;
+const STATUS_PILL: Record<string, { bg: string; fg: string; label: string }> = {
+  ok:    { bg: "#052e16", fg: "#4ade80", label: "ok" },
+  stale: { bg: "#451a03", fg: "#fbbf24", label: "stale" },
+  error: { bg: "#450a0a", fg: "#f87171", label: "error" },
+};
+
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+function fmtTs(iso: string | null): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const yyyy = d.getUTCFullYear();
+  const mm = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(d.getUTCDate()).padStart(2, "0");
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mi = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd} ${hh}:${mi}Z`;
+}
+
+function StatusPill({ status }: { status: string }) {
+  const cfg = STATUS_PILL[status] ?? STATUS_PILL.stale;
+  return (
+    <span
+      style={{
+        display: "inline-block",
+        background: cfg.bg,
+        color: cfg.fg,
+        padding: "2px 8px",
+        borderRadius: 4,
+        fontSize: 10,
+        fontWeight: 700,
+        textTransform: "uppercase",
+        letterSpacing: "0.04em",
+      }}
+    >
+      {cfg.label}
+    </span>
+  );
+}
+
+function SectionHeader({ title, subtitle }: { title: string; subtitle: string }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <h2 style={{ color: "white", fontSize: 16, fontWeight: 700, margin: 0 }}>{title}</h2>
+      <p style={{ color: "#64748b", fontSize: 12, margin: "4px 0 0" }}>{subtitle}</p>
+    </div>
+  );
+}
+
+function ExtLink({ url, label }: { url: string; label?: string }) {
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        color: "#60a5fa",
+        textDecoration: "none",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        fontSize: 12,
+      }}
+    >
+      {label ?? url}
+      <ExternalLink size={11} />
+    </a>
+  );
+}
+
+// ── Section: Pipelines ─────────────────────────────────────────────────────
+
+function PipelinesTable({ rows }: { rows: Pipeline[] }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={TH_STYLE}>Pipeline</th>
+            <th style={TH_STYLE}>What it ingests</th>
+            <th style={TH_STYLE}>Source system</th>
+            <th style={TH_STYLE}>Last run (UTC)</th>
+            <th style={TH_STYLE}>Status</th>
+            <th style={{ ...TH_STYLE, textAlign: "right" }}>Rows</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((p) => (
+            <tr key={p.key}>
+              <td style={{ ...TD_STYLE, fontWeight: 600, color: "white", whiteSpace: "nowrap" }}>
+                {p.name}
+              </td>
+              <td style={{ ...TD_STYLE, color: "#cbd5e1", maxWidth: 480 }}>{p.description}</td>
+              <td style={TD_STYLE}>
+                <ExtLink url={p.source_url} label={p.source_system} />
+              </td>
+              <td style={{ ...TD_STYLE, color: "#94a3b8", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums" }}>
+                {fmtTs(p.last_run_at)}
+              </td>
+              <td style={TD_STYLE}>
+                <StatusPill status={p.status} />
+              </td>
+              <td style={{ ...TD_STYLE, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#cbd5e1" }}>
+                {p.row_count.toLocaleString()}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Section: Sources per Pipeline ──────────────────────────────────────────
+
+function SourcesTable({ pipelines, sources }: { pipelines: Pipeline[]; sources: SourceLink[] }) {
+  // Map pipeline key -> human name for the left column.
+  const pipelineLabel = new Map(pipelines.map((p) => [p.key, p.name]));
+  // Group sources by pipeline key, preserving the order they appear in
+  // the API response.
+  const grouped = new Map<string, SourceLink[]>();
+  for (const s of sources) {
+    const arr = grouped.get(s.pipeline) ?? [];
+    arr.push(s);
+    grouped.set(s.pipeline, arr);
   }
 
-  if (covError) {
-    return <ErrorPanel title={covErrorInfo?.title} message={covErrorInfo?.message} onRetry={covRetry} variant="inline" />;
-  }
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={TH_STYLE}>Pipeline</th>
+            <th style={TH_STYLE}>Source</th>
+            <th style={TH_STYLE}>Link</th>
+          </tr>
+        </thead>
+        <tbody>
+          {Array.from(grouped.entries()).flatMap(([pipelineKey, items]) =>
+            items.map((s, i) => (
+              <tr key={`${pipelineKey}-${i}`}>
+                <td
+                  style={{
+                    ...TD_STYLE,
+                    color: i === 0 ? "white" : "#475569",
+                    fontWeight: i === 0 ? 600 : 400,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {i === 0 ? (pipelineLabel.get(pipelineKey) ?? pipelineKey) : ""}
+                </td>
+                <td style={TD_STYLE}>{s.name}</td>
+                <td style={TD_STYLE}>
+                  <ExtLink url={s.url} />
+                </td>
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
-  // Handle both array and {data: [...]} shapes
-  const rows: CoverageRow[] = Array.isArray(covData) ? covData : (covData?.data ?? []);
+// ── Section: Agents ────────────────────────────────────────────────────────
 
-  if (rows.length === 0) {
+function AgentsTable({ rows }: { rows: Agent[] }) {
+  return (
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr>
+            <th style={TH_STYLE}>Agent</th>
+            <th style={TH_STYLE}>What it does</th>
+            <th style={TH_STYLE}>Used by</th>
+            <th style={TH_STYLE}>Model</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((a) => (
+            <tr key={a.name}>
+              <td style={{ ...TD_STYLE, fontWeight: 600, color: "white", whiteSpace: "nowrap" }}>
+                {a.name}
+              </td>
+              <td style={{ ...TD_STYLE, color: "#cbd5e1", maxWidth: 520 }}>{a.description}</td>
+              <td style={{ ...TD_STYLE, color: "#94a3b8", whiteSpace: "nowrap" }}>{a.used_by}</td>
+              <td style={{ ...TD_STYLE, color: "#94a3b8", fontFamily: "ui-monospace, SFMono-Regular, monospace", fontSize: 11 }}>
+                {a.model}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Main ───────────────────────────────────────────────────────────────────
+
+export default function SourcesTab() {
+  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } =
+    useApi<OverviewResponse>("/api/sources/overview");
+
+  if (loading) {
     return (
-      <div style={{ color: "#64748b", textAlign: "center", padding: "40px 0" }}>
-        No coverage data available yet.
+      <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: 400, color: "#3b82f6" }}>
+        Loading data sources...
       </div>
     );
   }
-
-  // Build pillar x state matrix
-  const pillars = Array.from(new Set(rows.map(r => r.pillar))).sort();
-  const states = Array.from(new Set(rows.map(r => r.state_code))).sort();
-
-  // Create lookup
-  const lookup = new Map<string, CoverageRow>();
-  rows.forEach(r => lookup.set(`${r.pillar}:${r.state_code}`, r));
-
-  return (
-    <div>
-      <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "11px" }}>
-          <thead>
-            <tr style={{ borderBottom: "1px solid #334155" }}>
-              <th style={{ color: "#64748b", textAlign: "left", padding: "6px 8px", fontWeight: 500, position: "sticky", left: 0, background: "#1e293b", zIndex: 1, minWidth: 100 }}>
-                Pillar / State
-              </th>
-              {states.map(s => (
-                <th key={s} style={{ color: "#94a3b8", textAlign: "center", padding: "6px 4px", fontWeight: 500, minWidth: 36 }}>
-                  {s}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {pillars.map(pillar => (
-              <tr key={pillar} style={{ borderBottom: "1px solid #1e293b" }}>
-                <td style={{
-                  padding: "6px 8px",
-                  color: PILLAR_COLORS[pillar] ?? "#94a3b8",
-                  fontWeight: 600,
-                  fontSize: "10px",
-                  position: "sticky",
-                  left: 0,
-                  background: "#1e293b",
-                  zIndex: 1,
-                }}>
-                  {pillar}
-                </td>
-                {states.map(state => {
-                  const row = lookup.get(`${pillar}:${state}`);
-                  const status = (row?.coverage_status ?? "none").toLowerCase();
-                  const cellColors = STATUS_CELL_COLORS[status] ?? STATUS_CELL_COLORS.none;
-                  return (
-                    <td
-                      key={state}
-                      title={row?.missing_reason ? `Missing: ${row.missing_reason}` : `${row?.record_count ?? 0} records`}
-                      style={{
-                        padding: "4px",
-                        textAlign: "center",
-                      }}
-                    >
-                      <div style={{
-                        background: cellColors.bg,
-                        color: cellColors.text,
-                        borderRadius: "3px",
-                        padding: "2px 0",
-                        fontSize: "9px",
-                        fontWeight: 600,
-                        cursor: "default",
-                      }}>
-                        {row?.record_count ?? 0}
-                      </div>
-                    </td>
-                  );
-                })}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-
-      {/* Legend */}
-      <div style={{ display: "flex", gap: "16px", marginTop: "12px", flexWrap: "wrap" }}>
-        {[
-          { label: "Full Coverage", color: "#4ade80", bg: "#052e16" },
-          { label: "Partial Coverage", color: "#fbbf24", bg: "#451a03" },
-          { label: "No Coverage", color: "#f87171", bg: "#450a0a" },
-        ].map(({ label, color, bg }) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
-            <div style={{ width: 12, height: 12, borderRadius: "3px", background: bg, border: `1px solid ${color}44` }} />
-            <span style={{ color: "#64748b", fontSize: "10px" }}>{label}</span>
-          </div>
-        ))}
-      </div>
-
-      {/* Per-pillar grouped breakdown */}
-      <div style={{ marginTop: 24 }}>
-        <h4 style={{ color: "white", fontWeight: 600, fontSize: 13, margin: "0 0 10px" }}>
-          Coverage by Pillar
-        </h4>
-        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {pillars.map(pillar => {
-            const pillarRows = rows.filter(r => r.pillar === pillar);
-            const missing = pillarRows.filter(r => {
-              const s = (r.coverage_status ?? "").toLowerCase();
-              return s !== "full" && s !== "complete";
-            });
-            return (
-              <PillarSection key={pillar} pillar={pillar} rows={pillarRows} missing={missing} />
-            );
-          })}
-        </div>
-      </div>
-
-      <CitationFooter
-        sources={["Data Coverage Matrix"]}
-        retrievedAt={covLineage?.retrieved_at}
-        confidence={covLineage?.confidence}
-        sourceUrl={covLineage?.source_url}
-      />
-    </div>
-  );
-}
-
-function PillarSection({ pillar, rows, missing }: { pillar: string; rows: CoverageRow[]; missing: CoverageRow[] }) {
-  const [open, setOpen] = useState(false);
-  const color = PILLAR_COLORS[pillar] ?? "#94a3b8";
-  const fullCount = rows.filter(r => {
-    const s = (r.coverage_status ?? "").toLowerCase();
-    return s === "full" || s === "complete";
-  }).length;
-  return (
-    <div style={{
-      background: "#0f172a",
-      border: "1px solid #1e293b",
-      borderLeft: `3px solid ${color}`,
-      borderRadius: 8,
-      overflow: "hidden",
-    }}>
-      <button
-        onClick={() => setOpen(v => !v)}
-        style={{
-          width: "100%",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          padding: "10px 14px",
-          background: "transparent",
-          border: "none",
-          cursor: "pointer",
-          color: "inherit",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ color, fontSize: 13, fontWeight: 700 }}>{pillar}</span>
-          <span style={{ color: "#64748b", fontSize: 11 }}>{rows.length} rows</span>
-          <span style={{ color: "#4ade80", fontSize: 10 }}>{fullCount} full</span>
-          {missing.length > 0 && (
-            <span style={{ color: "#fbbf24", fontSize: 10 }}>{missing.length} not full</span>
-          )}
-        </div>
-        <span style={{ color: "#64748b", fontSize: 11 }}>{open ? "Hide" : "Show"}</span>
-      </button>
-
-      {open && (
-        <div style={{ padding: "0 14px 14px" }}>
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid #1e293b" }}>
-                  {["State", "Source", "Status", "Records", "Last Ingested", "Notes / Roadmap"].map(h => (
-                    <th key={h} style={{ color: "#64748b", textAlign: "left", padding: "6px 8px", fontWeight: 500 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => {
-                  const status = (r.coverage_status ?? "none").toLowerCase();
-                  const cellColors = STATUS_CELL_COLORS[status] ?? STATUS_CELL_COLORS.none;
-                  return (
-                    <tr key={`${r.pillar}-${r.state_code}-${i}`} style={{ borderBottom: "1px solid #1e293b" }}>
-                      <td style={{ padding: "6px 8px", color: "#e2e8f0", fontWeight: 600 }}>{r.state_code}</td>
-                      <td style={{ padding: "6px 8px", color: "#94a3b8" }}>{r.source ?? "--"}</td>
-                      <td style={{ padding: "6px 8px" }}>
-                        <span style={{
-                          padding: "1px 7px",
-                          borderRadius: 3,
-                          background: cellColors.bg,
-                          color: cellColors.text,
-                          fontSize: 10,
-                          fontWeight: 600,
-                        }}>
-                          {r.coverage_status ?? "none"}
-                        </span>
-                      </td>
-                      <td style={{ padding: "6px 8px", color: "#cbd5e1" }}>{r.record_count?.toLocaleString() ?? 0}</td>
-                      <td style={{ padding: "6px 8px", color: "#64748b" }}>
-                        {r.last_ingested_at ? r.last_ingested_at.split("T")[0] : "--"}
-                      </td>
-                      <td style={{ padding: "6px 8px", color: "#94a3b8" }}>
-                        {r.notes || r.roadmap || r.missing_reason || "--"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-
-          {/* What's missing and why */}
-          {missing.length > 0 && (
-            <div style={{ marginTop: 12, background: "#1e1208", border: "1px solid #422006", borderRadius: 6, padding: "10px 12px" }}>
-              <div style={{ color: "#fbbf24", fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                What's missing and why ({missing.length})
-              </div>
-              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                <tbody>
-                  {missing.map((m, i) => (
-                    <tr key={`miss-${i}`}>
-                      <td style={{ padding: "3px 6px", color: "#fcd34d", fontWeight: 600, width: 50 }}>{m.state_code}</td>
-                      <td style={{ padding: "3px 6px", color: "#fcd34d", fontSize: 10 }}>{m.coverage_status}</td>
-                      <td style={{ padding: "3px 6px", color: "#fde68a" }}>
-                        {m.missing_reason || m.notes || m.roadmap || "no detail"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-export default function SourcesTab() {
-  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<SourcesResponse>("/api/sources");
-  const [showMatrix, setShowMatrix] = useState(false);
-
-  if (loading) return <Loader />;
 
   if (error) {
     return (
-      <div style={{ padding: "24px" }}>
-        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+      <div style={{ padding: 24 }}>
+        <ErrorPanel
+          title={errorInfo?.title}
+          message={errorInfo?.message}
+          onRetry={retry}
+          lastAttempt={lastFetchedAt}
+        />
       </div>
     );
   }
 
+  const pipelines = data?.pipelines ?? [];
   const sources = data?.sources ?? [];
   const agents = data?.agents ?? [];
 
-  // The backend doesn't expose per-source confidence today; fall back to
-  // total_records_stored for the summary tile.
-  const totalRecords = sources.reduce(
-    (s, r) => s + (r.total_records_stored ?? r.records ?? 0),
-    0,
-  );
-  const sourcesWithRunData = sources.filter(r => (r.run_count ?? 0) > 0).length;
-
-  // Map source-name -> total_records_stored so per-agent cards can show
-  // a useful "records" count even though /api/sources/ doesn't put it on
-  // the agent rows directly. Source rows can repeat the same name across
-  // multiple versions (epa_echo v1.0/v1.1/v1.2), so SUM by name.
-  const recordsByAgentName = sources.reduce<Map<string, number>>((acc, r) => {
-    acc.set(r.name, (acc.get(r.name) ?? 0) + (r.total_records_stored ?? 0));
-    return acc;
-  }, new Map<string, number>());
+  // Top KPI strip — keeps the user's quick reference of "what am I looking at".
+  const okCount = pipelines.filter((p) => p.status === "ok").length;
+  const totalRows = pipelines.reduce((s, p) => s + (p.row_count ?? 0), 0);
 
   return (
-    <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
-      {/* Summary KPIs */}
-      <div style={{ display: "flex", gap: "16px", flexWrap: "wrap" }}>
+    <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* KPIs */}
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         {[
-          { label: "Data Sources", value: String(sources.length) },
-          { label: "Total Records Ingested", value: totalRecords.toLocaleString() },
-          { label: "Active Agents", value: String(agents.filter((a) => a.status === "active").length) },
-          { label: "Sources with Run Data", value: `${sourcesWithRunData}/${sources.length}` },
+          { label: "Ingestion Pipelines", value: String(pipelines.length) },
+          { label: "Pipelines OK (< 7d)",  value: `${okCount} / ${pipelines.length}` },
+          { label: "Underlying Sources",   value: String(sources.length) },
+          { label: "Active Agents",        value: String(agents.length) },
+          { label: "Total Rows Ingested",  value: totalRows.toLocaleString() },
         ].map(({ label, value }) => (
           <div key={label} style={{ ...CARD_STYLE, flex: 1, minWidth: 140 }}>
-            <div style={{ color: "#94a3b8", fontSize: "12px", marginBottom: "4px" }}>{label}</div>
-            <div style={{ color: "white", fontSize: "24px", fontWeight: 700 }}>{value}</div>
+            <div style={{ color: "#94a3b8", fontSize: 12, marginBottom: 4 }}>{label}</div>
+            <div style={{ color: "white", fontSize: 22, fontWeight: 700 }}>{value}</div>
           </div>
         ))}
       </div>
 
-      {/* Coverage Matrix Section */}
+      {/* (a) Ingestion Pipelines */}
       <div style={CARD_STYLE}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: showMatrix ? "16px" : 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <Grid3X3 size={16} color="#3b82f6" />
-            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
-              Data Coverage Matrix
-            </h3>
-          </div>
-          <button
-            onClick={() => setShowMatrix(v => !v)}
-            style={{
-              background: showMatrix ? "#1e293b" : "#0f172a",
-              border: "1px solid #334155",
-              borderRadius: "6px",
-              color: "#94a3b8",
-              padding: "6px 12px",
-              cursor: "pointer",
-              fontSize: "12px",
-            }}
-          >
-            {showMatrix ? "Hide Matrix" : "Show Matrix"}
-          </button>
-        </div>
-        {showMatrix && <CoverageMatrix />}
+        <SectionHeader
+          title="Ingestion Pipelines"
+          subtitle="One row per real pipeline. Status reflects the latest run: ok = ran in the last 7 days, stale = older, error = last run failed."
+        />
+        <PipelinesTable rows={pipelines} />
       </div>
 
-      {/* Agent status */}
-      {agents.length > 0 && (
-        <div style={CARD_STYLE}>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "14px" }}>
-            <Activity size={16} color="#3b82f6" />
-            <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>
-              Agent Pipeline Status
-            </h3>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: "10px" }}>
-            {agents.map((a, i) => (
-              <div key={i} style={{
-                background: "#0f172a",
-                borderRadius: "8px",
-                padding: "12px 14px",
-                border: `1px solid ${a.status === "active" ? "#22c55e44" : "#33415544"}`,
-              }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ color: "white", fontSize: "13px", fontWeight: 500 }}>{a.name ?? a.agent ?? "(unnamed)"}</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                    {a.status === "active"
-                      ? <CheckCircle size={12} color="#22c55e" />
-                      : <Clock size={12} color="#94a3b8" />
-                    }
-                    <span style={{ color: a.status === "active" ? "#22c55e" : "#94a3b8", fontSize: "11px" }}>
-                      {a.status}
-                    </span>
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: "16px", marginTop: "8px" }}>
-                  <div>
-                    <div style={{ color: "#64748b", fontSize: "10px" }}>Records</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "12px" }}>
-                      {(a.records_processed ?? recordsByAgentName.get(a.name ?? "") ?? 0).toLocaleString()}
-                    </div>
-                  </div>
-                  <div>
-                    <div style={{ color: "#64748b", fontSize: "10px" }}>Last Run</div>
-                    <div style={{ color: "#e2e8f0", fontSize: "11px" }}>
-                      {a.last_run ? a.last_run.split("T")[0] : "--"}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Source records */}
-      {sources.length > 0 && (
-        <div style={CARD_STYLE}>
-          <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: "0 0 16px" }}>
-            Data Sources & Lineage
-          </h3>
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-            {sources.map((s) => {
-              const records = s.total_records_stored ?? s.records ?? 0;
-              const lastRun = s.last_run_at ?? s.last_ingested ?? null;
-              const lastRunStr = lastRun ? lastRun.split("T")[0] : "--";
-              const runCount = s.run_count ?? null;
-              return (
-                <div key={`${s.name}@${s.version ?? "unversioned"}`} style={{
-                  background: "#0f172a",
-                  borderRadius: "8px",
-                  padding: "14px 16px",
-                  border: "1px solid #1e293b",
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                  flexWrap: "wrap",
-                  gap: "12px",
-                }}>
-                  <div style={{ flex: 1, minWidth: 250 }}>
-                    {s.version && (
-                      <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                        <span style={{ color: "#64748b", fontSize: "10px" }}>v{s.version}</span>
-                      </div>
-                    )}
-                    <div style={{ color: "white", fontSize: "14px", fontWeight: 600 }}>{s.name}</div>
-                    {s.description && (
-                      <div style={{ color: "#94a3b8", fontSize: "12px", marginTop: "2px" }}>{s.description}</div>
-                    )}
-                  </div>
-                  <div style={{ display: "flex", gap: "20px", alignItems: "flex-start", flexWrap: "wrap" }}>
-                    <div>
-                      <div style={{ color: "#64748b", fontSize: "10px" }}>Records</div>
-                      <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{records.toLocaleString()}</div>
-                    </div>
-                    <div>
-                      <div style={{ color: "#64748b", fontSize: "10px" }}>Last Run</div>
-                      <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{lastRunStr}</div>
-                    </div>
-                    {runCount != null && (
-                      <div>
-                        <div style={{ color: "#64748b", fontSize: "10px" }}>Run Count</div>
-                        <div style={{ color: "#e2e8f0", fontSize: "13px" }}>{runCount.toLocaleString()}</div>
-                      </div>
-                    )}
-                    {s.url && (
-                      <a href={s.url} target="_blank" rel="noreferrer"
-                        style={{ color: "#3b82f6", display: "flex", alignItems: "center", gap: "4px", textDecoration: "none", fontSize: "12px", marginTop: "12px" }}>
-                        <ExternalLink size={12} />
-                        View Source
-                      </a>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          <CitationFooter
-            sources={["Internal Data Pipeline"]}
-            retrievedAt={lineage?.retrieved_at}
-            confidence={lineage?.confidence}
-            sourceUrl={lineage?.source_url}
-          />
-        </div>
-      )}
-
-      {/* Explainability notice */}
-      <div style={{
-        ...CARD_STYLE,
-        background: "#0f172a",
-        borderLeft: "3px solid #3b82f6",
-        padding: "14px 20px",
-      }}>
-        <div style={{ color: "#94a3b8", fontSize: "12px", lineHeight: "1.6" }}>
-          <strong style={{ color: "white" }}>Data Traceability Policy:</strong> Every metric in this platform is traceable to a primary source via the Explainability Agent.
-          All outputs include citation metadata, source confidence levels, and versioned data lineage.
-          Assumptions used in derived metrics (e.g., revenue-to-unit inference, power-per-GPU estimates) are documented with transparent methodologies.
-        </div>
+      {/* (b) Data Sources per Pipeline */}
+      <div style={CARD_STYLE}>
+        <SectionHeader
+          title="Data Sources per Pipeline"
+          subtitle="The underlying source systems each pipeline pulls from. Every link opens the source's public homepage or API."
+        />
+        <SourcesTable pipelines={pipelines} sources={sources} />
       </div>
+
+      {/* (c) Agents */}
+      <div style={CARD_STYLE}>
+        <SectionHeader
+          title="Agents"
+          subtitle="LLM and analytic agents that run on top of the ingested data. Pruned from 28 raw scheduler/adapter rows down to 8 distinct agents."
+        />
+        <AgentsTable rows={agents} />
+      </div>
+
+      <CitationFooter
+        sources={["ingestion_runs + curated registry"]}
+        retrievedAt={lineage?.retrieved_at}
+        confidence={lineage?.confidence}
+        sourceUrl={lineage?.source_url}
+      />
     </div>
   );
-}
-
-function Loader() {
-  return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading...</div>;
 }

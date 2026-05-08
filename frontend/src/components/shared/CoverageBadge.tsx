@@ -15,9 +15,7 @@ interface CoverageBadgeProps {
 }
 
 const STATUS_COLORS: Record<string, { bg: string; border: string; text: string }> = {
-  full: { bg: "#052e16", border: "#16a34a", text: "#4ade80" },
   partial: { bg: "#451a03", border: "#d97706", text: "#fbbf24" },
-  none: { bg: "#450a0a", border: "#dc2626", text: "#f87171" },
 };
 
 // Simple global cache for coverage data
@@ -56,32 +54,32 @@ function fetchCoverage(): Promise<CoverageRow[]> {
 }
 
 export default function CoverageBadge({ pillar }: CoverageBadgeProps) {
-  const [status, setStatus] = useState<string>("none");
+  const [status, setStatus] = useState<string>("hidden");
   const [lastIngested, setLastIngested] = useState<string | null>(null);
   const [showTooltip, setShowTooltip] = useState(false);
 
   useEffect(() => {
     fetchCoverage().then((rows) => {
-      // Find rows matching this pillar (case-insensitive partial match)
       const pillarLower = pillar.toLowerCase();
       const matching = rows.filter((r) =>
         r.pillar?.toLowerCase().includes(pillarLower) ||
         pillarLower.includes(r.pillar?.toLowerCase() ?? "")
       );
+      // No matching coverage rows → don't show a badge (avoid misleading "No Data" on tabs that do have data)
       if (matching.length === 0) {
-        setStatus("none");
+        setStatus("hidden");
         return;
       }
-      // Determine overall status
       const statuses = matching.map((r) => r.coverage_status?.toLowerCase() ?? "none");
-      if (statuses.every((s) => s === "full" || s === "complete")) {
-        setStatus("full");
-      } else if (statuses.some((s) => s !== "none" && s !== "empty" && s !== "")) {
+      // Only flag genuinely partial coverage. Full = no badge (default expectation).
+      // Empty across the board = no badge either; the page itself will show its own empty state.
+      const isFull = statuses.every((s) => s === "full" || s === "complete");
+      const hasAny = statuses.some((s) => s !== "none" && s !== "empty" && s !== "");
+      if (!isFull && hasAny) {
         setStatus("partial");
       } else {
-        setStatus("none");
+        setStatus("hidden");
       }
-      // Get most recent ingestion
       const dates = matching
         .map((r) => r.last_ingested_at)
         .filter(Boolean)
@@ -91,8 +89,9 @@ export default function CoverageBadge({ pillar }: CoverageBadgeProps) {
     });
   }, [pillar]);
 
-  const colors = STATUS_COLORS[status] ?? STATUS_COLORS.none;
-  const label = status === "full" ? "Full Coverage" : status === "partial" ? "Partial" : "No Data";
+  if (status !== "partial") return null;
+  const colors = STATUS_COLORS.partial;
+  const label = "Partial";
 
   return (
     <div

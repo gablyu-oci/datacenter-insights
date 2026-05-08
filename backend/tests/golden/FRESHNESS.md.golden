@@ -1,0 +1,10 @@
+# Freshness — generated 2026-05-07T12:00:00Z
+
+| table | rows | max(updated_at) | Δ 7d | Δ 24h |
+|---|---|---|---|---|
+| sites | 400 | 2026-05-07 11:30Z | +80 | +12 |
+| companies | 1,000 | 2026-05-07 09:00Z | +10 | +2 |
+| events _no_timestamp_column_ | 0 | — | 0 | 0 |
+
+## Hot tables (Δ 7d > 5%)
+- sites (+20.0%)

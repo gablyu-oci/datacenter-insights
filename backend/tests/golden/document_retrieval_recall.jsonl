@@ -1,0 +1,30 @@
+{"id": "g001", "claim": "Crusoe Wyoming campus has uncontracted capacity for new tenants in 2025.", "expected_passage_id": "psg_crusoe_wy_uncontracted", "tags": ["uncontracted", "crusoe", "wyoming", "high_value"]}
+{"id": "g002", "claim": "Stack Stockholm has a 100 MW phase available without a named hyperscaler.", "expected_passage_id": "psg_stack_stockholm_phase", "tags": ["uncontracted", "stack", "stockholm", "high_value"]}
+{"id": "g003", "claim": "QTS Atlanta site retains pre-leased capacity that has not been allocated.", "expected_passage_id": "psg_qts_atlanta_unalloc", "tags": ["uncontracted", "qts", "atlanta", "high_value"]}
+{"id": "g004", "claim": "Switch Las Vegas Citadel campus added 200 MW with no offtake announcement.", "expected_passage_id": "psg_switch_lv_citadel", "tags": ["uncontracted", "switch", "high_value"]}
+{"id": "g005", "claim": "DataBank Salt Lake City lists a 75 MW phase without buyer in latest filing.", "expected_passage_id": "psg_databank_slc_phase", "tags": ["uncontracted", "databank", "high_value"]}
+{"id": "g006", "claim": "Microsoft signed a 250 MW power purchase agreement with Constellation in Pennsylvania.", "expected_passage_id": "psg_msft_constellation_ppa", "tags": ["offtake", "microsoft", "constellation", "ppa"]}
+{"id": "g007", "claim": "Meta announced an offtake with NextEra for 480 MW solar in Texas.", "expected_passage_id": "psg_meta_nextera_solar", "tags": ["offtake", "meta", "nextera"]}
+{"id": "g008", "claim": "Google partnered with Energy Harbor for 24/7 carbon free energy in Ohio.", "expected_passage_id": "psg_google_energyharbor", "tags": ["offtake", "google", "energyharbor"]}
+{"id": "g009", "claim": "Amazon Web Services committed to a 192 MW wind PPA with Invenergy in Iowa.", "expected_passage_id": "psg_aws_invenergy_wind", "tags": ["offtake", "amazon", "invenergy", "ppa"]}
+{"id": "g010", "claim": "Oracle reached a behind-the-meter deal with Vistra at the Comanche Peak campus.", "expected_passage_id": "psg_oracle_vistra_btm", "tags": ["offtake", "oracle", "vistra"]}
+{"id": "g011", "claim": "EPA ECHO permit issued for a 60 MW diesel generator without a buyer named.", "expected_passage_id": "psg_echo_60mw_diesel", "tags": ["epa_echo", "diesel", "no_buyer"]}
+{"id": "g012", "claim": "Air permit for natural gas peaker plant in Loudoun County does not name a hyperscaler.", "expected_passage_id": "psg_loudoun_peaker_anon", "tags": ["epa_echo", "loudoun", "no_buyer"]}
+{"id": "g013", "claim": "Texas TCEQ permit application for backup generators omits the operator's customer.", "expected_passage_id": "psg_tceq_backup_anon", "tags": ["epa_echo", "tceq", "no_buyer"]}
+{"id": "g014", "claim": "Iowa DNR construction permit for emergency generators with applicant's name only.", "expected_passage_id": "psg_iowa_dnr_emergency", "tags": ["epa_echo", "iowa", "no_buyer"]}
+{"id": "g015", "claim": "Arizona ADEQ minor source permit for a 25 MW backup farm has no offtake clause.", "expected_passage_id": "psg_arizona_minor_25mw", "tags": ["epa_echo", "arizona", "no_buyer"]}
+{"id": "g016", "claim": "Permit for Crusoe Mesa AZ project was withdrawn before issuance in 2025.", "expected_passage_id": "psg_crusoe_mesa_withdrawn", "tags": ["abandoned", "crusoe", "mesa"]}
+{"id": "g017", "claim": "QTS withdrew a Loudoun County application after community pushback.", "expected_passage_id": "psg_qts_loudoun_withdraw", "tags": ["abandoned", "qts", "loudoun"]}
+{"id": "g018", "claim": "Stack Infrastructure abandoned a New Albany OH project in early 2025.", "expected_passage_id": "psg_stack_newalbany_abandon", "tags": ["abandoned", "stack", "ohio"]}
+{"id": "g019", "claim": "EdgeConneX cancelled a Phoenix AZ permit before construction.", "expected_passage_id": "psg_edgeconnex_phx_cancel", "tags": ["abandoned", "edgeconnex", "phoenix"]}
+{"id": "g020", "claim": "DataBank Richardson TX expansion phase was paused indefinitely.", "expected_passage_id": "psg_databank_richardson_paused", "tags": ["abandoned", "databank", "richardson"]}
+{"id": "g021", "claim": "Microsoft amended its Constellation PPA in Q3 2025 to extend the term to 2040.", "expected_passage_id": "psg_msft_constellation_amendment", "tags": ["amendment", "microsoft", "constellation"]}
+{"id": "g022", "claim": "Meta filed an amendment with NextEra adjusting capacity from 480 MW to 540 MW.", "expected_passage_id": "psg_meta_nextera_amendment", "tags": ["amendment", "meta", "nextera"]}
+{"id": "g023", "claim": "Google's Energy Harbor agreement was modified to add a Pennsylvania site.", "expected_passage_id": "psg_google_energyharbor_amend", "tags": ["amendment", "google", "energyharbor"]}
+{"id": "g024", "claim": "AWS extended Invenergy contract by five years in Q4 2025 amendment.", "expected_passage_id": "psg_aws_invenergy_extension", "tags": ["amendment", "amazon", "invenergy"]}
+{"id": "g025", "claim": "Oracle Vistra PPA quarterly amendment increased curtailment threshold.", "expected_passage_id": "psg_oracle_vistra_curtail", "tags": ["amendment", "oracle", "vistra"]}
+{"id": "g026", "claim": "Quantum levitation announcement on Mars data center capacity.", "expected_passage_id": null, "tags": ["adversarial", "ood"]}
+{"id": "g027", "claim": "The retail bakery industry's quarterly croissant report.", "expected_passage_id": null, "tags": ["adversarial", "ood"]}
+{"id": "g028", "claim": "Penguin migration patterns affecting datacenter cooling.", "expected_passage_id": null, "tags": ["adversarial", "ood"]}
+{"id": "g029", "claim": "Submarine fiber-optic cable disturbance off the coast of Atlantis.", "expected_passage_id": null, "tags": ["adversarial", "ood"]}
+{"id": "g030", "claim": "Ancient hieroglyphic inscriptions about renewable energy treaties.", "expected_passage_id": null, "tags": ["adversarial", "ood"]}

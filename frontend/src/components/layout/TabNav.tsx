@@ -5,8 +5,9 @@ import { Zap, Cpu, Network, Microchip, FileText, GitBranch, BookOpen, ChevronDow
 // Data Centers is first (the primary entry point — Aterio site map + table).
 // Q&A used to be a tab; now lives in the floating ChatPanel widget.
 const TOP_TABS = [
-  { id: "datacenters", label: "Data Centers Overview", icon: Server, real: true },
-  { id: "power",       label: "Power Contracts",       icon: Zap,    real: true },
+  { id: "datacenters", label: "Data Centers Overview", icon: Server,   real: true },
+  { id: "ai_insights", label: "AI Insights",           icon: Sparkles, real: true },
+  { id: "power",       label: "Power Contracts",       icon: Zap,      real: true },
 ];
 
 const SUPPLIER_TABS = [
@@ -20,7 +21,6 @@ const AFTER_SUPPLIER = [
   { id: "companies",     label: "Companies",       icon: Building2,  real: true  },
   { id: "triangulation", label: "Triangulation",   icon: GitBranch,  real: false },
   { id: "sources",       label: "Data Sources",    icon: BookOpen,   real: true  },
-  { id: "ai_insights",   label: "AI Insights",     icon: Sparkles,   real: true  },
 ];
 
 const SUPPLIER_IDS = new Set(SUPPLIER_TABS.map(t => t.id));
@@ -30,17 +30,20 @@ interface TabNavProps {
   onChange: (id: string) => void;
 }
 
-const BADGE = (real: boolean) => (
-  <span style={{
-    padding: "1px 5px", borderRadius: "3px", fontSize: "9px", fontWeight: 600,
-    letterSpacing: "0.04em", marginLeft: "2px",
-    background: real ? "#052e16" : "#1c1917",
-    border: `1px solid ${real ? "#16a34a" : "#44403c"}`,
-    color: real ? "#4ade80" : "#78716c",
-  }}>
-    {real ? "LIVE" : "MOCK"}
-  </span>
-);
+// Only show MOCK tags (real-data tabs render no badge — that's the default
+// expectation; only the exception is worth flagging).
+const BADGE = (real: boolean) =>
+  real ? null : (
+    <span style={{
+      padding: "1px 5px", borderRadius: "3px", fontSize: "9px", fontWeight: 600,
+      letterSpacing: "0.04em", marginLeft: "2px",
+      background: "#1c1917",
+      border: "1px solid #44403c",
+      color: "#78716c",
+    }}>
+      MOCK
+    </span>
+  );
 
 export default function TabNav({ active, onChange }: TabNavProps) {
   const [supplierOpen, setSupplierOpen] = useState(false);

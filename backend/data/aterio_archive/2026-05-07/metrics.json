@@ -1,0 +1,19 @@
+{
+  "match_rate": 0.0,
+  "matches_by_tier": {
+    "A": 0,
+    "B": 0,
+    "C": 0,
+    "D": 0,
+    "E": 0
+  },
+  "matches_total": 0,
+  "rows_changed": 0,
+  "rows_filtered_in": 51,
+  "rows_new": 0,
+  "rows_removed": 0,
+  "rows_total": 166,
+  "rows_unchanged": 166,
+  "run_at": "2026-05-07T08:27:38Z",
+  "source_file": "Aterio US Power_generation_projects_inventory_20260505.xlsx"
+}

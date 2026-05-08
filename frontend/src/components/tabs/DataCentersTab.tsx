@@ -568,9 +568,6 @@ export default function DataCentersTab() {
           <span style={{ padding: "2px 8px", borderRadius: 4, background: "#0f172a", border: "1px solid #1d4ed8", color: "#60a5fa", fontSize: "10px", fontWeight: 600 }}>
             {totalInDb.toLocaleString()} sites in database
           </span>
-          <span style={{ padding: "2px 8px", borderRadius: 4, background: "#052e16", border: "1px solid #16a34a", color: "#4ade80", fontSize: "9px", fontWeight: 600 }}>
-            LIVE
-          </span>
         </div>
         <div style={{ color: "#64748b", fontSize: "11px" }}>
           Showing {filtered.length} of {totalInDb.toLocaleString()} sites

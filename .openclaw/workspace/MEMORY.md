@@ -37,7 +37,10 @@ _Append as patterns emerge. Format:_
 _The kinds of questions the user keeps asking about. Helps you
 anticipate the next one._
 
-(no current entries)
+- When QA/database tooling errors, do not guess IDs or continue with unsupported claims; surface the constraint, re-check docs/tool contract, and retry only with validated inputs.  _<2026-05-07>_
+- Always apply structured research and data-analysis techniques when generating AI insights; use hypothesis-driven, evidence-first analysis.  _<2026-05-07>_
+- When OCI Insights tools fail on argument/ID validation, stop and re-check docs or prior successful calls; never invent placeholder insight_id, schema, or chart fields.  _<2026-05-08>_
+
 
 ## Platform quirks worth knowing
 
@@ -45,6 +48,8 @@ _E.g. "FactPack section X is empty most days because adapter Y
 upserts without bumping `updated_at`." Concrete, actionable._
 
 - Current memory setup needed manual restoration of daily notes and DREAMS.md; dreaming enabled but artifacts absent at initial audit.  _<2026-05-06>_
+- SQL generation must verify warehouse columns against SCHEMA.md/QUERIES.md; plausible generic columns can break the v2 flow before persist.  _<2026-05-08>_
+
 
 ## User preferences observed
 
@@ -52,7 +57,9 @@ _Specific phrasings, units, levels-of-detail the user has
 reacted positively / negatively to. Cross-checks what's in
 USER.md, but USER.md is intent; this is observation._
 
-(no current entries)
+- User prefers analyst outputs built from denominator-first ledgers, reconciled exposure math, and executive narrative that ties evidence directly to OCI implications.  _<2026-05-08>_
+- User wants analytical style generalized from examples: learn the method, evidence handling, and narrative structure without copying the specific subject matter or template.  _<2026-05-08>_
+
 
 ## Threads to revisit
 
