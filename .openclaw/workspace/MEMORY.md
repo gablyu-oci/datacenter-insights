@@ -49,6 +49,7 @@ upserts without bumping `updated_at`." Concrete, actionable._
 
 - Current memory setup needed manual restoration of daily notes and DREAMS.md; dreaming enabled but artifacts absent at initial audit.  _<2026-05-06>_
 - SQL generation must verify warehouse columns against SCHEMA.md/QUERIES.md; plausible generic columns can break the v2 flow before persist.  _<2026-05-08>_
+- Known follow-up: agent may skip build_chart despite stronger prompt; fallback covers for now. Likely fixes: model variant, MCP finalize gating until charts exist, or one-shot build_chart example.  _<2026-05-08>_
 
 
 ## User preferences observed
