@@ -38,8 +38,8 @@ Disqualifier screen — do NOT persist as an insight if any apply:
 1. **Drill** — pick a hypothesis. Run `query_database` and/or `search_documents` to gather evidence. Optionally `web_search` + `emit_citation` for one external source.
 2. **Persist** — call `persist_insight(session_id, headline, body, citations, confidence, materiality)`. Capture the returned `insight_id`. Citations may be empty when DB evidence is strong.
 3. **Chart — MANDATORY.** Call `build_chart(insight_id=<from step 2>, sql, encoding, chart_type, title)`. The chart binds to the insight via FK. **An insight without a chart is a broken insight.** Only skip step 3 if the insight is a single-scalar / yes-no claim that no visual would improve (rare — most decision-grade insights have a comparison or distribution worth charting). If `build_chart` errors, the insight still ships, but you MUST attempt the call.
-4. **Loop.** Go back to step 1 with a different hypothesis. Aim for `ceil(max_insights / 2)` insights minimum.
-5. **Finalize.** Call `finalize_session(session_id, status='complete')` once, AFTER all insights+charts are persisted. Never call finalize_session before the last `build_chart`.
+4. **Loop.** Go back to step 1 with a different hypothesis. **HARD MINIMUM: 3 persisted insights for max_insights=5, 4 for max_insights=7+.** Do NOT call finalize_session below the floor. If you can't find a 3rd or 4th insight that passes the disqualifier screen, drill harder against a NEW source table (`events`, `power_projects`, `companies`, `search_documents`) — do not finalize early.
+5. **Finalize.** Call `finalize_session(session_id, status='complete')` once, AFTER all insights+charts are persisted AND the floor is met. Never call finalize_session before the last `build_chart`. Never call it with fewer than the hard minimum above.
 
 **Forbidden batching pattern:** persist N insights → then call build_chart N times in a parallel batch. The agent's tool-call ordering is not guaranteed under parallel dispatch, so chart calls land after `finalize_session` and are silently dropped. Always interleave: persist1, chart1, persist2, chart2, …, finalize.
 
