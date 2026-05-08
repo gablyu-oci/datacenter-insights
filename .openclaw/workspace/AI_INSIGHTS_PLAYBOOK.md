@@ -39,8 +39,49 @@ Before calling `persist_insight`, run this gate. Any "yes" → drop the card and
 
 1. **Caveat-as-headline.** Is this card primarily about coverage gaps, schema quirks, or warehouse warnings? Coverage caveats belong in the body and the `confidence` field, never in the headline. Example: "Oracle MW unusable for peer ranking" is data hygiene, not an insight — fix the comparison axis instead.
 2. **Baseline ranking with no novelty.** Is this just the most-obvious first ranking off the table? "AWS has the most MW" is table-stakes; "AWS is more state-concentrated than peers, with X% in VA" is novel.
-3. **Defensive OCI ending.** Does the body close with "OCI should monitor / treat as strategic / be aware / consider"? If so, the OCI lens has not been applied — name a commercial consequence or replace the card.
-4. **Already-said.** Does this card add something to the portfolio the existing cards don't? "Meta is dense per site" + "Meta is AI-weighted" + "Meta does behind-the-meter" is one finding restated three ways.
+3. **Common-knowledge test (CRITICAL).** Would a datacenter trade analyst already know this? Examples that automatically fail this test and must be dropped:
+   - "AWS is concentrated in Northern Virginia / 40% in VA"
+   - "Hyperscaler X has the largest total MW footprint"
+   - "Meta is investing in AI infrastructure"
+   - "Microsoft and Google are growing their datacenter footprints"
+   - "PJM has long interconnection queues"
+   The bar: show me something I cannot easily get from a trade publication or a basic SQL ranking. Static cumulative footprint comparisons usually fail this test.
+4. **Defensive OCI ending.** Does the body close with "OCI should monitor / treat as strategic / be aware / consider"? If so, the OCI lens has not been applied — name a commercial consequence or replace the card.
+5. **Already-said.** Does this card add something to the portfolio the existing cards don't? "Meta is dense per site" + "Meta is AI-weighted" + "Meta does behind-the-meter" is one finding restated three ways.
+
+## Recency bias — bias every drill toward what's CHANGING, not cumulative state
+
+Static metrics describe a state every analyst already knows. Decision-grade insights are about **what's changing this year, this quarter, this month.**
+
+Bias every drill toward:
+
+- **Latest-year filter on every query** — `issued_date >= '2026-01-01'`, `announced_date >= '2026-01-01'`, `period_end >= '2026-01-01'` on EDGAR. Cumulative views are only useful as denominators ("Z% is new this year").
+- **Year-over-year deltas** — 2026 vs 2025: accelerating, decelerating, pattern break. "Microsoft permitted 4 GW in 2026 H1 vs 1.2 GW in 2025 H1" beats "Microsoft has 14 GW total."
+- **Recent filings** — prefer 8-K (event-driven) and 10-Q (latest quarter) over 10-K (annual look-back) when surfacing power moves.
+- **Movement, not stock** — who STARTED building this year, who PULLED OUT, who MOVED concentration from state X to state Y, who SIGNED a new PPA, who ABANDONED a queue position.
+- **`events` table** — event-time-stamped, ideal for recency cuts. Use `events` for partnership / siting / offtake / vendor moves in the last 90 days.
+
+When a static cumulative is the only available view, ALWAYS pair it with a recency cut: "X has Y total, Z% of which is post-2026" or "first-mover in nuclear PPAs (0 GW in 2025, 14.6 GW in 2026)." Never ship a bare cumulative.
+
+## OCI opportunity vs threat framing
+
+Every insight must close with one of two labels: **OCI opportunity** or **OCI threat**. Both must name (a) an entity, (b) a window/timeframe, (c) a number or named action.
+
+### Opportunity framings — name the target
+
+- **Offtake target**: "Project X (developer Y) has N MW uncontracted as of [recent date] — viable OCI offtake target before Z next milestone."
+- **Customer-acquisition target**: "Neo-cloud N just announced D GW with no named offtaker in [latest filing] — open conversation for OCI bare-metal."
+- **Site arbitrage**: "Hyperscaler X just exited state Y queue → freed substation capacity — OCI can re-bid before queue refills."
+- **Capacity arbitrage**: "Developer X has N MW of contractable phases at site Y, no offtaker named in 2026 filings — direct OCI counterpart conversation."
+
+### Threat framings — name the risk
+
+- **Vendor / supply lock-up**: "Vendor X just signed multi-GW capacity to peer Y in [date] — OCI's next D GW faces vendor contention through Q[N]."
+- **Customer poaching**: "Customer X disclosed multi-GW commitment to peer Y in [latest filing] — OCI account at risk in [region]."
+- **Region exclusion**: "Peer X absorbed N% of [state]'s 2026 substation queue — OCI's [region] expansion blocked through Q[N]."
+- **Pacing gap**: "Peer X permitted N GW in 2026 H1 vs OCI's [public number] — competitive growth gap of D GW."
+
+The label "**OCI opportunity:**" or "**OCI threat:**" should appear inline in the closing sentence so it's scannable. Generic "competitive read" framings without an entity / window / number fail.
 
 ## Hypothesis-driven branching, not opportunistic ranking
 

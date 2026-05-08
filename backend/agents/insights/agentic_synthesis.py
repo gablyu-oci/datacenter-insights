@@ -150,8 +150,14 @@ async def run_agentic_synthesis(
             ".openclaw/workspace/AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
         ],
         "instructions": (
+            "QUALITY BAR for this run:\n"
+            "  - RECENCY: bias every drill to 2026 / latest year. Filter dates `>= '2026-01-01'` or use `events` for last-90-days. Static cumulative metrics (e.g. 'AWS has 40% of VA MW') are common knowledge — DROP THEM.\n"
+            "  - OPPORTUNITY OR THREAT: every insight body MUST close with an explicit 'OCI opportunity:' or 'OCI threat:' sentence naming (a) an entity, (b) a window, (c) a number/named action. 'OCI should monitor' / 'OCI should treat as strategic' / 'competitive read' = AUTO-FAIL.\n"
+            "  - PORTFOLIO: ≥3 distinct source tables across the run, ≤2 cards per protagonist, ≥1 forward-looking (permits/projects/filings), ≥1 document-grounded (search_documents/edgar_extractions).\n"
+            "  - COMMON-KNOWLEDGE TEST: would a datacenter PM already know this from trade press? If yes → DROP and pick a different hypothesis.\n"
+            "\n"
             "Per-insight loop, ONE AT A TIME — DO NOT batch persists at the end:\n"
-            "  1. drill: read_workspace + query_database (+ search_documents for prose).\n"
+            "  1. drill: read_workspace + query_database (+ search_documents for prose). Apply recency filter on the SQL.\n"
             "  2. persist_insight(session_id='" + str(session_id) + "', headline=..., body=..., confidence=..., materiality=..., citations=[]). Capture the returned insight_id.\n"
             "  3. build_chart(insight_id=<from step 2>, sql=..., encoding=..., chart_type=..., title=...). MANDATORY for every insight unless it's a literal yes/no scalar. SKIPPING THIS IS A BUG.\n"
             "  4. Loop back to step 1.\n"

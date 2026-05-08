@@ -58,9 +58,27 @@ Two checklists in this file:
 
 ## 10. Disqualifier screen — DO NOT PERSIST if any apply
 - **Caveat-as-headline.** Is this card primarily a coverage gap / schema quirk / warehouse warning? (e.g. "Oracle MW unusable for peer ranking") → drop. Caveats live in the body and `confidence` field, never the headline.
-- **Baseline ranking with no novelty.** Is this just the most-obvious first ranking off the table? (e.g. "AWS has the most MW") → drop or sharpen with a novel angle (concentration, density, AI-share, geographic exposure).
-- **Defensive OCI lens.** Does the body close with "OCI should monitor / treat as strategic / be aware"? → rewrite the OCI sentence to name a commercial consequence, or drop the card.
+- **Baseline ranking with no novelty.** Is this just the most-obvious first ranking off the table? (e.g. "AWS has the most MW") → drop or sharpen with a novel angle.
+- **Common-knowledge test (CRITICAL).** Would a datacenter trade analyst already know this from recent industry coverage? Auto-fail examples:
+  - "AWS is concentrated in Northern Virginia / 40% in VA" → DROP
+  - "Hyperscaler X has the largest total MW" → DROP
+  - "Meta is investing in AI infrastructure" → DROP
+  - "PJM has long interconnection queues" → DROP
+  Bar: would this insight surprise or change the mind of a datacenter PM? If no → drop.
+- **Static cumulative.** Is the headline a lifetime/cumulative number with no recency cut? → reframe as "what's new in 2026" or drop.
+- **Defensive OCI lens.** Does the body close with "OCI should monitor / treat as strategic / be aware"? → rewrite the OCI sentence as an explicit opportunity or threat with entity + window + number, or drop the card.
 - **Already-said.** Does this card add something the existing portfolio doesn't already say about the same protagonist? → drop.
+
+## 10b. Recency / movement check
+- Does this insight describe what's CHANGED in 2026, or just a cumulative state?
+- Did the SQL include a `>= '2026-01-01'` (or last-90-days) filter on a date column?
+- Is there a year-over-year delta (2026 vs 2025) that strengthens the claim?
+- Static cumulative-only insights must be reframed with a recency cut or replaced.
+
+## 10c. OCI opportunity-or-threat check
+- Does the closing sentence carry an explicit "**OCI opportunity:**" or "**OCI threat:**" label?
+- Does it name (a) an entity, (b) a window/timeframe, (c) a number or named action?
+- "Competitive read" / "siting risk" / "market context" without those three components fails. Either tighten or drop.
 
 ## 11. Chart QA (BEFORE calling build_chart)
 - Does the encoding match the analytical question, or is the chart restating the headline?

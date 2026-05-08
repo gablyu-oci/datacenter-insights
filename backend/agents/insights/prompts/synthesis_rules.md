@@ -22,6 +22,13 @@ Hard caps for a 5-insight run:
 Disqualifier screen — do NOT persist as an insight if any apply:
 - Headline is fundamentally a coverage caveat ("X data is unusable for peer ranking", "Y has 90% NULL coverage"). Coverage gaps belong in confidence and body caveat lines, never as the headline. Pick a different hypothesis instead.
 - The finding is the most-obvious first ranking off the table (e.g. "AWS has the most MW") with no novel angle.
+- **Common-knowledge test:** would a datacenter trade analyst already know this from recent industry coverage? Examples that fail this test and MUST be dropped:
+  - "AWS is concentrated in Northern Virginia / 40% in VA"
+  - "Hyperscaler X has the largest total MW footprint"
+  - "Meta is investing in AI infrastructure"
+  - "Microsoft and Google are growing their datacenter footprints"
+  - "PJM has long interconnection queues"
+  Any insight that restates a fact every datacenter PM already knows is wasted. The bar is: "show me something I cannot easily get from a trade publication or a basic SQL ranking."
 - The body's OCI implication is "OCI should monitor / treat as strategic / be aware" — that's defensive language, not a commercial consequence.
 
 ## Workflow per insight — STRICT ORDER, NO BATCHING
@@ -45,21 +52,47 @@ Disqualifier screen — do NOT persist as an insight if any apply:
 ## Hard rules
 
 - **No SQL inference.** Use only table/column names verified in `SCHEMA.md`. Read it once at session start via `read_workspace(file="SCHEMA.md")`. If a column isn't there, pick a different one or table — never guess.
-- **Apply the OCI lens — actionable, not defensive.** Every insight body ends naming a **commercial or strategic consequence** for OCI. **Banned endings:** "OCI should monitor…", "OCI should treat … as strategic", "OCI should be aware…", "this matters for OCI's awareness". **Required framings:** contractable MW (named project + counterparty), region-specific siting risk (state + utility + window), competitor concentration risk (peer + threshold + so-what), procurement implication (vendor + bottleneck), customer-acquisition target (named entity + signal), transmission/substation bottleneck (geography + ISO). The OCI sentence must name an entity, geography, or commercial action — not a feeling.
+- **Apply the OCI lens — explicit opportunity OR threat.** Every insight body must close with a sentence labeled either an OCI **opportunity** or **threat**, naming a commercial action OCI can take or a defensive position OCI must hold. **Banned endings:** "OCI should monitor…", "OCI should treat … as strategic", "OCI should be aware…", "this matters for OCI's awareness". The required two-part framing:
+
+  **Opportunity framings** — pick one and name the entity / window / number:
+  - **Offtake target**: "Project X (developer Y) has N MW uncontracted as of [recent date] — viable OCI offtake target before Z next milestone."
+  - **Customer-acquisition target**: "Neo-cloud N just announced D GW with no named offtaker in [latest filing] — open conversation for OCI bare-metal."
+  - **Site arbitrage**: "Hyperscaler X just exited state Y queue → freed substation capacity — OCI can re-bid before queue refills."
+
+  **Threat framings** — pick one and name the entity / window / consequence:
+  - **Vendor / supply lock-up**: "Vendor X just signed multi-GW capacity to peer Y in [date] — OCI's next D GW faces vendor contention through Q[N]."
+  - **Customer poaching**: "Customer X has just disclosed multi-GW commitment to peer Y in [filing] — OCI account at risk in [region]."
+  - **Region exclusion**: "Peer X just absorbed N% of [state]'s 2026 substation queue — OCI's [region] expansion blocked through Q[N]."
+  - **Pacing gap**: "Peer X permitted N GW in 2026 H1 vs OCI's [public number] — competitive growth gap of D GW."
+
+  The OCI sentence MUST name (a) an entity, (b) a window/timeframe, (c) a number or named action. "OCI should consider competitive implications" is a fail. "Crusoe's 6.7 GW Tonopah site is uncontracted as of Q1 2026 — OCI offtake target before its Q3 ground-break deadline" is a pass.
 - **Ship, don't refuse.** Empty sessions are worse than imperfect insights. A defensible 1-sentence claim grounded in any tool result IS shippable — set `confidence="weak"` or `"med"` and persist. Drill again before giving up empty.
 - **Use multiple tables.** `sites` alone is shallow. Reach for `energy_projects`, `power_projects`, `edgar_extractions`, `companies`, `generator_permits[source='pjm']` based on the hypothesis.
 - **Body is human prose, NOT a debug dump.** NEVER inline raw `row_hash` hex strings, full UUIDs, `executed_sql`, table aliases, or `(detail row_hash ...)` parentheticals in the insight body. Provenance is stored automatically in `agent_chart` / `agent_citation` and rendered as a footer. Body should read like an analyst's one-paragraph note — entities, MW figures, dates, and the OCI implication. Nothing else.
 - **NULL-coverage check before any cross-entity SUM/AVG.** Run `SELECT entity, COUNT(*), COUNT(metric_col) FROM ... GROUP BY entity` first. If any entity has >20% NULL in the metric, do NOT ship as competitive data — reframe as a coverage gap or pick a different axis (count of sites, states, etc.). Example: Oracle has 10 sites in `sites` but 9 with NULL MW — SUM returns 17 MW, a data-coverage artefact, not a competitive read. Same trap on every other table.
 
-## Hypothesis priorities (lead with these)
+## Recency bias — current-year and movement, not cumulative
 
-1. **Uncontracted capacity at large sites** — `energy_projects.tot_contracted_power_mw` vs `sites.power_capacity_mw`.
-2. **Concentrated single-tenant load** — `sites` grouped by `provider_name`.
-3. **Developer pipelines with low offtake** — `energy_projects` grouped by `developer_companies`.
-4. **PJM ISO movers** — `generator_permits` where `source='pjm'`.
-5. **Power-side projects** — `power_projects` with `tot_phase_nameplate_power_mw`.
+Static cumulative metrics ("AWS owns N MW in VA") describe a state every analyst already knows. **Decision-grade insights are about what's CHANGING.** Bias every drill toward:
 
-Footprint comparisons are lower-priority — and risky (see NULL-coverage rule).
+- **Latest-year filter**: `issued_date >= '2026-01-01'`, `announced_date >= '2026-01-01'`, `period_end >= '2026-01-01'` on EDGAR, etc. Cumulative views are only useful as a denominator for "what % is new this year."
+- **Year-over-year deltas**: 2026 vs 2025 — accelerating, decelerating, or pattern break? "Microsoft permitted 4 GW in 2026 H1 vs 1.2 GW in 2025 H1" beats "Microsoft has 14 GW total."
+- **Recent filings only**: prefer 8-K (event-driven) and 10-Q (latest quarter) over 10-K (annual look-back) when surfacing power moves.
+- **Movement, not stock**: who STARTED building this year, who PULLED OUT, who MOVED their concentration from state X to state Y, who SIGNED a new PPA, who ABANDONED a queue position.
+- **Look at `events` table for recent siting / partnership / offtake moves** — that table is event-time-stamped, perfect for recency cuts.
+
+Where a static cumulative is the only available view, ALWAYS pair it with a recency cut: "X has Y total, Z% of which is post-2026" or "first-mover in nuclear PPAs (0 GW in 2025, 14.6 GW in 2026)." Never ship a bare cumulative.
+
+## Hypothesis priorities (lead with these — recency-anchored)
+
+1. **2026 deal flow vs 2025** — `edgar_extractions` filtered to `period_end >= '2026-01-01'`, grouped by buyer; or new `events` rows in last 90 days. Who's accelerating? Who went quiet?
+2. **Uncontracted capacity at large sites** — `energy_projects.tot_contracted_power_mw` vs `sites.power_capacity_mw`. Bias to projects announced or filed in 2026.
+3. **PJM ISO movers (recent)** — `generator_permits` where `source='pjm'` AND `issued_date >= '2026-01-01'`. New entries vs withdrawals this year. Who's still pushing into PJM?
+4. **Developer pipelines with low offtake** — `energy_projects` grouped by `developer_companies`, recent-filed projects only.
+5. **Power-side projects** — `power_projects` with `tot_phase_nameplate_power_mw`, prefer phases with 2026 dates.
+6. **Cross-table named-LLC patterns** — same developer or LLC appearing in `edgar_extractions` + `generator_permits` + `events` within the last 6 months. Recurrence across surfaces is signal.
+
+Static cumulative footprint comparisons are LAST resort — and risky (see NULL-coverage rule + common-knowledge disqualifier).
 
 ## Chart palette + QA
 
