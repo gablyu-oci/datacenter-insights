@@ -20,7 +20,7 @@ Aim for one card from each band:
 |---|---|---|
 | Scale / concentration | `sites` | "Hyperscaler X owns N% of state Y MW." |
 | Forward-looking power supply | `generator_permits[source='pjm']`, `energy_projects` | "Queue attrition: 723 GW withdrawn vs 70 GW active in PJM." |
-| Customer / operator / siting | `sites` + `events`, `companies` | "Crusoe is concentrating siting in TX with X named offtakers." |
+| **Neo-cloud / 3rd-party untenanted capacity** (HIGHEST OCI VALUE) | `sites` grouped by `provider_name`, hyperscalers excluded | "Crusoe has 3.3 GW untenanted, WY pipeline 100% open — offtake target." Rotate across Crusoe, CoreWeave, Lambda, Aligned, Compass, CyrusOne. |
 | Document-grounded | `edgar_extractions`, `search_documents` | "Meta's 10-K confirms 9.7 GW AI capacity earmarked." |
 | OCI action | any, but body must name a commercial next step | "Fermi America has 10.4 GW uncontracted at site Z — offtake target." |
 

@@ -85,12 +85,13 @@ Where a static cumulative is the only available view, ALWAYS pair it with a rece
 
 ## Hypothesis priorities (lead with these — recency-anchored)
 
-1. **2026 deal flow vs 2025** — `edgar_extractions` filtered to `period_end >= '2026-01-01'`, grouped by buyer; or new `events` rows in last 90 days. Who's accelerating? Who went quiet?
-2. **Uncontracted capacity at large sites** — `energy_projects.tot_contracted_power_mw` vs `sites.power_capacity_mw`. Bias to projects announced or filed in 2026.
-3. **PJM ISO movers (recent)** — `generator_permits` where `source='pjm'` AND `issued_date >= '2026-01-01'`. New entries vs withdrawals this year. Who's still pushing into PJM?
-4. **Developer pipelines with low offtake** — `energy_projects` grouped by `developer_companies`, recent-filed projects only.
-5. **Power-side projects** — `power_projects` with `tot_phase_nameplate_power_mw`, prefer phases with 2026 dates.
-6. **Cross-table named-LLC patterns** — same developer or LLC appearing in `edgar_extractions` + `generator_permits` + `events` within the last 6 months. Recurrence across surfaces is signal.
+1. **Neo-cloud / 3rd-party untenanted capacity** — `sites` grouped by `provider_name`, EXCLUDE hyperscalers (Amazon AWS, Microsoft, Google, Facebook, Apple, Oracle), rank by absolute untenanted MW where `end_user_companies IS NULL OR end_user_companies = ''`. Surface the top neo-cloud / colo / developer with the strongest open offtake story (high % open, multi-state, recent-stage). Strong candidates rotate: Crusoe, CoreWeave, Lambda, Aligned, Compass, CyrusOne, Stack, QTS, Vantage. **THIS IS THE MOST OCI-ACTIONABLE HYPOTHESIS in the warehouse** — these are companies that need offtakers, not competitors.
+2. **2026 deal flow vs 2025** — `edgar_extractions` filtered to `period_end >= '2026-01-01'`, grouped by buyer; or new `events` rows in last 90 days. Who's accelerating? Who went quiet?
+3. **Uncontracted capacity at large sites** — `energy_projects.tot_contracted_power_mw` vs `sites.power_capacity_mw`. Bias to projects announced or filed in 2026.
+4. **PJM ISO movers (recent)** — `generator_permits` where `source='pjm'` AND `issued_date >= '2026-01-01'`. New entries vs withdrawals this year. Who's still pushing into PJM?
+5. **Developer pipelines with low offtake** — `energy_projects` grouped by `developer_companies`, recent-filed projects only.
+6. **Power-side projects** — `power_projects` with `tot_phase_nameplate_power_mw`, prefer phases with 2026 dates.
+7. **Cross-table named-LLC patterns** — same developer or LLC appearing in `edgar_extractions` + `generator_permits` + `events` within the last 6 months. Recurrence across surfaces is signal.
 
 Static cumulative footprint comparisons are LAST resort — and risky (see NULL-coverage rule + common-knowledge disqualifier).
 
