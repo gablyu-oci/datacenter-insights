@@ -1,4 +1,4 @@
-import { useMemo, useState, Fragment } from "react";
+import { useMemo, useState, useEffect, Fragment } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import MarkerClusterGroup from "react-leaflet-cluster";
 // react-leaflet-google-layer ships CJS; force-unwrap the default export so
@@ -14,6 +14,7 @@ import {
 } from "recharts";
 import {
   Filter, X, ExternalLink, MapPin, Zap, Flame, Building2, ChevronDown, ChevronUp,
+  ChevronLeft, ChevronRight,
 } from "lucide-react";
 
 import { useApi } from "../../hooks/useApi";
@@ -364,12 +365,16 @@ export default function PermitsTab() {
   );
   const [filterState, setFilterState] = useState<string>("All");
   const [filterSource, setFilterSource] = useState<string>("All");
-  const [sortField, setSortField] = useState<"rated_mw_total" | "issued_date" | "permittee">("rated_mw_total");
+  const [sortField, setSortField] = useState<"rated_mw_total" | "issued_date" | "permittee" | "resolved_parent">("rated_mw_total");
   const [sortAsc, setSortAsc] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expandedId, setExpandedId] = useState<number | null>(null);
   // Free-text search across permittee / facility / state / county / source / fuel / status
   const [searchGenerator, setSearchGenerator] = useState<string>("");
+
+  // Pagination for the Permit Records table.
+  const [permitsPage, setPermitsPage] = useState<number>(1);
+  const [permitsPageSize, setPermitsPageSize] = useState<number>(50);
 
   // Building-permit table sort
   const [buildingSortField, setBuildingSortField] = useState<
@@ -465,6 +470,16 @@ export default function PermitsTab() {
           const bv = permittee(b);
           return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
         }
+        if (sortField === "resolved_parent") {
+          // Sort permits with a resolved parent first, then alphabetically by parent name.
+          // Unresolved rows fall to the bottom (or top in asc mode) regardless of direction.
+          const av = a.resolved_company_name ?? "";
+          const bv = b.resolved_company_name ?? "";
+          if (av && !bv) return -1;
+          if (!av && bv) return 1;
+          if (!av && !bv) return 0;
+          return sortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+        }
         if (sortField === "issued_date") {
           const av = a.issued_date ?? "";
           const bv = b.issued_date ?? "";
@@ -475,6 +490,11 @@ export default function PermitsTab() {
         return sortAsc ? av - bv : bv - av;
       });
   }, [filtered, sortField, sortAsc, searchGenerator]);
+
+  // Reset to page 1 whenever any input that changes the visible result set changes.
+  useEffect(() => {
+    setPermitsPage(1);
+  }, [filterState, filterSource, activeFuels, searchGenerator, sortField, sortAsc, permitsPageSize]);
 
   // Aggregate MW by state (top 8)
   const byState = useMemo(() => {
@@ -561,6 +581,10 @@ export default function PermitsTab() {
   const totalMW = filtered.reduce((s, p) => s + (p.rated_mw_total ?? 0), 0);
   const uniqueStates = new Set(filtered.map(p => p.state_code).filter(Boolean)).size;
   const resolvedParents = filtered.filter(p => p.resolved_company_id != null).length;
+  // Reconciliation: total resolved parents across ALL fuel types in the unfiltered
+  // dataset, so the user can see why "X resolved" looks small under the default
+  // DC fuel filter (most resolved parents are utilities tied to non-DC fuels).
+  const resolvedAcrossAllFuels = permits.filter(p => p.resolved_company_id != null).length;
 
   // Building KPIs
   const buildingIssued = buildingPermits.filter(p => isIssued(p.permit_status)).length;
@@ -571,7 +595,18 @@ export default function PermitsTab() {
 
   const toggleSort = (field: typeof sortField) => {
     if (sortField === field) setSortAsc(v => !v);
-    else { setSortField(field); setSortAsc(false); }
+    else {
+      setSortField(field);
+      // Alphabetic sorts default to ascending (A-Z); numeric/date default to descending.
+      setSortAsc(field === "permittee" || field === "resolved_parent");
+    }
+  };
+
+  // Direct setter used by the new toolbar's "Sort by" dropdown — bypasses the
+  // toggleSort flip-on-second-click behavior so the dropdown is deterministic.
+  const setSort = (field: typeof sortField, asc: boolean) => {
+    setSortField(field);
+    setSortAsc(asc);
   };
 
   const toggleBuildingSort = (field: typeof buildingSortField) => {
@@ -710,6 +745,7 @@ export default function PermitsTab() {
           totalMW={totalMW}
           uniqueStates={uniqueStates}
           resolvedParents={resolvedParents}
+          resolvedAcrossAllFuels={resolvedAcrossAllFuels}
           total={total}
           sourcesIncluded={sourcesIncluded}
           sourceLabels={sourceLabels}
@@ -726,6 +762,7 @@ export default function PermitsTab() {
           sortField={sortField}
           sortAsc={sortAsc}
           toggleSort={toggleSort}
+          setSort={setSort}
           selectedId={selectedId}
           setSelectedId={setSelectedId}
           expandedId={expandedId}
@@ -734,6 +771,10 @@ export default function PermitsTab() {
           search={searchGenerator}
           setSearch={setSearchGenerator}
           unfilteredCount={filtered.length}
+          page={permitsPage}
+          setPage={setPermitsPage}
+          pageSize={permitsPageSize}
+          setPageSize={setPermitsPageSize}
         />
       ) : (
         <BuildingView
@@ -782,6 +823,7 @@ function GeneratorView(props: {
   totalMW: number;
   uniqueStates: number;
   resolvedParents: number;
+  resolvedAcrossAllFuels: number;
   total: number;
   sourcesIncluded: string[];
   sourceLabels: string[];
@@ -795,9 +837,10 @@ function GeneratorView(props: {
   activeFuels: Set<FuelType>;
   setActiveFuels: (s: Set<FuelType>) => void;
   toggleFuel: (f: FuelType) => void;
-  sortField: "rated_mw_total" | "issued_date" | "permittee";
+  sortField: "rated_mw_total" | "issued_date" | "permittee" | "resolved_parent";
   sortAsc: boolean;
-  toggleSort: (f: "rated_mw_total" | "issued_date" | "permittee") => void;
+  toggleSort: (f: "rated_mw_total" | "issued_date" | "permittee" | "resolved_parent") => void;
+  setSort: (f: "rated_mw_total" | "issued_date" | "permittee" | "resolved_parent", asc: boolean) => void;
   selectedId: number | null;
   setSelectedId: (id: number | null) => void;
   expandedId: number | null;
@@ -806,15 +849,59 @@ function GeneratorView(props: {
   search: string;
   setSearch: (s: string) => void;
   unfilteredCount: number;
+  page: number;
+  setPage: (n: number) => void;
+  pageSize: number;
+  setPageSize: (n: number) => void;
 }) {
   const {
     permits, filtered, sorted, mapFiltered, byState, byFuel,
-    totalMW, uniqueStates, resolvedParents, total, sourcesIncluded, sourceLabels, lineage,
+    totalMW, uniqueStates, resolvedParents, resolvedAcrossAllFuels, total, sourcesIncluded, sourceLabels, lineage,
     states, sources, filterState, setFilterState, filterSource, setFilterSource,
-    activeFuels, setActiveFuels, toggleFuel, sortField, sortAsc, toggleSort,
+    activeFuels, setActiveFuels, toggleFuel, sortField, sortAsc, toggleSort, setSort,
     selectedId, setSelectedId, expandedId, setExpandedId, filterSelectStyle,
     search, setSearch, unfilteredCount,
+    page, setPage, pageSize, setPageSize,
   } = props;
+
+  // ── Pagination derivations ─────────────────────────────────────────────────
+  const totalRows = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(totalRows / pageSize));
+  const safePage = Math.min(Math.max(1, page), totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const pageEnd = Math.min(pageStart + pageSize, totalRows);
+  const visibleRows = sorted.slice(pageStart, pageEnd);
+
+  // Active-filter count for the toolbar badge.
+  const fuelsAtDefault =
+    activeFuels.size === DC_FUEL_TYPES.length &&
+    DC_FUEL_TYPES.every(f => activeFuels.has(f));
+  const activeFilterCount =
+    (filterState !== "All" ? 1 : 0) +
+    (filterSource !== "All" ? 1 : 0) +
+    (!fuelsAtDefault ? 1 : 0) +
+    (search.trim() ? 1 : 0);
+
+  const clearAllFilters = () => {
+    setFilterState("All");
+    setFilterSource("All");
+    setActiveFuels(new Set<FuelType>(DC_FUEL_TYPES));
+    setSearch("");
+  };
+
+  const sortOptions: Array<{
+    value: string;
+    label: string;
+    field: "rated_mw_total" | "issued_date" | "permittee" | "resolved_parent";
+    asc: boolean;
+  }> = [
+    { value: "mw_desc", label: "MW (high to low)", field: "rated_mw_total", asc: false },
+    { value: "issued_desc", label: "Issued date (newest)", field: "issued_date", asc: false },
+    { value: "permittee_asc", label: "Permittee (A-Z)", field: "permittee", asc: true },
+    { value: "resolved_asc", label: "Resolved parent (A-Z)", field: "resolved_parent", asc: true },
+  ];
+  const currentSortValue =
+    sortOptions.find(o => o.field === sortField && o.asc === sortAsc)?.value ?? "mw_desc";
 
   return (
     <>
@@ -850,65 +937,13 @@ function GeneratorView(props: {
         <MetricCard label="Permits Shown" value={String(filtered.length)} sub={`${sourcesIncluded.length} sources`} accent="#3b82f6" icon={Filter} />
         <MetricCard label="Total Generator MW" value={Math.round(totalMW).toLocaleString()} unit="MW" sub="aggregated nameplate" accent="#f97316" icon={Zap} />
         <MetricCard label="States Covered" value={String(uniqueStates)} sub="geographic coverage" accent="#22c55e" icon={MapPin} />
-        <MetricCard label="Parent Resolved" value={String(resolvedParents)} sub={`${filtered.length > 0 ? ((resolvedParents / filtered.length) * 100).toFixed(0) : 0}% of shown`} accent="#a855f7" icon={Zap} />
-      </div>
-
-      {/* Filter bar */}
-      <div style={{ ...CARD_STYLE, padding: "14px 18px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <Filter size={13} color="#64748b" />
-        <span style={{ color: "#64748b", fontSize: "12px", marginRight: 4 }}>Fuel:</span>
-        {DC_FUEL_TYPES.map(f => {
-          const active = activeFuels.has(f);
-          return (
-            <button
-              key={f}
-              onClick={() => toggleFuel(f)}
-              style={{
-                padding: "5px 12px",
-                borderRadius: 999,
-                border: `1px solid ${active ? FUEL_COLOR[f] : "#334155"}`,
-                background: active ? `${FUEL_COLOR[f]}22` : "#0f172a",
-                color: active ? FUEL_COLOR[f] : "#94a3b8",
-                fontSize: "11px",
-                fontWeight: 600,
-                cursor: "pointer",
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 5,
-              }}
-            >
-              <span style={{
-                display: "inline-block",
-                width: 7, height: 7, borderRadius: "50%",
-                background: FUEL_COLOR[f],
-                opacity: active ? 1 : 0.4,
-              }} />
-              {FUEL_LABEL[f]}
-            </button>
-          );
-        })}
-        <span style={{ width: 1, height: 18, background: "#334155", margin: "0 6px" }} />
-        <span style={{ color: "#64748b", fontSize: "12px" }}>State:</span>
-        <select value={filterState} onChange={e => setFilterState(e.target.value)} style={filterSelectStyle}>
-          {states.map(s => <option key={s}>{s}</option>)}
-        </select>
-        <span style={{ color: "#64748b", fontSize: "12px" }}>Source:</span>
-        <select value={filterSource} onChange={e => setFilterSource(e.target.value)} style={filterSelectStyle}>
-          {sources.map(s => <option key={s}>{s === "All" ? "All" : (SOURCE_LABEL[s] ?? s)}</option>)}
-        </select>
-        {(filterState !== "All" || filterSource !== "All" || activeFuels.size !== DC_FUEL_TYPES.length) && (
-          <button
-            onClick={() => {
-              setFilterState("All");
-              setFilterSource("All");
-              setActiveFuels(new Set<FuelType>(DC_FUEL_TYPES));
-            }}
-            style={{ display: "flex", alignItems: "center", gap: 4, padding: "5px 10px", borderRadius: 6, background: "#1e293b", border: "1px solid #334155", color: "#94a3b8", cursor: "pointer", fontSize: "12px" }}
-          >
-            <X size={11} /> Reset
-          </button>
-        )}
-        <span style={{ marginLeft: "auto", color: "#64748b", fontSize: "11px" }}>{filtered.length} permits</span>
+        <MetricCard
+          label="Parent Resolved"
+          value={resolvedAcrossAllFuels.toLocaleString()}
+          sub={`across all fuels -- ${resolvedParents.toLocaleString()} in current filter`}
+          accent="#a855f7"
+          icon={Zap}
+        />
       </div>
 
       {/* Map */}
@@ -1015,58 +1050,146 @@ function GeneratorView(props: {
 
       {/* Permits table */}
       <div style={CARD_STYLE}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+        {/* Title row */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
           <div>
             <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: 0 }}>Permit Records</h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              {sorted.length} permit{sorted.length === 1 ? "" : "s"}
-              {search.trim() && unfilteredCount !== sorted.length && ` (filtered from ${unfilteredCount})`}
-              {" "}-- click column headers to sort -- click row to expand raw filing
+              {totalRows.toLocaleString()} permit{totalRows === 1 ? "" : "s"}
+              {search.trim() && unfilteredCount !== totalRows && ` (filtered from ${unfilteredCount.toLocaleString()})`}
+              {" "}-- click row to expand raw filing
             </p>
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        </div>
+
+        {/* ── Consolidated filter / search / sort toolbar ───────────────────── */}
+        <div
+          style={{
+            background: "#0f172a",
+            border: "1px solid #1e293b",
+            borderRadius: 8,
+            padding: "12px 14px",
+            marginBottom: 14,
+            display: "flex",
+            flexDirection: "column",
+            gap: 10,
+          }}
+        >
+          {/* Row 1: search + sort + filter count + clear */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Filter size={13} color="#94a3b8" />
             <input
               type="text"
-              placeholder="Search permittee, facility, state, source..."
+              placeholder="Search permittee, LLC, facility, state, source..."
               value={search}
               onChange={e => setSearch(e.target.value)}
               style={{
-                background: "#0f172a",
-                border: "1px solid #334155",
+                background: "#0b1220",
+                border: "1px solid #1e293b",
                 borderRadius: 6,
                 color: "white",
                 padding: "6px 10px",
                 fontSize: 12,
                 minWidth: 260,
+                flex: "1 1 280px",
               }}
             />
-            {search && (
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>Sort by:</span>
+            <select
+              value={currentSortValue}
+              onChange={e => {
+                const opt = sortOptions.find(o => o.value === e.target.value);
+                if (opt) setSort(opt.field, opt.asc);
+              }}
+              style={filterSelectStyle}
+            >
+              {sortOptions.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+            <span
+              style={{
+                marginLeft: "auto",
+                color: activeFilterCount > 0 ? "#60a5fa" : "#64748b",
+                fontSize: 11,
+                fontWeight: 600,
+              }}
+            >
+              {activeFilterCount} filter{activeFilterCount === 1 ? "" : "s"} active
+            </span>
+            {activeFilterCount > 0 && (
               <button
-                onClick={() => setSearch("")}
+                onClick={clearAllFilters}
                 style={{
-                  background: "transparent",
-                  border: "1px solid #334155",
-                  borderRadius: 6,
-                  color: "#94a3b8",
-                  padding: "5px 8px",
-                  cursor: "pointer",
-                  fontSize: 11,
                   display: "inline-flex",
                   alignItems: "center",
                   gap: 4,
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  background: "#1e293b",
+                  border: "1px solid #334155",
+                  color: "#94a3b8",
+                  cursor: "pointer",
+                  fontSize: 12,
                 }}
               >
-                <X size={11} /> Clear
+                <X size={11} /> Clear filters
               </button>
             )}
           </div>
+
+          {/* Row 2: state, source, fuel chips */}
+          <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>State:</span>
+            <select value={filterState} onChange={e => setFilterState(e.target.value)} style={filterSelectStyle}>
+              {states.map(s => <option key={s}>{s}</option>)}
+            </select>
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>Source:</span>
+            <select value={filterSource} onChange={e => setFilterSource(e.target.value)} style={filterSelectStyle}>
+              {sources.map(s => <option key={s}>{s === "All" ? "All" : (SOURCE_LABEL[s] ?? s)}</option>)}
+            </select>
+            <span style={{ width: 1, height: 18, background: "#1e293b", margin: "0 6px" }} />
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>Fuel:</span>
+            {DC_FUEL_TYPES.map(f => {
+              const active = activeFuels.has(f);
+              return (
+                <button
+                  key={f}
+                  onClick={() => toggleFuel(f)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 999,
+                    border: `1px solid ${active ? FUEL_COLOR[f] : "#1e293b"}`,
+                    background: active ? `${FUEL_COLOR[f]}22` : "#0b1220",
+                    color: active ? FUEL_COLOR[f] : "#94a3b8",
+                    fontSize: 11,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                  }}
+                >
+                  <span style={{
+                    display: "inline-block",
+                    width: 7, height: 7, borderRadius: "50%",
+                    background: FUEL_COLOR[f],
+                    opacity: active ? 1 : 0.4,
+                  }} />
+                  {FUEL_LABEL[f]}
+                </button>
+              );
+            })}
+          </div>
         </div>
+
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
             <thead>
               <tr style={{ borderBottom: "1px solid #334155" }}>
                 {[
                   { label: "Permittee (resolved parent)", field: "permittee" as const },
+                  { label: "LLC (raw permittee)", field: null },
                   { label: "Facility", field: null },
                   { label: "State", field: null },
                   { label: "County FIPS", field: null },
@@ -1094,10 +1217,14 @@ function GeneratorView(props: {
               </tr>
             </thead>
             <tbody>
-              {sorted.slice(0, 50).map(p => {
+              {visibleRows.map(p => {
                 const fc = getFuelColor(p.fuel_type);
                 const isExpanded = expandedId === p.id;
                 const isSelected = selectedId === p.id;
+                const llcText = p.permittee_raw_name ?? "--";
+                // When parent is unresolved the LLC value duplicates the Permittee
+                // column; we keep the cell populated (per spec) but mute it visually.
+                const llcDuplicates = !p.resolved_company_name;
                 return (
                   <Fragment key={p.id}>
                     <tr
@@ -1114,20 +1241,21 @@ function GeneratorView(props: {
                     >
                       <td style={{ padding: "9px 12px", color: "#e2e8f0", fontWeight: 500 }}>
                         {p.resolved_company_name ? (
-                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <span style={{
-                              padding: "2px 7px", borderRadius: 3, background: "#1e3a8a22",
-                              color: "#60a5fa", fontSize: "10px", fontWeight: 700,
-                            }}>{p.resolved_company_name}</span>
-                            {p.permittee_raw_name && p.permittee_raw_name !== p.resolved_company_name && (
-                              <span style={{ color: "#64748b", fontSize: "10px" }}>
-                                -- via {p.permittee_raw_name}
-                              </span>
-                            )}
-                          </span>
+                          <span style={{
+                            padding: "2px 7px", borderRadius: 3, background: "#1e3a8a22",
+                            color: "#60a5fa", fontSize: "10px", fontWeight: 700,
+                          }}>{p.resolved_company_name}</span>
                         ) : (
                           <span style={{ color: "#94a3b8" }}>{p.permittee_raw_name ?? "Unknown"}</span>
                         )}
+                      </td>
+                      <td style={{
+                        padding: "9px 12px",
+                        color: llcDuplicates ? "#475569" : "#cbd5e1",
+                        fontSize: "11px",
+                        fontStyle: llcDuplicates ? "italic" : "normal",
+                      }}>
+                        {llcText}
                       </td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.facility_name ?? "--"}</td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{p.state_code ?? "--"}</td>
@@ -1175,7 +1303,7 @@ function GeneratorView(props: {
                     </tr>
                     {isExpanded && (
                       <tr style={{ borderBottom: "1px solid #1e293b", background: "#162032" }}>
-                        <td colSpan={9} style={{ padding: "12px 16px 16px 24px" }}>
+                        <td colSpan={10} style={{ padding: "12px 16px 16px 24px" }}>
                           <ExpandedPermit p={p} />
                         </td>
                       </tr>
@@ -1185,11 +1313,78 @@ function GeneratorView(props: {
               })}
             </tbody>
           </table>
-          {sorted.length > 50 && (
-            <div style={{ color: "#64748b", fontSize: "12px", padding: "8px 12px" }}>
-              Showing 50 of {sorted.length} permits
+          {/* ── Pagination controls ──────────────────────────────────────── */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 10,
+              padding: "10px 12px",
+              borderTop: "1px solid #1e293b",
+              color: "#94a3b8",
+              fontSize: 12,
+            }}
+          >
+            <div>
+              {totalRows === 0
+                ? "No permits match the current filters"
+                : <>Showing <span style={{ color: "white", fontWeight: 600 }}>{(pageStart + 1).toLocaleString()}</span>
+                  -<span style={{ color: "white", fontWeight: 600 }}>{pageEnd.toLocaleString()}</span>
+                  {" "}of <span style={{ color: "white", fontWeight: 600 }}>{totalRows.toLocaleString()}</span></>}
             </div>
-          )}
+            <div style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span style={{ color: "#64748b", fontSize: 11 }}>Rows per page:</span>
+              <select
+                value={pageSize}
+                onChange={e => setPageSize(Number(e.target.value))}
+                style={filterSelectStyle}
+              >
+                {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+              <button
+                onClick={() => setPage(Math.max(1, safePage - 1))}
+                disabled={safePage <= 1}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  background: safePage <= 1 ? "#0b1220" : "#1e293b",
+                  border: "1px solid #1e293b",
+                  color: safePage <= 1 ? "#475569" : "#cbd5e1",
+                  cursor: safePage <= 1 ? "not-allowed" : "pointer",
+                  fontSize: 12,
+                }}
+              >
+                <ChevronLeft size={12} /> Prev
+              </button>
+              <span style={{ color: "#cbd5e1", fontSize: 12 }}>
+                Page <span style={{ color: "white", fontWeight: 600 }}>{safePage}</span>
+                {" "}of <span style={{ color: "white", fontWeight: 600 }}>{totalPages}</span>
+              </span>
+              <button
+                onClick={() => setPage(Math.min(totalPages, safePage + 1))}
+                disabled={safePage >= totalPages}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 4,
+                  padding: "5px 10px",
+                  borderRadius: 6,
+                  background: safePage >= totalPages ? "#0b1220" : "#1e293b",
+                  border: "1px solid #1e293b",
+                  color: safePage >= totalPages ? "#475569" : "#cbd5e1",
+                  cursor: safePage >= totalPages ? "not-allowed" : "pointer",
+                  fontSize: 12,
+                }}
+              >
+                Next <ChevronRight size={12} />
+              </button>
+            </div>
+          </div>
         </div>
         <CitationFooter
           sources={sourceLabels.length > 0 ? sourceLabels : ["EPA ECHO + State APIs"]}
