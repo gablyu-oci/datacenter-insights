@@ -40,6 +40,7 @@ anticipate the next one._
 - When QA/database tooling errors, do not guess IDs or continue with unsupported claims; surface the constraint, re-check docs/tool contract, and retry only with validated inputs.  _<2026-05-07>_
 - Always apply structured research and data-analysis techniques when generating AI insights; use hypothesis-driven, evidence-first analysis.  _<2026-05-07>_
 - When OCI Insights tools fail on argument/ID validation, stop and re-check docs or prior successful calls; never invent placeholder insight_id, schema, or chart fields.  _<2026-05-08>_
+- Do not make warehouse/data-quality caveats the core insight when the task is datacenter/power analysis; keep caveats in notes unless the user explicitly asks about data quality.  _<2026-05-08>_
 
 
 ## Platform quirks worth knowing

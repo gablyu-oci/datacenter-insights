@@ -8,6 +8,52 @@ Always use structured research and data-analysis techniques when generating AI i
 
 Do not generate insights as freeform narrative first. Start from a question, hypothesis, or anomaly, then test it against grounded evidence.
 
+## Portfolio construction (run-level, not card-level)
+
+Treat each session as a **portfolio** of complementary cards, not five individually passable findings. Five variants of the same `sites` story is not a session — it is one finding restated.
+
+### Required mix per 5-insight session
+
+Aim for one card from each band:
+
+| Band | Source surface | Example hypothesis |
+|---|---|---|
+| Scale / concentration | `sites` | "Hyperscaler X owns N% of state Y MW." |
+| Forward-looking power supply | `generator_permits[source='pjm']`, `energy_projects` | "Queue attrition: 723 GW withdrawn vs 70 GW active in PJM." |
+| Customer / operator / siting | `sites` + `events`, `companies` | "Crusoe is concentrating siting in TX with X named offtakers." |
+| Document-grounded | `edgar_extractions`, `search_documents` | "Meta's 10-K confirms 9.7 GW AI capacity earmarked." |
+| OCI action | any, but body must name a commercial next step | "Fermi America has 10.4 GW uncontracted at site Z — offtake target." |
+
+### Hard caps
+
+- **≥3 distinct source tables/corpora** across the set.
+- **Max 2 insights per protagonist** (company, state, ISO).
+- **Max 2 insights per source table** unless the user explicitly asked for a one-table cut.
+- **≥1 forward-looking card** (permits, queue, projects, filings — not a static `sites` snapshot).
+- **≥1 document-grounded card** (`search_documents` or `edgar_extractions` cited in the body).
+- **≥1 OCI action card** that names a contractable MW / offtake target / procurement bottleneck / customer target — not a "monitor / watch / be aware" framing.
+
+## Disqualifier screen — do not persist if any apply
+
+Before calling `persist_insight`, run this gate. Any "yes" → drop the card and pick a new hypothesis instead.
+
+1. **Caveat-as-headline.** Is this card primarily about coverage gaps, schema quirks, or warehouse warnings? Coverage caveats belong in the body and the `confidence` field, never in the headline. Example: "Oracle MW unusable for peer ranking" is data hygiene, not an insight — fix the comparison axis instead.
+2. **Baseline ranking with no novelty.** Is this just the most-obvious first ranking off the table? "AWS has the most MW" is table-stakes; "AWS is more state-concentrated than peers, with X% in VA" is novel.
+3. **Defensive OCI ending.** Does the body close with "OCI should monitor / treat as strategic / be aware / consider"? If so, the OCI lens has not been applied — name a commercial consequence or replace the card.
+4. **Already-said.** Does this card add something to the portfolio the existing cards don't? "Meta is dense per site" + "Meta is AI-weighted" + "Meta does behind-the-meter" is one finding restated three ways.
+
+## Hypothesis-driven branching, not opportunistic ranking
+
+Do NOT start from "what can I rank from `sites`?". Start from one of these analytical postures:
+
+- Which hyperscaler is most exposed to a single ISO / utility / power market — and what's the bottleneck?
+- Where is uncontracted or weakly-attributed pipeline most likely to become OCI-relevant in the next 6 months?
+- Which players are solving grid bottlenecks via onsite generation or alternative procurement — and what does that signal?
+- Which named LLCs / developers are recurring across permits + filings + events — i.e. who is *actually* building, not just announcing?
+- Which states / counties are concentrating multi-tenant developer exposure where OCI could co-site?
+
+Then query to **confirm or falsify**. A confirmed hypothesis is a stronger insight than a backwards-derived narrative from a ranking.
+
 ## Core operating sequence
 
 For each AI insight, use this sequence:
@@ -48,14 +94,16 @@ For each AI insight, use this sequence:
    - If a number is not in a tool result or citation snippet, do not state it as fact.
    - Use sensitivity/scenario framing when source coverage is partial.
 
-7. **OCI implication**
-   - End with the so-what for OCI.
-   - Use one of these lenses where applicable:
-     - direct OCI offtake / colocation opportunity
-     - competitive read
-     - customer-acquisition signal
-     - supply-chain / vendor risk
-     - power & permitting market context
+7. **OCI implication — name the commercial consequence**
+   - End with the so-what for OCI in **action terms**, not awareness terms.
+   - **Banned endings:** "OCI should monitor…", "OCI should treat as strategic", "OCI should be aware", "this is worth watching".
+   - **Required framings — pick one and name the entity / geography / consequence:**
+     - Contractable MW: "Project X (developer Y) has N MW uncontracted in state Z — offtake exposure for OCI."
+     - Region-specific siting risk: "VA substation queue is dominated by AWS through Q3 2027 — OCI's incremental VA buildout faces N-month transmission lag."
+     - Competitor concentration risk: "Meta now operates X% of the AI-flagged MW in the warehouse — OCI's AI-data services compete on a smaller addressable base than headline cloud-share suggests."
+     - Procurement implication: "Vendor X holds A/B/C contracts across hyperscalers Y/Z — OCI will face vendor-capacity contention on its next M GW."
+     - Customer-acquisition target: "Neo-cloud N has just announced D GW with no named offtaker in the latest 8-K — viable conversation for OCI bare-metal."
+     - Transmission/substation bottleneck: "ISO X queue attrition is N% in 2026 — OCI's pipeline assumptions in territory Y need a 0.6× haircut."
 
 8. **Confidence discipline**
    - Separate:
@@ -184,6 +232,43 @@ schema is what it IS.
 - Use active voice.
 - Use the user’s units: MW, GW, $M, $B, %.
 - Do not use vague terms when a precise one is available.
+
+## Chart QA before accepting a card
+
+Before issuing `build_chart`, mentally check:
+
+1. **Encoding ↔ question fit.** Is the chart answering the analytical question, or just restating the headline number? A `kpi_tile` of the headline is restating; a `bar` chart of the breakdown is answering.
+2. **Label collision.** Will category labels collide on the x-axis when multiple rows share a value? (E.g. two hyperscalers both top-state in VA → without `color: provider_name` the labels mash to "VAVA" or similar.) Set `color` / `series` to disambiguate.
+3. **Series vs category.** If a row has both a category and a series dimension, did you set `color` / `series` rather than collapse them?
+4. **Table vs chart.** When the comparison spans >5 unrelated metrics, a `table` chart is honestly better than a stacked bar.
+5. **Title states the finding, not the topic.** "AWS leads PJM at 21.8 GW" beats "PJM exposure". The title is a sentence, not a label.
+
+## Pre-finalize portfolio audit
+
+Before calling `finalize_session`, review the run as a portfolio:
+
+- ≥3 source families represented?
+- ≤2 cards per protagonist?
+- ≤2 cards per source table?
+- ≥1 forward-looking card?
+- ≥1 document-grounded card?
+- ≥1 explicitly actionable OCI card?
+- No card whose headline is a coverage caveat?
+- Every insight has a chart bound via FK?
+
+If any check fails, **replace the weakest card** before finalizing. Drill a fresh hypothesis, persist + chart it, then call `finalize_session`.
+
+## Per-card scoring rubric
+
+For each candidate insight, score 1-3 across:
+
+- **Evidence strength** — grounded in real rows / docs, not interpretation.
+- **Novelty** — not the first obvious ranking off the table.
+- **OCI actionability** — names a commercial / strategic consequence with an entity or geography.
+- **Set diversity contribution** — adds something the existing cards don't.
+- **Chart clarity** — encoding fits the claim, labels readable, title is a finding.
+
+Anything weak (1) on 2+ dimensions should be dropped, not shipped.
 
 ## Continuous improvement
 
