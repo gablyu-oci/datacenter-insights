@@ -687,6 +687,27 @@ class InsightOrchestrator:
                 )
                 self.db.add(msg)
                 await self.db.flush()
+
+            # Chart-fallback safety net: if the agent skipped build_chart
+            # (observed in practice under parallel tool use), emit a basic
+            # placeholder chart per chartless insight so the UI never has a
+            # naked insight card. Idempotent — only runs against rows where
+            # chart_id IS NULL.
+            try:
+                from .session_tools import _emit_chart_fallbacks
+
+                created = await _emit_chart_fallbacks(self.db, self.session_id)
+                if created:
+                    logger.info(
+                        "ai_insights.orchestrator.chart_fallbacks_emitted",
+                        extra={"session_id": str(self.session_id), "count": created},
+                    )
+                    await self.db.flush()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "ai_insights.orchestrator.chart_fallback_failed",
+                    extra={"err": str(exc)},
+                )
         except Exception as exc:
             logger.warning("ai_insights.orchestrator.persist_finish_failed", extra={"err": str(exc)})
 

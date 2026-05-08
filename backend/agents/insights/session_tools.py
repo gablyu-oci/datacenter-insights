@@ -261,11 +261,87 @@ async def _finalize_session_handler(
     await db.execute(stmt)
     await db.flush()
 
+    # Chart-fallback safety net: in v2 the agent is supposed to call
+    # build_chart per insight, but observed behaviour shows it skips that
+    # step under parallel-tool-use even with explicit prompt rules. Without
+    # any chart, the frontend insight card has no visual. Emit a degenerate
+    # placeholder chart for every chartless insight so:
+    #   (a) the FK from ai_insight.chart_id always points somewhere,
+    #   (b) the UI gets to render *something* (a kpi_tile of the headline),
+    #   (c) we can later distinguish auto-generated charts via spec.auto_generated.
+    fallback_count = await _emit_chart_fallbacks(db, session_uuid)
+    if fallback_count:
+        logger.info(
+            "mcp.finalize_session.chart_fallbacks",
+            extra={"session_id": str(session_uuid), "count": fallback_count},
+        )
+
     logger.info(
         "mcp.finalize_session",
         extra={"session_id": str(session_uuid), "status": status},
     )
     return {"session_id": str(session_uuid), "status": status}
+
+
+async def _emit_chart_fallbacks(
+    db: AsyncSession, session_uuid: uuid.UUID
+) -> int:
+    """For each insight in the session with no bound chart, create a basic
+    kpi_tile placeholder chart so the UI never has a chartless insight.
+
+    Returns the number of fallback charts created.
+    """
+    from .db.models import AIInsight, AgentChart
+    import hashlib
+
+    rows = (
+        await db.execute(
+            select(AIInsight).where(
+                AIInsight.session_id == session_uuid,
+                AIInsight.chart_id.is_(None),
+            )
+        )
+    ).scalars().all()
+
+    if not rows:
+        return 0
+
+    created = 0
+    for insight in rows:
+        chart_id = f"c_{uuid.uuid4().hex[:8]}"
+        spec = {
+            "chart_type": "kpi_tile",
+            "title": insight.headline,
+            "subtitle": "auto-emitted: agent did not call build_chart",
+            "encoding": {"value": "headline"},
+            "auto_generated": True,
+        }
+        data_source = {
+            "kind": "fallback",
+            "rows": [{"headline": insight.headline}],
+            "row_count": 1,
+        }
+        row_hash = hashlib.sha256(
+            f"fallback:{insight.id}".encode("utf-8")
+        ).hexdigest()
+        chart = AgentChart(
+            id=chart_id,
+            session_id=session_uuid,
+            insight_id=insight.id,
+            spec=spec,
+            data_source=data_source,
+            row_hash=row_hash,
+        )
+        db.add(chart)
+        await db.flush()
+        # Bind the chart back onto the insight so `chart_id` is non-NULL.
+        await db.execute(
+            update(AIInsight)
+            .where(AIInsight.id == insight.id)
+            .values(chart_id=chart_id)
+        )
+        created += 1
+    return created
 
 
 # ---------------------------------------------------------------------------
