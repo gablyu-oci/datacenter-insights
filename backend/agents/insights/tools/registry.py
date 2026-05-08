@@ -15,12 +15,16 @@ import json
 from typing import Any, Awaitable, Callable
 
 from ..specs.skill_context import SkillContext
+from .build_chart import build_chart
 from .call_api import call_api
 from .emit_chart import emit_chart
 from .emit_citation import emit_citation
 from .get_chart_data import get_chart_data
+from .persist_insight import persist_insight
 from .query_database import query_database
+from .read_workspace import read_workspace
 from .run_skill import ALL_SKILLS, run_skill
+from .search_documents import search_documents
 from .web_search import web_search
 
 
@@ -202,10 +206,144 @@ TOOL_DEFS: list[dict[str, Any]] = [
             },
         },
     },
+    # ---------------- v2 tools (phase A/B) ----------------
+    {
+        "type": "function",
+        "function": {
+            "name": "search_documents",
+            "description": (
+                "BM25 search over EDGAR filings + permits corpora. Use BEFORE "
+                "query_database for qualitative or disclosure-oriented questions. "
+                "Returns up to k passages with source/url/snippet/score."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "source": {
+                        "type": "string",
+                        "enum": ["edgar", "permits", "all"],
+                        "default": "all",
+                    },
+                    "k": {
+                        "type": "integer",
+                        "default": 8,
+                        "minimum": 1,
+                        "maximum": 50,
+                    },
+                },
+                "required": ["query"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "build_chart",
+            "description": (
+                "Validate + persist a chart for an insight. Pass the SQL whose "
+                "rows the chart will visualize, an encoding mapping column names "
+                "to visual axes, the chart_type, and a title. Always pass "
+                "insight_id from the prior persist_insight call so the chart "
+                "binds to the insight via FK. Example: build_chart("
+                "insight_id='<uuid>', "
+                "sql='SELECT state_code, SUM(power_capacity_mw) AS mw FROM sites GROUP BY state_code ORDER BY mw DESC LIMIT 10', "
+                "encoding={'x': 'state_code', 'y': 'mw'}, "
+                "chart_type='bar', title='Top 10 states by site MW')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "sql": {
+                        "type": "string",
+                        "description": "Single read-only SELECT. Same statement that grounded the insight body.",
+                    },
+                    "encoding": {
+                        "type": "object",
+                        "additionalProperties": True,
+                        "description": (
+                            "Column-name → visual-axis map. bar/line/area: "
+                            "{'x': '<col>', 'y': '<col>'}. stacked_bar / "
+                            "grouped_bar: add 'color': '<col>'. pie/donut: "
+                            "{'category': '<col>', 'value': '<col>'}. kpi_tile: "
+                            "{'value': '<col>'}."
+                        ),
+                    },
+                    "chart_type": {
+                        "type": "string",
+                        "description": (
+                            "One of: bar, stacked_bar, grouped_bar, pie, donut, "
+                            "line, area, stacked_area, sparkline, scatter, "
+                            "bubble, kpi_tile, table, treemap, radar, histogram. "
+                            "Pick from data shape; do NOT default to bar."
+                        ),
+                    },
+                    "title": {"type": "string"},
+                    "subtitle": {"type": "string"},
+                    "annotations": {"type": "array", "items": {"type": "object"}},
+                    "styling": {"type": "object", "additionalProperties": True},
+                    "insight_id": {
+                        "type": "string",
+                        "description": "UUID returned by persist_insight. Required to bind the chart.",
+                    },
+                },
+                "required": ["sql", "encoding", "chart_type", "title", "insight_id"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_workspace",
+            "description": "Read an allow-listed workspace file (SCHEMA.md, FRESHNESS.md, AI_INSIGHTS_*).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "file": {
+                        "type": "string",
+                        "enum": [
+                            "SCHEMA.md",
+                            "FRESHNESS.md",
+                            "AI_INSIGHTS_PLAYBOOK.md",
+                            "AI_INSIGHTS_PREFLIGHT_CHECKLIST.md",
+                            "AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
+                        ],
+                    },
+                },
+                "required": ["file"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "persist_insight",
+            "description": (
+                "Persist a v2 insight with structured citations and an optional "
+                "chart_id. Round 3 insight-first flow: chart_id and citations "
+                "are both optional. The server auto-decorates if omitted."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "headline": {"type": "string"},
+                    "body": {"type": "string"},
+                    "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "materiality": {"type": "string", "enum": ["low", "medium", "high"]},
+                    "citations": {"type": "array", "items": {"type": "object"}},
+                    "chart_id": {"type": "string"},
+                    "open_question_id": {"type": "string"},
+                    "skills_run": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["headline", "body", "confidence", "materiality", "citations"],
+                "additionalProperties": False,
+            },
+        },
+    },
 ]
-
-# Backward-compatible alias retained for V1 callers (orchestrator etc.).
-V1_TOOL_DEFS: list[dict[str, Any]] = TOOL_DEFS
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +355,13 @@ _DISPATCH: dict[str, Callable[..., Awaitable[Any]]] = {
     "call_api": call_api,
     "get_chart_data": get_chart_data,
     "run_skill": run_skill,
-    "emit_chart": emit_chart,
+    "emit_chart": emit_chart,           # kept — used by QA path
     "web_search": web_search,
     "emit_citation": emit_citation,
+    "search_documents": search_documents,
+    "build_chart": build_chart,
+    "read_workspace": read_workspace,
+    "persist_insight": persist_insight,
 }
 
 
@@ -293,6 +435,46 @@ async def dispatch(
             rationale=args_dict.get("rationale", ""),
             search_query=args_dict.get("search_query", ""),
             insight_id=args_dict.get("insight_id") or getattr(ctx, "insight_id", None),
+            ctx=ctx if accepts_ctx else None,
+        )
+
+    if name == "search_documents":
+        return await fn(
+            args_dict.get("query", ""),
+            args_dict.get("source", "all"),
+            int(args_dict.get("k") or 8),
+            ctx=ctx if accepts_ctx else None,
+        )
+
+    if name == "build_chart":
+        return await fn(
+            sql=args_dict.get("sql", ""),
+            encoding=args_dict.get("encoding") or {},
+            chart_type=args_dict.get("chart_type", ""),
+            title=args_dict.get("title", ""),
+            subtitle=args_dict.get("subtitle"),
+            annotations=args_dict.get("annotations"),
+            styling=args_dict.get("styling"),
+            insight_id=args_dict.get("insight_id"),
+            ctx=ctx if accepts_ctx else None,
+        )
+
+    if name == "read_workspace":
+        return await fn(
+            args_dict.get("file", ""),
+            ctx=ctx if accepts_ctx else None,
+        )
+
+    if name == "persist_insight":
+        return await fn(
+            headline=args_dict.get("headline", ""),
+            body=args_dict.get("body"),
+            confidence=args_dict.get("confidence", "medium"),
+            materiality=args_dict.get("materiality", "medium"),
+            chart_id=args_dict.get("chart_id"),
+            citations=args_dict.get("citations") or [],
+            open_question_id=args_dict.get("open_question_id"),
+            skills_run=args_dict.get("skills_run"),
             ctx=ctx if accepts_ctx else None,
         )
 

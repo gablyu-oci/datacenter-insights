@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agents.insights.specs.skill_context import Capabilities, SkillContext
-from agents.insights.tools.persist_insight_v2 import HEADLINE_MAX, persist_insight_v2
+from agents.insights.tools.persist_insight import HEADLINE_MAX, persist_insight as persist_insight_v2
 
 
 # ---------------------------------------------------------------------------

@@ -31,7 +31,13 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_DIR_ENV = "OPENCLAW_WORKSPACE_DIR"
 
-ALLOWED_FILES: frozenset[str] = frozenset({"SCHEMA.md", "FRESHNESS.md"})
+ALLOWED_FILES: frozenset[str] = frozenset({
+    "SCHEMA.md",
+    "FRESHNESS.md",
+    "AI_INSIGHTS_PLAYBOOK.md",
+    "AI_INSIGHTS_PREFLIGHT_CHECKLIST.md",
+    "AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
+})
 MAX_BYTES: int = 16 * 1024
 
 

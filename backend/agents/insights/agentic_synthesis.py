@@ -45,12 +45,7 @@ from openclaw.sse_translator import (
     translate_synthesis_chunk,
 )
 
-from .hypothesizer import FactPack
 from .prompts import load_prompt
-from .session_tools import (
-    clear_session_fact_pack,
-    register_session_fact_pack,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -91,21 +86,17 @@ _SYNTHESIS_WALL_TIMEOUT_S = 620.0
 async def run_agentic_synthesis(
     *,
     session_id: uuid.UUID,
-    fact_pack: FactPack,
     max_insights: int = 5,
     db: AsyncSession,
     sse_emit: Optional[Callable[[Any], Awaitable[None]]] = None,
     cron_run_date: Optional[date] = None,
     mode: Literal["manual", "scheduled"] = "manual",
 ) -> SynthesisResult:
-    """Drive one agentic synthesis turn end-to-end.
+    """Drive one agentic synthesis turn end-to-end (v2).
 
     Args:
       session_id: UUID of the parent ``ai_session`` row, already
         persisted in `status='running'` by the caller.
-      fact_pack: pre-built FactPack; used both as a digest in the user
-        prompt and (in-memory) as the row-id allowlist for
-        ``persist_insight``.
       max_insights: target insight count; the agent's stop condition.
       db: open AsyncSession used for the fallback DB write when the
         loop ends degraded WITHOUT the agent calling
@@ -121,7 +112,10 @@ async def run_agentic_synthesis(
     Returns:
       A `SynthesisResult` summarising what happened. Insight rows are
       persisted via the MCP `persist_insight` tool that the agent calls
-      itself; this driver does not persist insights directly.
+      itself; this driver does not persist insights directly. The agent
+      reads workspace artefacts (SCHEMA.md, FRESHNESS.md, AI_INSIGHTS_*)
+      via ``read_workspace`` and grounds claims with ``search_documents``
+      / ``query_database`` instead of consuming a server-built FactPack.
     """
     # 1. Derive the OpenClaw session key.
     session_key = _build_session_key(
@@ -145,18 +139,26 @@ async def run_agentic_synthesis(
         "today": datetime.utcnow().date().isoformat(),
         "session_id": str(session_id),
         "max_insights": int(max_insights),
-        # Ship a digest, not the full FactPack — the agent uses
-        # query_database / get_chart_data to drill in (FR-2.7).
-        "factpack_digest": _factpack_digest(fact_pack),
+        # v2: agent orients by reading workspace artefacts and grounds
+        # claims via search_documents + query_database. No server-built
+        # FactPack is shipped in the prompt — see synthesis_rules.md.
+        "workspace_pointers": [
+            ".openclaw/workspace/SCHEMA.md",
+            ".openclaw/workspace/FRESHNESS.md",
+            ".openclaw/workspace/AI_INSIGHTS_PLAYBOOK.md",
+            ".openclaw/workspace/AI_INSIGHTS_PREFLIGHT_CHECKLIST.md",
+            ".openclaw/workspace/AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
+        ],
         "instructions": (
-            "Use query_database / get_chart_data / web_search / run_skill to "
-            "drill into the FactPack. Persist each insight via "
-            f"persist_insight(session_id='{session_id}', insight=..., "
-            "supporting_row_ids=[...]). Optionally emit_chart per insight. "
-            f"After {int(max_insights)} insights (or when evidence is "
-            f"exhausted), call finalize_session(session_id='{session_id}', "
-            "status='complete', token_estimate=...). Caps: 12 turns, 30 "
-            "tool calls, 600s wall."
+            "Per-insight loop, ONE AT A TIME — DO NOT batch persists at the end:\n"
+            "  1. drill: read_workspace + query_database (+ search_documents for prose).\n"
+            "  2. persist_insight(session_id='" + str(session_id) + "', headline=..., body=..., confidence=..., materiality=..., citations=[]). Capture the returned insight_id.\n"
+            "  3. build_chart(insight_id=<from step 2>, sql=..., encoding=..., chart_type=..., title=...). MANDATORY for every insight unless it's a literal yes/no scalar. SKIPPING THIS IS A BUG.\n"
+            "  4. Loop back to step 1.\n"
+            f"After {int(max_insights)} insights (or evidence exhausted), call "
+            f"finalize_session(session_id='{session_id}', status='complete', token_estimate=...).\n"
+            "FORBIDDEN: persisting all insights then calling build_chart at the end. The chart calls land after finalize_session and are silently dropped — the session ends with insights but zero charts. Always persist→chart→persist→chart, interleaved.\n"
+            "Caps: 12 turns, 30 tool calls, 600s wall."
         ),
     }
     messages: list[dict[str, Any]] = [
@@ -167,15 +169,15 @@ async def run_agentic_synthesis(
         },
     ]
 
-    # 3. Build the synthesis accumulator + register the FactPack so
-    #    persist_insight can filter row_ids server-side.
+    # 3. Build the synthesis accumulator. v2 has no server-side FactPack
+    #    registry — row-id grounding is replaced by chart-level provenance
+    #    (executed_sql + row_hash) inside build_chart + persist_insight.
     acc = SynthesisChunkAccumulator(
         session_id=str(session_id),
         thread_id=str(session_id),
         message_id=f"msg_{uuid.uuid4().hex[:12]}",
         insight_id="",
     )
-    register_session_fact_pack(session_id, fact_pack)
 
     async def _emit(evt: Any) -> None:
         if sse_emit is not None:
@@ -207,8 +209,6 @@ async def run_agentic_synthesis(
         stream_result = StreamResult(
             degraded=True, reason="wall_clock", total_chunks=0
         )
-    finally:
-        clear_session_fact_pack(session_id)
 
     # 5. Degraded -> set ai_session.status='degraded' as a server-side
     #    safety net (the agent should have called finalize_session, but
@@ -252,44 +252,6 @@ def _build_session_key(
     if cron_run_date is not None:
         return f"daily-synthesis-{cron_run_date.strftime('%Y%m%d')}"
     return f"manual-{session_id}"
-
-
-def _factpack_digest(fact_pack: FactPack | None) -> dict[str, Any]:
-    """Full FactPack payload for the synthesis prompt.
-
-    The agent needs the actual row bodies (entity, metric, value, detail) to
-    ground insights — sending only section names + counts forced the agent
-    to drill via query_database without knowing what to look for, which
-    consistently produced 0 insights. Inline the full pack: ~100 rows
-    typical, ~10KB serialized, well under the 200K context budget. The
-    agent can still call query_database for follow-on drill-down.
-    """
-    if fact_pack is None:
-        return {"sections": [], "total_rows": 0}
-
-    sections_payload: list[dict[str, Any]] = []
-    total = 0
-    for section in fact_pack.sections:
-        rows_out: list[dict[str, Any]] = []
-        for r in (section.rows or []):
-            rows_out.append({
-                "row_id": r.row_id,
-                "entity": r.entity,
-                "metric": r.metric,
-                "value": r.value,
-                "delta": r.delta,
-                "detail": r.detail or {},
-            })
-        total += len(rows_out)
-        sections_payload.append({
-            "name": section.name,
-            "description": section.description,
-            "rows": rows_out,
-        })
-    return {
-        "sections": sections_payload,
-        "total_rows": total,
-    }
 
 
 async def _force_finalize_degraded(

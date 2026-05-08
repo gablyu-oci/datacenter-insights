@@ -392,6 +392,10 @@ _EXPECTED_INSIGHT_SCOPED_TOOL_NAMES = {
     "run_skill",
     "emit_chart",
     "emit_citation",
+    # v2 cutover additions:
+    "search_documents",
+    "build_chart",
+    "read_workspace",
 }
 
 # Phase 2 (PRD/ARCH 14) — session-scoped write tools. These take session_id
@@ -423,7 +427,7 @@ _EXPECTED_TOOL_NAMES = (
 )
 
 
-async def test_mcp_tools_list_returns_twelve_schemas(
+async def test_mcp_tools_list_returns_fifteen_schemas(
     client: httpx.AsyncClient,
 ) -> None:
     """`tools/list` returns the twelve registered tool schemas (7 insight-
@@ -434,8 +438,8 @@ async def test_mcp_tools_list_returns_twelve_schemas(
     assert r.status_code == 200, r.text
     body = r.json()
     tools = (body.get("result") or {}).get("tools") or []
-    assert len(tools) == 12, (
-        f"expected 12 tools, got {len(tools)}: {[t.get('name') for t in tools]}"
+    assert len(tools) == 15, (
+        f"expected 15 tools, got {len(tools)}: {[t.get('name') for t in tools]}"
     )
 
     names = {t["name"] for t in tools}

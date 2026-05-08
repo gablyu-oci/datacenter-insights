@@ -191,7 +191,7 @@ export default function AIInsightsTab() {
         const res = await fetch(`${API_BASE}/api/insights/sessions`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ focus: prompt, max_insights: 5, version: "v1" }),
+          body: JSON.stringify({ focus: prompt, max_insights: 5 }),
         });
         if (!res.ok) {
           throw new Error(`POST /api/insights/sessions failed: ${res.status}`);

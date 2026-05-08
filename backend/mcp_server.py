@@ -439,6 +439,87 @@ async def emit_citation(
     )
 
 
+@mcp.tool()
+async def search_documents(
+    query: str,
+    source: str = "all",
+    k: int = 8,
+    insight_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """BM25 search over EDGAR + permits corpora. source ∈ {edgar, permits, all}.
+
+    Stateless retrieval — no per-session bookkeeping. Use BEFORE
+    query_database for qualitative or disclosure-oriented questions.
+    """
+    return await _invoke(
+        "search_documents",
+        insight_id or "",
+        {"query": query, "source": source, "k": k},
+        thread_id=thread_id,
+        session_id=session_id,
+    )
+
+
+@mcp.tool()
+async def build_chart(
+    sql: str,
+    encoding: dict[str, Any],
+    chart_type: str,
+    title: str,
+    subtitle: Optional[str] = None,
+    annotations: Optional[list[dict[str, Any]]] = None,
+    styling: Optional[dict[str, Any]] = None,
+    insight_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """V2: validate + persist an agent_chart row. Returns chart_id + chart_spec.
+
+    When ``insight_id`` is supplied (Round 3 insight-first flow), the
+    freshly built chart is FK-bound to that ai_insight at INSERT time
+    in the same MCP transaction.
+    """
+    return await _invoke(
+        "build_chart",
+        insight_id or "",
+        {
+            "sql": sql,
+            "encoding": encoding,
+            "chart_type": chart_type,
+            "title": title,
+            "subtitle": subtitle,
+            "annotations": annotations,
+            "styling": styling,
+            "insight_id": insight_id,
+        },
+        thread_id=thread_id,
+        session_id=session_id,
+    )
+
+
+@mcp.tool()
+async def read_workspace(
+    file: str,
+    insight_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> dict[str, Any]:
+    """Read a whitelisted workspace file (SCHEMA.md, FRESHNESS.md, AI_INSIGHTS_*).
+
+    Used by the v2 synthesis agent at session start to orient against
+    workspace artefacts before drafting SQL.
+    """
+    return await _invoke(
+        "read_workspace",
+        insight_id or "",
+        {"file": file},
+        thread_id=thread_id,
+        session_id=session_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Phase 2 (PRD/ARCH 14) — session-scoped write tools
 # ---------------------------------------------------------------------------
@@ -447,27 +528,47 @@ async def emit_citation(
 @mcp.tool()
 async def persist_insight(
     session_id: str,
-    insight: dict[str, Any],
-    supporting_row_ids: list[str],
+    headline: str,
+    body: str,
+    confidence: str,
+    materiality: str,
+    citations: list[dict[str, Any]],
+    chart_id: Optional[str] = None,
+    open_question_id: Optional[str] = None,
+    skills_run: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Persist one insight under a synthesis ai_session.
+    """Persist one v2 insight under a synthesis ai_session.
 
     Args:
       session_id: UUID of the parent ai_session (must exist + be running).
-      insight: dict matching `agents.insights.hypothesizer.InsightOutput`
-        — headline, body, confidence_signal, materiality, plus optional
-        chart_type / chart_y_label.
-      supporting_row_ids: row_ids drawn from the session's FactPack;
-        ids that do not match the FactPack are filtered out
-        server-side (mirrors `_coerce_insights` filtering, FR-2.4).
+      headline: <=140 chars (mega-thread tile constraint).
+      body: optional human prose, <=4000 chars.
+      confidence: one of "low" | "medium" | "high".
+      materiality: one of "low" | "medium" | "high".
+      citations: list of {citation_id, kind?} dicts. Round 3.5: may be
+        empty — chart-level provenance carries the data grounding.
+      chart_id: optional. When omitted, a follow-up
+        ``build_chart(insight_id=...)`` binds the chart on the other edge.
+      open_question_id: optional pointer into OpenClaw memory.
+      skills_run: list of skill names invoked while drafting this insight.
 
     Returns:
-      Standard envelope. On success: ``{ok:True, result:{insight_id, idx}, code:0}``.
+      Standard envelope. On success:
+      ``{ok:True, result:{insight_id, chart_id, citation_count, version}, code:0}``.
     """
     return await _invoke_session(
         "persist_insight",
         session_id,
-        {"insight": insight, "supporting_row_ids": supporting_row_ids},
+        {
+            "headline": headline,
+            "body": body,
+            "confidence": confidence,
+            "materiality": materiality,
+            "citations": citations,
+            "chart_id": chart_id,
+            "open_question_id": open_question_id,
+            "skills_run": skills_run,
+        },
     )
 
 

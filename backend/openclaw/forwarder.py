@@ -54,8 +54,10 @@ from .sse_translator import (
 logger = logging.getLogger(__name__)
 
 
-# Per ARCH §5.2 the read budget is 60s; httpx connect/read timeout aligns.
-_OPENCLAW_TIMEOUT = httpx.Timeout(60.0, read=60.0, connect=10.0)
+# Synthesis streams (AI Insights) take longer than the QA-lane 60s read budget;
+# bump to 300s so a single long-thinking turn doesn't drop the SSE connection
+# before the agent reaches persist_insight / build_chart / finalize_session.
+_OPENCLAW_TIMEOUT = httpx.Timeout(300.0, read=300.0, connect=10.0)
 
 
 async def forward_chat(

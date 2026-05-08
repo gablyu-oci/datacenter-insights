@@ -167,143 +167,25 @@ async def _persist_insight_handler(
     session_uuid: uuid.UUID,
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Validate + persist one insight under an existing ai_session.
+    """Persist one v2 insight under an existing ai_session.
 
-    Returns:
-      ``{insight_id: "<uuid>", idx: <int>}`` — `idx` is the 0-based
-      ordinal within the session (count of prior persisted rows).
+    Thin wrapper around `tools.persist_insight.persist_insight` (v2 path).
+    Returns ``{insight_id, chart_id, citation_count, version}``.
     """
-    raw_insight = args.get("insight") or {}
-    raw_supporting = args.get("supporting_row_ids") or []
-    if not isinstance(raw_insight, dict):
-        raise ToolValidationError("insight must be an object", code="BAD_INPUT")
-    if not isinstance(raw_supporting, list):
-        raise ToolValidationError(
-            "supporting_row_ids must be a list", code="BAD_INPUT"
-        )
+    from .tools.persist_insight import persist_insight as _v2_persist
 
-    # Validate the insight body via the existing pydantic model.
-    from .hypothesizer import InsightOutput
-
-    try:
-        insight = InsightOutput(**raw_insight)
-    except Exception as exc:  # pydantic ValidationError or similar
-        raise ToolValidationError(
-            f"insight_validation: {exc}", code="BAD_INPUT"
-        ) from exc
-
-    # Fetch the parent ai_session to confirm it exists + is in a
-    # writable state.
-    from .db.models import AISession, AIInsight
-
-    session_row = (
-        await db.execute(select(AISession).where(AISession.id == session_uuid))
-    ).scalar_one_or_none()
-    if session_row is None:
-        raise ToolValidationError(
-            f"ai_session_not_found: {session_uuid}", code="BAD_INPUT"
-        )
-    if session_row.status not in ("running",):
-        raise ToolValidationError(
-            f"session_not_writable: status={session_row.status}",
-            code="ALREADY_FINALIZED",
-        )
-
-    # Filter supporting_row_ids against the FactPack the orchestrator
-    # registered for this session (if any). Mirrors `_coerce_insights`.
-    filtered_row_ids = _filter_row_ids(
-        [str(r) for r in raw_supporting if isinstance(r, str)],
-        _get_fact_pack(session_uuid),
-    )
-    if raw_supporting and not filtered_row_ids:
-        raise ToolValidationError(
-            "supporting_row_ids: must be non-empty after FactPack filter",
-            code="BAD_INPUT",
-        )
-
-    # Compute the next ordinal by counting prior insights for the session.
-    prior_count = (
-        await db.execute(
-            select(AIInsight.id).where(AIInsight.session_id == session_uuid)
-        )
-    ).all()
-    idx = len(prior_count)
-
-    # Map confidence_signal vocabulary onto the persistence enum.
-    confidence_map = {"weak": "low", "moderate": "medium", "strong": "high"}
-    confidence = confidence_map.get(insight.confidence_signal, "medium")
-
-    new_id = uuid.uuid4()
-    row = AIInsight(
-        id=new_id,
+    return await _v2_persist(
+        headline=args.get("headline", ""),
+        body=args.get("body"),
+        confidence=args.get("confidence", "medium"),
+        materiality=args.get("materiality", "medium"),
+        chart_id=args.get("chart_id"),
+        citations=args.get("citations") or [],
+        open_question_id=args.get("open_question_id"),
+        skills_run=args.get("skills_run"),
+        db=db,
         session_id=session_uuid,
-        idx=idx,
-        headline=insight.headline,
-        body=insight.body,
-        confidence=confidence,
-        materiality=insight.materiality or "medium",
-        skills_run=["agentic_synthesis"],
-        supporting_row_ids=filtered_row_ids or None,
     )
-    db.add(row)
-    await db.flush()
-
-    # Bump the parent session's insights_emitted counter so the
-    # Past Sessions UI shows an accurate count.
-    from sqlalchemy import update as _sa_update
-    from .db.models import AISession as _AISession
-
-    await db.execute(
-        _sa_update(_AISession)
-        .where(_AISession.id == session_uuid)
-        .values(insights_emitted=idx + 1)
-    )
-
-    # COMMIT NOW so the AIInsight row is durable. If the optional
-    # decorations below (chart + citations) fail and poison the SA
-    # session, a subsequent commit would error and _session_invoke
-    # would rollback EVERYTHING — wiping the insight the agent thinks
-    # it just wrote. Two commits = two transactions: insight is
-    # protected from decoration failures.
-    await db.commit()
-
-    # Best-effort decorations. Each helper has its own try/except,
-    # but flush errors inside them can poison the session. We rollback
-    # any aborted state at the boundary so a later finalize_session in
-    # the same connection does not inherit a busted transaction.
-    try:
-        await _auto_emit_chart(
-            db,
-            session_uuid=session_uuid,
-            insight_id=new_id,
-            headline=insight.headline,
-            chart_type_hint=getattr(insight, "chart_type", None),
-            y_label_hint=getattr(insight, "chart_y_label", None),
-            supporting_row_ids=filtered_row_ids or [],
-        )
-        await _auto_prefetch_citations(
-            db, insight_id=new_id, headline=insight.headline
-        )
-        await db.commit()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "mcp.persist_insight.decorations_failed",
-            extra={"err": str(exc), "insight_id": str(new_id)},
-        )
-        try:
-            await db.rollback()
-        except Exception:  # noqa: BLE001
-            pass
-
-    logger.info(
-        "mcp.persist_insight",
-        extra={
-            "session_id": str(session_uuid),
-            "insight_id": str(new_id),
-            "idx": idx,
-        },
-    )
-    return {"insight_id": str(new_id), "idx": idx}
 
 
 # ---------------------------------------------------------------------------

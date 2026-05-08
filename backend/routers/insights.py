@@ -115,7 +115,6 @@ def _release_session(session_id: uuid.UUID) -> None:
 class CreateSessionBody(BaseModel):
     focus: Optional[str] = Field(default=None, max_length=240)
     max_insights: int = Field(default=7, ge=5, le=10)
-    version: str = Field(default="v1", pattern=r"^v[12]$")
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -295,7 +294,6 @@ async def create_session(
         session_id=session_id,
         db=db_session,
         max_insights=body.max_insights,
-        version=body.version,
     )
     active = _ActiveSession(orch)
     _active_sessions[session_id] = active

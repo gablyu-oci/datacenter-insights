@@ -1,12 +1,15 @@
-"""InsightOrchestrator — multi-insight session driver.
+"""InsightOrchestrator — multi-insight session driver (v2).
 
 Two phases per session:
 
     1. Bootstrap — call_api against fixed survey endpoints (cap 8 calls).
-    2. Synthesize — build a FactPack and delegate to the agentic synthesis
-       driver (`agentic_synthesis.run_agentic_synthesis`). The driver
-       streams insights through OpenClaw + MCP write-tools and emits SSE
-       events back into this generator's event queue.
+    2. Synthesize — delegate to the agentic synthesis driver
+       (`agentic_synthesis.run_agentic_synthesis`). The driver streams
+       insights through OpenClaw + MCP write-tools and emits SSE events
+       back into this generator's event queue. The agent orients via
+       `read_workspace` (SCHEMA.md / FRESHNESS.md / playbook) and grounds
+       claims with `search_documents` + `query_database`; there is no
+       server-built FactPack in v2.
 
 Caps (PRD §5.1, ARCH A10):
     - 40 tool calls per session
@@ -52,8 +55,6 @@ from .specs.sse_events import (
     InsightStartedData,
     InsightStartedEvent,
     PingEvent,
-    ReasoningStepData,
-    ReasoningStepEvent,
     SessionCompleteData,
     SessionCompleteEvent,
     SessionStartedData,
@@ -84,7 +85,6 @@ V1_MAX_INSIGHTS = 10
 V1_NOVELTY_COSINE_THRESHOLD = 0.85
 V1_MAX_VERIFY_CALLS_PER_HYP = 4
 V1_REASONING_MODEL = "oci/openai.gpt-5.4"   # mirrors LlmClient default
-HYPOTHESIZER_TOKEN_CEILING = 80_000  # FR-X.5 relaxed ceiling (matches hypothesizer.py)
 
 
 # Fixed survey endpoints (from ARCH A6.3 + A8.1). Capped at 8 calls.
@@ -245,14 +245,12 @@ class InsightOrchestrator:
         *,
         max_insights: int = 7,
         model: str = V1_REASONING_MODEL,
-        version: str = "v1",
     ) -> None:
         self.session_id = session_id
         self.db = db
         self.llm = llm  # LLMAdapter-shape; optional for unit tests
         self.max_insights = max(V1_MIN_INSIGHTS, min(V1_MAX_INSIGHTS, max_insights))
         self.model = model
-        self.version = version
 
         # Caps + run state
         self._tool_calls_used = 0
@@ -263,9 +261,6 @@ class InsightOrchestrator:
         # Headlines emitted in this session, with embeddings — for novelty dedup.
         self._emitted_headlines: list[tuple[str, list[float]]] = []
         self._emitted_count = 0
-        # FactPack state — populated in _phase_hypothesize_iter for the
-        # agentic synthesis driver to consume.
-        self._fact_pack: "FactPack | None" = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -338,17 +333,9 @@ class InsightOrchestrator:
                         yield term
                     return
 
-            # --- Build FactPack (server-side) -------------------------
-            # `_phase_hypothesize_iter` yields one ReasoningStep event
-            # and populates self._fact_pack. The agentic synthesis
-            # driver consumes the FactPack and emits per-insight SSE
-            # events through the synthesis lane.
-            async for ev in self._phase_hypothesize_iter():
-                yield ev
-                if self._cancel_event.is_set():
-                    async for term in self._terminate("cancelled", "session cancelled during hypothesize"):
-                        yield term
-                    return
+            # v2: no server-built FactPack. The agent orients via
+            # read_workspace(SCHEMA.md / FRESHNESS.md / playbook) and
+            # grounds claims with search_documents + query_database.
 
             # Lazy import to avoid a hard dependency at import time
             # (agentic_synthesis pulls in openclaw.forwarder which
@@ -373,15 +360,8 @@ class InsightOrchestrator:
 
             async def _driver() -> None:
                 try:
-                    if self._fact_pack is None:
-                        # Without a FactPack the agentic driver has
-                        # nothing to ground on; return cleanly. The
-                        # wrapping code emits session_complete with
-                        # budget_status='ok' but zero insights.
-                        return
                     await run_agentic_synthesis(
                         session_id=self.session_id,
-                        fact_pack=self._fact_pack,
                         max_insights=self.max_insights,
                         db=self.db,
                         sse_emit=_sse_emit,
@@ -510,36 +490,6 @@ class InsightOrchestrator:
         )
         # An idle ping to nudge keep-alive after bootstrap.
         yield self._build_event(PingEvent, None)
-
-    async def _phase_hypothesize_iter(self) -> AsyncIterator[_SSEBase]:
-        """Build a FactPack server-side for the agentic synthesis driver.
-
-        Emits exactly one ``reasoning_step="hypothesize"`` event (the SSE
-        shape the frontend reads). On db=None we skip the warehouse pull
-        and leave ``self._fact_pack`` unset; the agentic driver short-
-        circuits and emits zero insights (used by db-less unit tests).
-        """
-        from .hypothesizer import build_factpack
-
-        yield self._build_event(
-            ReasoningStepEvent,
-            ReasoningStepData(insight_id="session", step="hypothesize"),
-        )
-
-        if self.db is None:
-            self._fact_pack = None
-            return
-
-        try:
-            self._fact_pack = await build_factpack(self.db)
-            if self._fact_pack is not None and self._fact_pack.total_rows() == 0:
-                self._fact_pack = None
-        except Exception as exc:
-            logger.warning(
-                "ai_insights.orchestrator.hypothesize_failed",
-                extra={"err": str(exc)},
-            )
-            self._fact_pack = None
 
     # ------------------------------------------------------------------
     # Caps + termination helpers
@@ -676,7 +626,7 @@ class InsightOrchestrator:
                 model=self.model,
                 focus=str(filters.get("focus") or "")[:240] or None,
                 max_insights=self.max_insights,
-                version=self.version,
+                version="v2",
                 created_by=created_by,
                 cron_run_date=cron_run_date,
             )

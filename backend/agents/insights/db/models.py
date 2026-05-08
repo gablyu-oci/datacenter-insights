@@ -49,7 +49,7 @@ class AISession(SQLModel, table=True):
     model: Optional[str] = Field(default=None, max_length=80)
     focus: Optional[str] = None
     max_insights: int = 7
-    version: str = Field(default="v1", max_length=8)
+    version: str = Field(default="v2", max_length=8)
     insights_emitted: int = 0
     duration_ms: Optional[int] = None
     budget_status: Optional[str] = Field(default=None, max_length=16)
@@ -119,6 +119,16 @@ class AIInsight(SQLModel, table=True):
         default=None,
         sa_column=Column(JSONB, nullable=True),
     )
+    # v2 columns (migration 018). chart_id is the FK back-edge that
+    # `persist_insight` writes after `build_chart` has materialized the
+    # chart row; citations is the typed grounding list; open_question_id
+    # links into OpenClaw memory.
+    chart_id: Optional[str] = Field(default=None, max_length=32)
+    citations: Optional[list[dict[str, Any]]] = Field(
+        default=None, sa_column=Column(JSONB, nullable=True),
+    )
+    open_question_id: Optional[str] = Field(default=None, max_length=64)
+    version: str = Field(default="v2", max_length=8)
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 

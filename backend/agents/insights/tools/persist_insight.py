@@ -1,4 +1,4 @@
-"""persist_insight_v2 — V2 final-sink tool that closes out an insight.
+"""persist_insight — V2 final-sink tool that closes out an insight.
 
 Pipeline (architecture §3.3):
 
@@ -66,7 +66,7 @@ def _err(code: str, message: str, **detail: Any) -> dict[str, Any]:
     # the MCP wrapper as `{ok:True, result:{ok:False, error:<code>}}`
     # and never lands in the FastAPI stdout).
     logger.warning(
-        "ai_insights.persist_insight_v2.rejected code=%s message=%s detail=%s",
+        "ai_insights.persist_insight.rejected code=%s message=%s detail=%s",
         code, message, detail,
         extra={"err_code": code, "err_message": message, "err_detail": detail},
     )
@@ -163,7 +163,7 @@ async def _resolve_citations(
 # ---------------------------------------------------------------------------
 
 
-async def persist_insight_v2(
+async def persist_insight(
     *,
     headline: str,
     body: str | None,
@@ -191,7 +191,7 @@ async def persist_insight_v2(
     `idx` defaults to one past the last existing idx for the session.
     """
     logger.info(
-        "ai_insights.persist_insight_v2.entered",
+        "ai_insights.persist_insight.entered",
         extra={
             "session_id_hint": str(session_id) if session_id is not None else None,
             "chart_id": chart_id,
@@ -203,7 +203,7 @@ async def persist_insight_v2(
     # 0) Argument validation.
     # ------------------------------------------------------------------
     if db is None:
-        return _err("db_required", "persist_insight_v2 requires a write-capable db handle")
+        return _err("db_required", "persist_insight requires a write-capable db handle")
 
     sid_raw = session_id if session_id is not None else getattr(ctx, "session_id", None)
     sid = _coerce_uuid(sid_raw)
@@ -238,12 +238,36 @@ async def persist_insight_v2(
     if session_row is None:
         return _err("session_not_found", f"no ai_session row for id={sid}", session_id=str(sid))
     status = getattr(session_row, "status", None)
-    if status not in {"running", "in_progress", "active"}:
-        return _err(
-            "session_closed",
-            f"session status={status!r} is not open for new insights",
-            status=status,
-        )
+    open_statuses = {"running", "in_progress", "active"}
+    # Parallel-tool-use grace window: when the model emits parallel tool calls,
+    # persist_insight payloads can land at /mcp slightly after the openclaw
+    # stream returns and the orchestrator's `_persist_session_finish` flips
+    # status to 'complete'. Without a grace window every such call gets
+    # rejected and the session ends with insights_emitted=0 even though the
+    # agent did the work. Accept persists for ≤60s after finished_at.
+    if status not in open_statuses:
+        finished_at = getattr(session_row, "finished_at", None)
+        if status == "complete" and finished_at is not None:
+            from datetime import datetime, timezone
+            now = datetime.now(timezone.utc)
+            ts = finished_at if finished_at.tzinfo else finished_at.replace(tzinfo=timezone.utc)
+            if (now - ts).total_seconds() <= 60:
+                logger.warning(
+                    "ai_insights.persist_insight.late_arrival_accepted session_id=%s seconds_after_finalize=%.1f",
+                    str(sid), (now - ts).total_seconds(),
+                )
+            else:
+                return _err(
+                    "session_closed",
+                    f"session status={status!r} is not open for new insights",
+                    status=status,
+                )
+        else:
+            return _err(
+                "session_closed",
+                f"session status={status!r} is not open for new insights",
+                status=status,
+            )
 
     # ------------------------------------------------------------------
     # 2) Chart must exist + match session (only when chart_id supplied).
@@ -265,7 +289,7 @@ async def persist_insight_v2(
         cit_rows, missing = await _resolve_citations(db, citations_norm)
         if missing:
             logger.warning(
-                "ai_insights.persist_insight_v2.citations_partial",
+                "ai_insights.persist_insight.citations_partial",
                 extra={
                     "resolved": len(cit_rows),
                     "missing_count": len(missing),
@@ -276,17 +300,27 @@ async def persist_insight_v2(
         cit_rows = []
 
     # ------------------------------------------------------------------
-    # 4) Compute idx if not supplied.
+    # 4) Compute idx if not supplied. Parallel tool-use means multiple
+    # persist_insight calls for the same session can race here; without
+    # serialization they all read max(idx)=NULL and assign idx=0. Take a
+    # session-scoped Postgres advisory xact lock so each insert sees the
+    # committed view of prior rows, then read MAX(idx) under the lock.
     # ------------------------------------------------------------------
     if idx is None:
+        from sqlalchemy import func, text
+
         from ..db.models import AIInsight
 
         try:
-            result = await db.execute(
-                select(AIInsight.idx).where(AIInsight.session_id == sid)
+            await db.execute(
+                text("SELECT pg_advisory_xact_lock(hashtext(:sid))"),
+                {"sid": str(sid)},
             )
-            existing = list(result.scalars().all() if hasattr(result, "scalars") else [])
-            idx = (max(existing) + 1) if existing else 0
+            result = await db.execute(
+                select(func.max(AIInsight.idx)).where(AIInsight.session_id == sid)
+            )
+            max_idx = result.scalar()
+            idx = (max_idx + 1) if max_idx is not None else 0
         except Exception:  # noqa: BLE001
             idx = 0
 
@@ -337,7 +371,7 @@ async def persist_insight_v2(
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "ai_insights.persist_insight_v2.chart_bind_failed",
+                "ai_insights.persist_insight.chart_bind_failed",
                 extra={"err": str(exc), "chart_id": chart_id},
             )
 
@@ -352,12 +386,12 @@ async def persist_insight_v2(
             )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "ai_insights.persist_insight_v2.citation_bind_failed",
+            "ai_insights.persist_insight.citation_bind_failed",
             extra={"err": str(exc)},
         )
 
     logger.info(
-        "ai_insights.persist_insight_v2.ok",
+        "ai_insights.persist_insight.ok",
         extra={
             "insight_id": str(insight_id_uuid),
             "session_id": str(sid),
@@ -375,4 +409,4 @@ async def persist_insight_v2(
     }
 
 
-__all__ = ["persist_insight_v2", "HEADLINE_MAX", "BODY_MAX"]
+__all__ = ["persist_insight", "HEADLINE_MAX", "BODY_MAX"]
