@@ -153,7 +153,7 @@ async def _invoke_tool(tool_name: str, envelope: _ToolEnvelope) -> dict[str, Any
         # Lazy import to avoid heavy loads when this router is unused.
         from agents.insights.tools.registry import dispatch
 
-        result = await dispatch(tool_name, dict(envelope.args or {}), ctx)
+        result = await dispatch(tool_name, dict(envelope.args or {}), ctx, db=db)
         return {"ok": True, "result": result}
     except HTTPException:
         # Re-raise FastAPI-shaped errors (404 etc.) so the proper status

@@ -249,7 +249,11 @@ async def _invoke(
 
         from agents.insights.tools.registry import dispatch
 
-        result = await dispatch(name, args, ctx)
+        result = await dispatch(name, args, ctx, db=db)
+        # Commit any writes the tool body made (build_chart inserts an
+        # agent_chart row; without this commit the close() in finally
+        # rolls it back and the chart never persists).
+        await db.commit()
         return {"ok": True, "result": result}
     except Exception as exc:  # noqa: BLE001 — surface every failure mode
         logger.exception("mcp.invoke_failed", extra={"tool": name})

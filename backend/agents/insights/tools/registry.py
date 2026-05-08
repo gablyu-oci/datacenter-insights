@@ -379,8 +379,14 @@ async def dispatch(
     name: str,
     args: dict[str, Any],
     ctx: SkillContext | None = None,
+    db: Any = None,
 ) -> Any:
-    """Run the dispatcher for the named tool with the provided args."""
+    """Run the dispatcher for the named tool with the provided args.
+
+    `db` (AsyncSession) is forwarded to tools that need a transaction —
+    primarily v2 tools (build_chart, persist_insight) that write rows.
+    Read-only tools (query_database, search_documents, etc.) ignore it.
+    """
     fn = _DISPATCH.get(name)
     if fn is None:
         return {"ok": False, "error": "unknown_tool", "detail": {"requested": name}}
@@ -447,6 +453,8 @@ async def dispatch(
         )
 
     if name == "build_chart":
+        # build_chart needs db + ctx.session_id to bind a chart to an insight.
+        # Forward db from the caller (MCP server creates one per request).
         return await fn(
             sql=args_dict.get("sql", ""),
             encoding=args_dict.get("encoding") or {},
@@ -457,6 +465,7 @@ async def dispatch(
             styling=args_dict.get("styling"),
             insight_id=args_dict.get("insight_id"),
             ctx=ctx if accepts_ctx else None,
+            db=db,
         )
 
     if name == "read_workspace":
@@ -476,6 +485,7 @@ async def dispatch(
             open_question_id=args_dict.get("open_question_id"),
             skills_run=args_dict.get("skills_run"),
             ctx=ctx if accepts_ctx else None,
+            db=db,
         )
 
     # Fallback (shouldn't reach for the registered names).
