@@ -306,30 +306,45 @@ async def _emit_chart_fallbacks(
     if not rows:
         return 0
 
+    from datetime import timezone
+
     created = 0
     for insight in rows:
         chart_id = f"c_{uuid.uuid4().hex[:8]}"
-        spec = {
-            "chart_type": "kpi_tile",
-            "title": insight.headline,
-            "subtitle": "auto-emitted: agent did not call build_chart",
-            "encoding": {"value": "headline"},
-            "auto_generated": True,
-        }
-        data_source = {
-            "kind": "fallback",
-            "rows": [{"headline": insight.headline}],
-            "row_count": 1,
-        }
         row_hash = hashlib.sha256(
             f"fallback:{insight.id}".encode("utf-8")
         ).hexdigest()
+        # The frontend's SnapshotInsightFeed unwraps `chart.spec` and reads it
+        # as a flat ChartSpec (chart_id, chart_type, title, data_source, data,
+        # encoding, ...). Real build_chart writes a full ChartSpec dump into
+        # `spec`. Fallback charts have to match that shape or the frontend
+        # crashes on FigureCaption when it dereferences `chart.data_source`.
+        embedded_data_source = {
+            "kind": "chart_data",
+            "spec": {"source": "fallback"},
+            "rows": 1,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "row_hash": row_hash,
+        }
+        spec = {
+            "chart_id": chart_id,
+            "chart_type": "kpi_tile",
+            "title": insight.headline,
+            "subtitle": "auto-emitted: agent did not call build_chart",
+            "data_source": embedded_data_source,
+            "data": [{"headline": insight.headline}],
+            "encoding": {
+                "x": {"field": "headline", "type": "category"},
+                "y": {"field": "headline", "type": "quantitative"},
+            },
+            "auto_generated": True,
+        }
         chart = AgentChart(
             id=chart_id,
             session_id=session_uuid,
             insight_id=insight.id,
             spec=spec,
-            data_source=data_source,
+            data_source=embedded_data_source,
             row_hash=row_hash,
         )
         db.add(chart)
