@@ -41,6 +41,8 @@ anticipate the next one._
 - Always apply structured research and data-analysis techniques when generating AI insights; use hypothesis-driven, evidence-first analysis.  _<2026-05-07>_
 - When OCI Insights tools fail on argument/ID validation, stop and re-check docs or prior successful calls; never invent placeholder insight_id, schema, or chart fields.  _<2026-05-08>_
 - Do not make warehouse/data-quality caveats the core insight when the task is datacenter/power analysis; keep caveats in notes unless the user explicitly asks about data quality.  _<2026-05-08>_
+- Answer executive-style: lead with the conclusion, then 2-3 supporting facts, then OCI implication; keep caveats subordinate unless they change the read.  _<2026-05-09>_
+- When a tool/path/schema rejects an assumption, stop and verify the contract before retrying; do not improvise around the error.  _<2026-05-11>_
 
 
 ## Platform quirks worth knowing
@@ -61,6 +63,7 @@ USER.md, but USER.md is intent; this is observation._
 
 - User prefers analyst outputs built from denominator-first ledgers, reconciled exposure math, and executive narrative that ties evidence directly to OCI implications.  _<2026-05-08>_
 - User wants analytical style generalized from examples: learn the method, evidence handling, and narrative structure without copying the specific subject matter or template.  _<2026-05-08>_
+- For executive-style analysis, lead with the conclusion, then 2-3 supporting facts, then the OCI implication or practical action.  _<2026-05-11>_
 
 
 ## Threads to revisit
