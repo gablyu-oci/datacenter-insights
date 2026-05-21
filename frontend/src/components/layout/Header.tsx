@@ -1,5 +1,6 @@
 import { Activity, Database, Zap } from "lucide-react";
 import { useApi } from "../../hooks/useApi";
+import UserMenu from "./UserMenu";
 
 interface HealthPayload {
   status: string;
@@ -82,6 +83,7 @@ export default function Header() {
           <Database size={14} color="#3b82f6" />
           <span style={{ color: "#94a3b8", fontSize: "12px" }}>{syncLabel}</span>
         </div>
+        <UserMenu />
       </div>
     </header>
   );

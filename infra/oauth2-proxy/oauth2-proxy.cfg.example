@@ -1,0 +1,39 @@
+# oauth2-proxy config for datacenter.oci-incubations.com
+# Federates with OCI Identity Domain (Default) via OIDC.
+
+http_address = "127.0.0.1:4180"
+reverse_proxy = true
+
+# OIDC provider — OCI Identity Domain
+provider = "oidc"
+provider_display_name = "Oracle SSO"
+oidc_issuer_url = "https://idcs-7e4031a1e5fb44498b3cbe285e1d9d42.identity.oraclecloud.com"
+# OCI IDCS publishes shared issuer "https://identity.oraclecloud.com/" in ID tokens;
+# signature still verified via JWKS, only literal iss string check is bypassed.
+insecure_oidc_skip_issuer_verification = true
+client_id = "REDACTED_CLIENT_ID_FROM_OCI_IDENTITY_DOMAIN_APP"
+client_secret = "REDACTED_CLIENT_SECRET_FROM_OCI_IDENTITY_DOMAIN_APP"
+redirect_url = "https://datacenter.oci-incubations.com/oauth2/callback"
+scope = "openid email profile"
+
+# Allowlist: gate is enforced at the Identity Domain (only assigned users can sign in).
+# So any email coming back from a valid OIDC login is acceptable here.
+email_domains = ["*"]
+whitelist_domains = ["datacenter.oci-incubations.com"]
+
+# Cookie / session
+cookie_secret = "REDACTED_GENERATE_WITH_openssl_rand_-base64_32"
+cookie_secure = true
+cookie_httponly = true
+cookie_samesite = "lax"
+cookie_domains = ["datacenter.oci-incubations.com"]
+cookie_expire = "168h"
+cookie_refresh = "1h"
+
+# Skip the in-product "Sign in with Oracle SSO" page; go straight to OCI
+skip_provider_button = true
+
+# Pass identity to the upstream (nginx subrequest reads these)
+set_xauthrequest = true
+pass_access_token = false
+pass_authorization_header = false
