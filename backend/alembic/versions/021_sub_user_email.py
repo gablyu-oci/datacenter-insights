@@ -1,6 +1,6 @@
-"""021_insight_subscription_user_email — per-user owner column.
+"""021_sub_user_email — per-user owner column on insight_subscription.
 
-Revision ID: 021_insight_subscription_user_email
+Revision ID: 021_sub_user_email
 Revises: 020_site_notes_history
 Create Date: 2026-05-21 12:00:00.000000
 
@@ -39,7 +39,7 @@ from alembic import op
 
 
 # revision identifiers, used by Alembic.
-revision: str = "021_insight_subscription_user_email"
+revision: str = "021_sub_user_email"
 down_revision: Union[str, Sequence[str], None] = "020_site_notes_history"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None

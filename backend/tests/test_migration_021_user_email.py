@@ -1,4 +1,4 @@
-"""Round-trip test for migration 021_insight_subscription_user_email.
+"""Round-trip test for migration 021_sub_user_email.
 
 Acceptance criteria 8.3 from
 `docs/planning/save-and-history-per-user/01-PRD.md`:
@@ -58,7 +58,7 @@ _MIG_PATH = os.path.join(
     BACKEND_ROOT,
     "alembic",
     "versions",
-    "021_insight_subscription_user_email.py",
+    "021_sub_user_email.py",
 )
 _spec = importlib.util.spec_from_file_location("mig_021", _MIG_PATH)
 mig_021 = importlib.util.module_from_spec(_spec)
