@@ -3,9 +3,9 @@
 Spec: ``docs/ai_insights_v2_spec.md`` §5.3
 Architecture: ``docs/ai_insights_v2_phases_bcd_architecture.md`` §1, §2
 
-This is the V2 tool that lets the synthesis agent ground claims in the
-text of EDGAR filings and permit documents. Phase B.1 ships BM25-only
-via Postgres ``tsvector`` + ``websearch_to_tsquery`` + ``ts_rank_cd``.
+This tool lets the synthesis agent ground claims in the text of EDGAR
+filings and permit documents. Phase B.1 ships BM25-only via Postgres
+``tsvector`` + ``websearch_to_tsquery`` + ``ts_rank_cd``.
 Phase B.2 (pgvector hybrid via RRF) is gated on recall@8 < 0.85 on the
 30-pair golden set; that work is NOT in this file.
 
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_K = 8
 MAX_K = 50
 
-ALLOWED_SOURCES = ("edgar", "permits", "all")
+ALLOWED_SOURCES = ("edgar", "permits", "earnings", "all")
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +93,32 @@ _PERMIT_SQL = text(
     """
 )
 
+# Earnings branch — joins earnings_transcripts for citation metadata
+# (speaker, section, ticker, quarter, transcript_url). Mirrors the
+# edgar/permits SQL shape so the merge in source='all' is uniform.
+_EARNINGS_SQL = text(
+    """
+    SELECT
+      ep.passage_id::text AS passage_id,
+      ep.text             AS passage_text,
+      ep.speaker          AS speaker,
+      ep.section          AS section,
+      ts_rank_cd(ep.tsv, websearch_to_tsquery('english', :q), 32) AS score,
+      et.cik              AS cik,
+      et.ticker           AS ticker,
+      et.company_name     AS company,
+      et.quarter          AS quarter,
+      et.call_date        AS call_date,
+      et.transcript_url   AS url,
+      et.retrieved_at     AS retrieved_at
+    FROM earnings_passages ep
+    JOIN earnings_transcripts et ON et.id = ep.document_id
+    WHERE ep.tsv @@ websearch_to_tsquery('english', :q)
+    ORDER BY score DESC
+    LIMIT :k
+    """
+)
+
 
 # ---------------------------------------------------------------------------
 # Tool entrypoint
@@ -101,7 +127,7 @@ _PERMIT_SQL = text(
 
 async def search_documents(
     query: str,
-    source: Literal["edgar", "permits", "all"] = "all",
+    source: Literal["edgar", "permits", "earnings", "all"] = "all",
     k: int = DEFAULT_K,
     *,
     ctx: SkillContext | None = None,
@@ -162,6 +188,7 @@ async def search_documents(
 
     edgar_rows: list[dict[str, Any]] = []
     permit_rows: list[dict[str, Any]] = []
+    earnings_rows: list[dict[str, Any]] = []
 
     try:
         async with engine.connect() as conn:
@@ -175,6 +202,11 @@ async def search_documents(
                     _PERMIT_SQL, {"q": query, "k": effective_k}
                 )
                 permit_rows = [dict(r) for r in result.mappings().all()]
+            if source in ("earnings", "all"):
+                result = await conn.execute(
+                    _EARNINGS_SQL, {"q": query, "k": effective_k}
+                )
+                earnings_rows = [dict(r) for r in result.mappings().all()]
     except Exception as exc:
         latency_ms = int((time.perf_counter() - started) * 1000)
         logger.warning(
@@ -198,6 +230,8 @@ async def search_documents(
         passages.append(_shape_edgar_row(row))
     for row in permit_rows:
         passages.append(_shape_permit_row(row))
+    for row in earnings_rows:
+        passages.append(_shape_earnings_row(row))
 
     # Re-rank merged list by score; clamp to effective_k for source='all'.
     passages.sort(key=lambda p: p["score"], reverse=True)
@@ -277,6 +311,30 @@ def _shape_permit_row(row: dict[str, Any]) -> dict[str, Any]:
             "url": None,
             "retrieved_at": None,
             "passage_id": row.get("passage_id"),
+        },
+    }
+
+
+def _shape_earnings_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Shape an earnings_passages row as a citation.
+
+    Earnings citations extend the base envelope with two transcript-only
+    keys (speaker, section). The frontend insight-card renderer treats
+    these as optional adornments.
+    """
+    quarter = row.get("quarter")
+    return {
+        "text": row.get("passage_text") or "",
+        "score": float(row.get("score") or 0.0),
+        "citation": {
+            "source": "earnings",
+            "company": row.get("company"),
+            "filing_type": f"earnings_call_{quarter}" if quarter else "earnings_call",
+            "url": row.get("url"),
+            "retrieved_at": _iso(row.get("retrieved_at")),
+            "passage_id": row.get("passage_id"),
+            "speaker": row.get("speaker"),
+            "section": row.get("section"),
         },
     }
 

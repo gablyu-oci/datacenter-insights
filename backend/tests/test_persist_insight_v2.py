@@ -1,4 +1,4 @@
-"""Phase C unit tests for `agents.insights.tools.persist_insight_v2`.
+"""Phase C unit tests for `agents.insights.tools.persist_insight`.
 
 We stub the async session with a FakeDB that returns canned rows for
 each select() the tool issues. This keeps the tests fast and free of
@@ -23,7 +23,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from agents.insights.specs.skill_context import Capabilities, SkillContext
-from agents.insights.tools.persist_insight import HEADLINE_MAX, persist_insight as persist_insight_v2
+from agents.insights.tools.persist_insight import HEADLINE_MAX, persist_insight as persist_insight
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +168,7 @@ def _make_db_with_session(*, status="running", chart_id="c_abcdef12", with_citat
 
 @pytest.mark.asyncio
 async def test_db_required():
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -183,7 +183,7 @@ async def test_db_required():
 @pytest.mark.asyncio
 async def test_session_id_required():
     db = FakeDB()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -203,7 +203,7 @@ async def test_chart_id_optional_persists_without_chart():
     is the new way to bind a chart on the agent_chart side.
     """
     db, sid, citation_ids = _make_db_with_session()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="round 3 headline",
         body=None,
         confidence="med",
@@ -216,20 +216,22 @@ async def test_chart_id_optional_persists_without_chart():
     assert out["ok"] is True, out
     assert out["chart_id"] is None
     assert out["citation_count"] == 1
-    assert out["version"] == "v2"
     # The persisted ai_insight row must have chart_id=NULL.
     from agents.insights.db.models import AIInsight
 
     insight_rows = [a for a in db.added if isinstance(a, AIInsight)]
     assert len(insight_rows) == 1
     assert getattr(insight_rows[0], "chart_id", "missing") is None
-    assert getattr(insight_rows[0], "version", None) == "v2"
 
 
 @pytest.mark.asyncio
-async def test_citations_required_empty_list():
+async def test_empty_citations_are_accepted():
+    """Round 3.5 contract: citations may be empty. Chart-level provenance
+    (executed_sql + row_hash on the bound agent_chart row) carries the
+    data grounding, so persist_insight does not reject an empty list.
+    """
     db, sid, _ = _make_db_with_session(with_citations=False)
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -239,13 +241,14 @@ async def test_citations_required_empty_list():
         db=db,
         session_id=sid,
     )
-    assert out["ok"] is False and out["error"] == "citations_required"
+    assert out["ok"] is True, out
+    assert out.get("citation_count") == 0
 
 
 @pytest.mark.asyncio
 async def test_headline_too_long():
     db, sid, citation_ids = _make_db_with_session()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x" * (HEADLINE_MAX + 1),
         body=None,
         confidence="med",
@@ -270,7 +273,7 @@ async def test_session_not_found():
     from agents.insights.db.models import AISession
 
     db.set_canned(AISession, [])
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -286,7 +289,7 @@ async def test_session_not_found():
 @pytest.mark.asyncio
 async def test_session_closed():
     db, sid, citation_ids = _make_db_with_session(status="finished")
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -306,7 +309,7 @@ async def test_chart_not_found():
     from agents.insights.db.models import AgentChart
 
     db.set_canned(AgentChart, [])
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -327,7 +330,7 @@ async def test_chart_session_mismatch():
 
     other_sid = uuid.uuid4()
     db.set_canned(AgentChart, [_chart_row("c_abcdef12", other_sid)])
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -341,10 +344,13 @@ async def test_chart_session_mismatch():
 
 
 @pytest.mark.asyncio
-async def test_citation_unresolved():
+async def test_unresolved_citation_is_dropped_not_rejected():
+    """Unresolved citation_ids no longer reject the insert — the
+    handler logs `ai_insights.persist_insight.citations_partial` and
+    persists the insight with the resolvable citations only.
+    """
     db, sid, _ = _make_db_with_session(with_citations=False)
-    # Pass a fake citation_id that won't resolve.
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="x",
         body=None,
         confidence="med",
@@ -354,7 +360,8 @@ async def test_citation_unresolved():
         db=db,
         session_id=sid,
     )
-    assert out["ok"] is False and out["error"] == "citation_unresolved"
+    assert out["ok"] is True, out
+    assert out.get("citation_count") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +372,7 @@ async def test_citation_unresolved():
 @pytest.mark.asyncio
 async def test_happy_path_inserts_v2_insight_and_binds_chart():
     db, sid, citation_ids = _make_db_with_session()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="OCI free-cooling vs AWS dry-bulb spread widens to 4.2C in q2",
         body="Body text here.",
         confidence="med",
@@ -380,14 +387,12 @@ async def test_happy_path_inserts_v2_insight_and_binds_chart():
     assert out["ok"] is True, out
     assert out["chart_id"] == "c_abcdef12"
     assert out["citation_count"] == 1
-    assert out["version"] == "v2"
-    # Inserted exactly one AIInsight row tagged version='v2'
+    # Inserted exactly one AIInsight row with the supplied chart binding.
     from agents.insights.db.models import AIInsight
 
     insight_rows = [a for a in db.added if isinstance(a, AIInsight)]
     assert len(insight_rows) == 1
     insight = insight_rows[0]
-    assert getattr(insight, "version", None) == "v2"
     assert getattr(insight, "chart_id", None) == "c_abcdef12"
     assert getattr(insight, "open_question_id", None) == "oq_2026_05_07_a"
     cits = getattr(insight, "citations", None)

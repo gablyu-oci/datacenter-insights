@@ -75,9 +75,14 @@ const EVENT_TYPE_COLORS: Record<string, string> = {
   announcement: "#3b82f6",
   permit_filed: "#f59e0b",
   construction_start: "#22c55e",
+  construction_progress: "#14b8a6",
+  construction_finished: "#06b6d4",
   activation: "#10b981",
   expansion: "#8b5cf6",
   cancellation: "#ef4444",
+  withdrawn: "#dc2626",
+  delayed: "#f97316",
+  land_bank_purchase: "#94a3b8",
 };
 
 interface SiteDetailProps {
@@ -240,7 +245,7 @@ export default function SiteDetail({ aterioDcUid, onClose }: SiteDetailProps) {
                 <KPI label="Power" value={mw != null ? `${mw.toFixed(0)} MW` : "--"} icon={<Zap size={11} color="#f59e0b" />} />
                 <KPI label="Stage" value={site?.stage ?? "--"} icon={<Building2 size={11} color="#3b82f6" />} />
                 <KPI label="Acres" value={site?.site_acreage != null ? site.site_acreage.toFixed(0) : "--"} />
-                <KPI label="Construction %" value={site?.pct_construction != null ? `${site.pct_construction}%` : "--"} />
+                <KPI label="Construction %" value={site?.pct_construction != null ? `${Math.round(site.pct_construction * 100)}%` : "--"} />
                 {site?.announcement_date && (
                   <KPI label="Announced" value={site.announcement_date.slice(0, 10)} />
                 )}

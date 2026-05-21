@@ -329,8 +329,14 @@ def stub_dispatch(monkeypatch: pytest.MonkeyPatch):
     calls: list[dict[str, Any]] = []
     behavior: dict[str, Any] = {"return_value": None, "raise": None}
 
-    async def _fake_dispatch(name, args, ctx):
-        calls.append({"name": name, "args": dict(args) if isinstance(args, dict) else args, "ctx": ctx})
+    async def _fake_dispatch(name, args, ctx, **kwargs):
+        # v2 dispatch passes db=<AsyncSession>; absorb via **kwargs.
+        calls.append({
+            "name": name,
+            "args": dict(args) if isinstance(args, dict) else args,
+            "ctx": ctx,
+            "kwargs": kwargs,
+        })
         if behavior["raise"] is not None:
             raise behavior["raise"]
         return behavior["return_value"]

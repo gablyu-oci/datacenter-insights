@@ -205,6 +205,29 @@ class Site(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
+# Site Notes History — append-only audit of sites.notes changes.
+# The adapter overwrites sites.notes on every daily ingest; this table
+# preserves prior values so analyst commentary isn't silently lost.
+# See migration 020.
+# ---------------------------------------------------------------------------
+
+class SiteNotesHistory(SQLModel, table=True):
+    __tablename__ = "site_notes_history"
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    aterio_dc_uid: str = Field(index=True)
+    notes_text: str = Field(sa_column=SAColumn(Text, nullable=False))
+    observed_at: datetime = Field(default_factory=_ts_now)
+    ingestion_run_id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, nullable=True, index=True),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Events (from Data Centers Events sheet, 957 rows x 48 cols)
 # ---------------------------------------------------------------------------
 
@@ -766,4 +789,89 @@ class PressRelease(SQLModel, table=True):
     # Pillar tag — see EdgarExtraction.pillar; valid values today are
     # 'power_contract' or 'vendor_supply'.
     pillar: Optional[str] = Field(default=None, max_length=32, index=True)
+    created_at: datetime = Field(default_factory=_ts_now)
+
+
+# ---------------------------------------------------------------------------
+# Earnings call transcripts — Alpha Vantage pipeline (migration 019)
+# ---------------------------------------------------------------------------
+
+class EarningsTranscript(SQLModel, table=True):
+    """One row per quarterly earnings call transcript pulled from Alpha Vantage.
+
+    Mirrors the EdgarExtraction parent / passage pattern: this is the
+    parent row carrying structured highlights (JSONB) + 4-axis sentiment;
+    chunked BM25 passages live in ``earnings_passages``. UNIQUE(cik,
+    quarter) makes re-ingest idempotent.
+    """
+    __tablename__ = "earnings_transcripts"
+    __table_args__ = (
+        UniqueConstraint("cik", "quarter", name="uq_earnings_transcripts_cik_quarter"),
+        Index("ix_earnings_transcripts_call_date_desc", "call_date"),
+    )
+
+    id: Optional[int] = Field(
+        default=None,
+        sa_column=SAColumn(BigInteger, primary_key=True, autoincrement=True),
+    )
+    cik: str = Field(max_length=20, index=True)
+    ticker: str = Field(max_length=16, index=True)
+    company_name: str = Field(max_length=255)
+    quarter: str = Field(max_length=8)  # e.g. '2026Q1'
+    fiscal_year: Optional[int] = Field(default=None)
+    fiscal_quarter: Optional[int] = Field(default=None)
+    call_date: Optional[date] = Field(default=None, index=True)
+    transcript_url: Optional[str] = Field(default=None, max_length=1024)
+    raw_text: str = Field(sa_column=SAColumn(Text, nullable=False))
+    speaker_count: Optional[int] = Field(default=None)
+    word_count: Optional[int] = Field(default=None)
+    # Structured highlights (JSONB). See architecture doc §4.4 for shapes.
+    guidance: Optional[dict] = Field(default=None, sa_column=SAColumn(JSONB))
+    capex_mentions: Optional[list] = Field(default=None, sa_column=SAColumn(JSONB))
+    ai_power_mentions: Optional[list] = Field(default=None, sa_column=SAColumn(JSONB))
+    competitive_mentions: Optional[list] = Field(default=None, sa_column=SAColumn(JSONB))
+    mw_capacity_mentions: Optional[list] = Field(default=None, sa_column=SAColumn(JSONB))
+    # 4-axis sentiment — values bullish|cautious|bearish|not_mentioned
+    sentiment_ai_demand: Optional[str] = Field(default=None, max_length=16)
+    sentiment_power_constraints: Optional[str] = Field(default=None, max_length=16)
+    sentiment_datacenter_capex: Optional[str] = Field(default=None, max_length=16)
+    sentiment_overall: Optional[str] = Field(default=None, max_length=16)
+    extracted_at: Optional[datetime] = Field(default=None)
+    extractor_version: Optional[str] = Field(default=None, max_length=16)
+    retrieved_at: datetime = Field(default_factory=_ts_now)
+    created_at: datetime = Field(default_factory=_ts_now)
+
+
+class EarningsPassage(SQLModel, table=True):
+    """BM25-chunked passages of earnings transcripts.
+
+    Mirrors edgar_passages exactly (passage_id UUID PK, FK to parent ON
+    DELETE CASCADE, ord-based ordering, tsv populated by Postgres trigger
+    earnings_passages_tsv_trg). Adds speaker / section columns for
+    chunk-level attribution (CEO/CFO/analyst, prepared_remarks/q_and_a).
+    """
+    __tablename__ = "earnings_passages"
+    __table_args__ = (
+        UniqueConstraint("document_id", "ord", name="uq_earnings_passages_doc_ord"),
+        Index("ix_earnings_passages_document_id", "document_id"),
+    )
+
+    # passage_id UUID PK with server-side default gen_random_uuid().
+    # Stored as String here so SQLModel doesn't fight the Postgres UUID
+    # dialect; the DB column is UUID per migration 019.
+    passage_id: Optional[str] = Field(
+        default=None,
+        sa_column=SAColumn(Text, primary_key=True, server_default=text("gen_random_uuid()")),
+    )
+    document_id: int = Field(
+        sa_column=SAColumn(BigInteger, nullable=False, index=True),
+    )
+    ord: int = Field(default=0)
+    text: str = Field(sa_column=SAColumn(Text, nullable=False))
+    char_start: int = Field(default=0)
+    char_end: int = Field(default=0)
+    token_count: int = Field(default=0)
+    tokenizer: str = Field(default="cl100k_base", max_length=64)
+    speaker: Optional[str] = Field(default=None, max_length=255)
+    section: Optional[str] = Field(default=None, max_length=32)
     created_at: datetime = Field(default_factory=_ts_now)

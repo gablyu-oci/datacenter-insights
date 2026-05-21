@@ -104,16 +104,7 @@ from agents.insights.db.models import (  # noqa: E402
     AgentMessage,
     AgentChart,
 )
-from agents.insights.hypothesizer import (  # noqa: E402
-    FactPack,
-    FactRow,
-    FactSection,
-)
-from agents.insights.session_tools import (  # noqa: E402
-    HANDLERS,
-    clear_session_fact_pack,
-    register_session_fact_pack,
-)
+from agents.insights.session_tools import HANDLERS  # noqa: E402,F401
 
 import db.session as db_session_mod  # noqa: E402
 import mcp_server as mcp_server_mod  # noqa: E402
@@ -183,11 +174,16 @@ async def running_session(session_factory):
 # ---------------------------------------------------------------------------
 
 
+# v2 persist_insight shape: flat kwargs (no `insight` wrapper, no
+# `supporting_row_ids`, no `confidence_signal` — confidence is the
+# direct field). Citations stays optional in this dict; tests pass it
+# explicitly.
 _VALID_INSIGHT_BODY: dict[str, Any] = {
     "headline": "Test insight",
     "body": "Body for the test insight.",
-    "confidence_signal": "strong",
+    "confidence": "high",
     "materiality": "high",
+    "citations": [],
 }
 
 
@@ -201,21 +197,16 @@ async def test_persist_insight_happy_path(
     patched_factory, running_session, session_factory
 ) -> None:
     sess_id = running_session.id
-    clear_session_fact_pack(sess_id)  # no FactPack -> accept-all row_ids
 
     envelope = await mcp_server_mod._invoke_session(
         "persist_insight",
         str(sess_id),
-        {
-            "insight": dict(_VALID_INSIGHT_BODY),
-            "supporting_row_ids": ["sec_a:0", "sec_a:1"],
-        },
+        dict(_VALID_INSIGHT_BODY),
     )
     assert envelope["ok"] is True, envelope
     assert envelope["code"] == 0, envelope
     result = envelope["result"]
     new_id = uuid.UUID(result["insight_id"])  # round-trips as a UUID
-    assert result["idx"] == 0
 
     async with session_factory() as s:
         rows = (
@@ -232,9 +223,8 @@ async def test_persist_insight_happy_path(
     assert row.id == new_id
     assert row.headline == _VALID_INSIGHT_BODY["headline"]
     assert row.body == _VALID_INSIGHT_BODY["body"]
-    assert row.confidence == "high"           # strong -> high
+    assert row.confidence == "high"
     assert row.materiality == "high"
-    assert row.supporting_row_ids == ["sec_a:0", "sec_a:1"]
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +239,7 @@ async def test_persist_insight_invalid_session_id_envelope(
     envelope = await mcp_server_mod._invoke_session(
         "persist_insight",
         "not-a-uuid",
-        {"insight": dict(_VALID_INSIGHT_BODY), "supporting_row_ids": ["x"]},
+        dict(_VALID_INSIGHT_BODY),
     )
     assert envelope["ok"] is False
     assert envelope["code"] == "BAD_INPUT"
@@ -257,85 +247,33 @@ async def test_persist_insight_invalid_session_id_envelope(
 
 
 # ---------------------------------------------------------------------------
-# 3. persist_insight row-id filter drops hallucinated ids
+# 3. persist_insight rejects empty/missing headline with headline_required.
+#    (The v1 shape — `{"insight": {...}}` plus `supporting_row_ids` against
+#     a registered FactPack — was deleted with v1.)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_persist_insight_filters_hallucinated_row_ids(
-    patched_factory, running_session, session_factory
-) -> None:
-    sess_id = running_session.id
-
-    # Register a FactPack with row_ids r1, r2, r3 only.
-    pack = FactPack(
-        generated_at=datetime.utcnow(),
-        sections=[
-            FactSection(
-                name="sec",
-                description="t",
-                rows=[
-                    FactRow(row_id="r1", entity="A"),
-                    FactRow(row_id="r2", entity="B"),
-                    FactRow(row_id="r3", entity="C"),
-                ],
-            )
-        ],
-    )
-    register_session_fact_pack(sess_id, pack)
-    try:
-        envelope = await mcp_server_mod._invoke_session(
-            "persist_insight",
-            str(sess_id),
-            {
-                "insight": dict(_VALID_INSIGHT_BODY),
-                "supporting_row_ids": ["r1", "HALLUCINATED", "r3"],
-            },
-        )
-    finally:
-        clear_session_fact_pack(sess_id)
-
-    assert envelope["ok"] is True, envelope
-
-    async with session_factory() as s:
-        row = (
-            (
-                await s.execute(
-                    select(AIInsight).where(AIInsight.session_id == sess_id)
-                )
-            )
-            .scalars()
-            .first()
-        )
-    assert row is not None
-    assert row.supporting_row_ids == ["r1", "r3"]
-
-
-# ---------------------------------------------------------------------------
-# 4. persist_insight invalid InsightOutput shape -> BAD_INPUT (ARCH says 422
-#    in spirit; the handler maps pydantic errors to BAD_INPUT slug. We
-#    accept either of the documented validation slugs.)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_persist_insight_invalid_shape_envelope(
+async def test_persist_insight_missing_headline_returns_validation_error(
     patched_factory, running_session
 ) -> None:
     sess_id = running_session.id
-    bad_body = {
-        "headline": "Missing required fields",
-        # `body` and `confidence_signal` and `materiality` are missing;
-        # InsightOutput's pydantic validation should reject.
+    bad_args = {
+        "body": "Body without a headline",
+        "confidence": "high",
+        "materiality": "high",
+        "citations": [],
     }
     envelope = await mcp_server_mod._invoke_session(
         "persist_insight",
         str(sess_id),
-        {"insight": bad_body, "supporting_row_ids": ["r1"]},
+        bad_args,
     )
-    assert envelope["ok"] is False, envelope
-    assert envelope["code"] in ("BAD_INPUT", 422), envelope
-    assert "insight_validation" in envelope["error"]
+    # _invoke_session wraps a validation error from the tool handler
+    # as ok=True at the envelope layer with the inner result.ok=False.
+    inner = envelope.get("result") if envelope.get("ok") else envelope
+    assert inner.get("ok") is False, envelope
+    assert inner.get("error") == "headline_required"
 
 
 # ---------------------------------------------------------------------------

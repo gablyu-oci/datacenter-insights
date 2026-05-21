@@ -17,7 +17,7 @@ class SkillInvocationRecord(BaseModel):
 
 
 class MethodologyExplainerInputs(BaseModel):
-    """Inputs for methodology_explainer skill (V2)."""
+    """Inputs for methodology_explainer skill."""
 
     model_config = ConfigDict(extra="forbid")
 

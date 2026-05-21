@@ -344,7 +344,7 @@ async def web_search(
     thread_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """V2: run a Brave Search query and return up to 5 results.
+    """Run a Brave Search query and return up to 5 results.
 
     Per-session cap: 8 calls. Snippets are pre-truncated to 280
     characters. If the API key is missing or the upstream circuit is
@@ -420,7 +420,7 @@ async def emit_citation(
     thread_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """V2: persist + emit a validated web citation for the current insight.
+    """Persist + emit a validated web citation for the current insight.
 
     Validates snippet <=280 chars, agree_or_disagree enum, URL
     reachability (HEAD 2xx/3xx), and rationale-substring-of-snippet.
@@ -479,7 +479,7 @@ async def build_chart(
     thread_id: Optional[str] = None,
     session_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """V2: validate + persist an agent_chart row. Returns chart_id + chart_spec.
+    """Validate + persist an agent_chart row. Returns chart_id + chart_spec.
 
     When ``insight_id`` is supplied (Round 3 insight-first flow), the
     freshly built chart is FK-bound to that ai_insight at INSERT time
@@ -512,7 +512,7 @@ async def read_workspace(
 ) -> dict[str, Any]:
     """Read a whitelisted workspace file (SCHEMA.md, FRESHNESS.md, AI_INSIGHTS_*).
 
-    Used by the v2 synthesis agent at session start to orient against
+    Used by the synthesis agent at session start to orient against
     workspace artefacts before drafting SQL.
     """
     return await _invoke(
@@ -541,7 +541,7 @@ async def persist_insight(
     open_question_id: Optional[str] = None,
     skills_run: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-    """Persist one v2 insight under a synthesis ai_session.
+    """Persist one insight under a synthesis ai_session.
 
     Args:
       session_id: UUID of the parent ai_session (must exist + be running).
@@ -587,8 +587,6 @@ async def finalize_session(
     Args:
       session_id: UUID of the ai_session to finalize.
       status: one of ``"complete"`` | ``"degraded"`` | ``"failed"``.
-        ``"complete"`` is the agentic equivalent of the legacy
-        ``"complete"`` enum value used by the V1 orchestrator.
       token_estimate: best-effort token count; persisted into
         ai_session.token_estimate (>= 0).
 

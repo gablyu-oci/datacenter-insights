@@ -593,6 +593,49 @@ POWER_FILERS: dict[str, VendorFiler] = {
         segment="reit",
         form_types=("10-K", "10-Q", "8-K"),
     ),
+    "AmericanTower-Power": VendorFiler(
+        display_name="American Tower",
+        cik="0001053507",
+        tab="power",
+        segment="reit",
+        form_types=("10-K", "10-Q", "8-K"),
+        notes="owns CoreSite datacenters",
+    ),
+
+    # -- T6 additional IPPs + utilities (hyperscaler PPA counterparties) -
+    "NRG-Power": VendorFiler(
+        display_name="NRG Energy",
+        cik="0001013871",
+        tab="power",
+        segment="ipp",
+        form_types=("10-K", "10-Q", "8-K"),
+    ),
+    "BrookfieldRenewable-Power": VendorFiler(
+        display_name="Brookfield Renewable",
+        cik="0001533232",
+        tab="power",
+        segment="ipp",
+        form_types=("20-F", "6-K"),
+        is_fpi=True,
+        reporting_currency="USD",
+        notes="major renewable PPA counterparty; Bermuda LP files 20-F/6-K, not 10-K",
+    ),
+    "Xcel-Power": VendorFiler(
+        display_name="Xcel Energy",
+        cik="0000072903",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+        notes="Microsoft AI campus deals (MN, CO)",
+    ),
+    "WEC-Power": VendorFiler(
+        display_name="WEC Energy Group",
+        cik="0000783325",
+        tab="power",
+        segment="utility",
+        form_types=("10-K", "10-Q", "8-K"),
+        notes="Microsoft AI campus deals (WI)",
+    ),
 }
 
 
@@ -1048,10 +1091,11 @@ async def fetch_real_8k_deals_async(since: str = "2023-06-01") -> list[dict]:
         return cached
 
     deals = []
-    # Iterate BOTH energy companies (sellers / utilities / IPPs) AND
-    # hyperscalers (buyers). The previous version skipped hyperscalers
-    # entirely, missing every Amazon / Microsoft / Oracle / Meta 8-K.
-    all_filers = {**ENERGY_COMPANIES, **HYPERSCALERS}
+    # Iterate the full TRACKED_FILERS union so POWER_FILERS additions
+    # (REITs, IPPs, utilities — Equinix, NRG, Brookfield, Xcel, etc.)
+    # are covered. Previously this only iterated ENERGY_COMPANIES +
+    # HYPERSCALERS, leaving every POWER_FILERS-only CIK at zero coverage.
+    all_filers = TRACKED_FILERS
     for company, cik in all_filers.items():
         if cik is None:
             continue

@@ -1,4 +1,4 @@
-"""persist_insight — V2 final-sink tool that closes out an insight.
+"""persist_insight — final-sink tool that closes out an insight.
 
 Pipeline (architecture §3.3):
 
@@ -6,31 +6,30 @@ Pipeline (architecture §3.3):
        'in_progress'). A finished/aborted session cannot accept new
        inserts; the orchestrator surfaces `session_closed` so the agent
        can stop calling tools.
-    2. chart_id required and must point at an `agent_chart` row whose
-       `session_id` matches the active session. Cross-session reference
-       returns `chart_session_mismatch`.
-    3. citations must be a non-empty list. Empty -> `citations_required`.
-       Each citation must already exist in `agent_citation` and (if it
-       carries an `insight_id`) be either unbound or bound to this same
-       row pre-flight. (Existing v2 citations are written unbound first
-       by `emit_citation`.)
+    2. chart_id is optional. When supplied it must point at an
+       `agent_chart` row whose `session_id` matches the active session;
+       cross-session reference returns `chart_session_mismatch`. When
+       absent, the chart is bound on the other edge by a follow-up
+       `build_chart(insight_id=...)` call.
+    3. citations are optional. Each supplied citation must already exist
+       in `agent_citation` (unresolved IDs are dropped with a warning,
+       not rejected). Citations are written unbound first by
+       `emit_citation`; persist_insight patches `insight_id` afterwards.
     4. headline: non-empty, <=140 chars (mega-thread tile constraint).
        body: optional, <=4000 chars.
-    5. Insert ai_insight row with v2 columns:
-         - chart_id (FK -> agent_chart.id)
+    5. Insert ai_insight row with:
+         - chart_id (FK -> agent_chart.id, nullable)
          - citations (JSONB list of {citation_id, kind})
          - open_question_id (optional pointer into OpenClaw memory)
-         - version='v2'
        Then patch the `agent_chart.insight_id` to bind the chart to
-       this insight.
+       this insight (when chart_id was supplied).
     6. Best-effort patch each agent_citation row's `insight_id` so the
        provenance graph is bidirectional.
+    7. Compute the headline_embedding via llm.embed and write it back so
+       future runs can dedup against this insight.
 
 Return shape: ``{ok: True, insight_id: str, chart_id: str, citation_count: int}``
 On any guard failure: ``{ok: False, error: <code>, message: ..., detail: ...}``.
-
-The v1 `persist_insight` path is left untouched; this module is a
-parallel sink for the v2 agent loop.
 """
 from __future__ import annotations
 
@@ -178,17 +177,17 @@ async def persist_insight(
     session_id: uuid.UUID | str | None = None,
     idx: int | None = None,
 ) -> dict[str, Any]:
-    """Persist a fully-grounded v2 insight + (optionally) bind its chart.
+    """Persist a fully-grounded insight + (optionally) bind its chart.
 
-    Round 3 (insight-first): `chart_id` is OPTIONAL. When provided, the
-    chart-resolution + chart-bind path runs as before. When None or
-    empty, the insight is written with `chart_id IS NULL`; a follow-up
+    `chart_id` is OPTIONAL. When provided, the chart-resolution +
+    chart-bind path runs as before. When None or empty, the insight is
+    written with `chart_id IS NULL`; a follow-up
     `build_chart(insight_id=...)` call binds the chart via FK on the
     other edge (`agent_chart.insight_id`).
 
-    `db` is required (no best-effort no-op on a missing session — v2
-    persistence is the contract). `session_id` defaults to ctx.session_id.
-    `idx` defaults to one past the last existing idx for the session.
+    `db` is required — persistence is the contract.
+    `session_id` defaults to ctx.session_id. `idx` defaults to one past
+    the last existing idx for the session.
     """
     logger.info(
         "ai_insights.persist_insight.entered",
@@ -325,7 +324,7 @@ async def persist_insight(
             idx = 0
 
     # ------------------------------------------------------------------
-    # 5) Insert ai_insight (v2 columns set).
+    # 5) Insert ai_insight.
     # ------------------------------------------------------------------
     from ..db.models import AIInsight
 
@@ -338,13 +337,11 @@ async def persist_insight(
         materiality=materiality,
         skills_run=skills_run or [],
     )
-    # The v2-only columns are added by migration 018; SQLModel field
-    # plumbing for them is left as setattr() so the v1 model class
-    # stays untouched and v1 inserts continue to ignore them.
+    # Columns added by migration 018; SQLModel field plumbing for them
+    # is left as setattr() to keep the model class minimal.
     setattr(insight, "chart_id", chart_id if chart_id_present else None)
     setattr(insight, "citations", citations_norm)
     setattr(insight, "open_question_id", open_question_id)
-    setattr(insight, "version", "v2")
 
     db.add(insight)
     try:
@@ -390,6 +387,13 @@ async def persist_insight(
             extra={"err": str(exc)},
         )
 
+    # ------------------------------------------------------------------
+    # 7) Compute + store the headline embedding so future runs can dedup
+    # against this insight via fetch_recent_embeddings + is_duplicate.
+    # Best-effort: a failed embed never blocks persistence.
+    # ------------------------------------------------------------------
+    await _embed_and_store_headline(db, insight_id_uuid, headline)
+
     logger.info(
         "ai_insights.persist_insight.ok",
         extra={
@@ -405,8 +409,45 @@ async def persist_insight(
         "insight_id": str(insight_id_uuid),
         "chart_id": chart_id if chart_id_present else None,
         "citation_count": len(cit_rows),
-        "version": "v2",
     }
+
+
+async def _embed_and_store_headline(
+    db: Any, insight_id: uuid.UUID, headline: str
+) -> None:
+    """Generate the headline embedding and persist it into ai_insight.
+
+    pgvector serialises vector(N) from a bracketed comma-separated string
+    in text mode, so we write the vector as JSON-style ``[a,b,c]``. Works
+    against both the production pgvector column and the SQLite TEXT
+    fallback used by the test fixture.
+
+    Any failure (LLM unavailable, model returns empty, DB rejection) is
+    logged and swallowed — the insight has already been persisted and
+    must not roll back because dedup wasn't primed.
+    """
+    try:
+        from ..dedup import _embed_one
+
+        vec = await _embed_one(headline)
+        if not vec:
+            return
+
+        from sqlalchemy import text as _sa_text
+
+        vec_text = "[" + ",".join(repr(float(x)) for x in vec) + "]"
+        await db.execute(
+            _sa_text(
+                "UPDATE ai_insight SET headline_embedding = :vec "
+                "WHERE id = :iid"
+            ),
+            {"vec": vec_text, "iid": str(insight_id)},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "ai_insights.persist_insight.embed_failed",
+            extra={"err": str(exc), "insight_id": str(insight_id)},
+        )
 
 
 __all__ = ["persist_insight", "HEADLINE_MAX", "BODY_MAX"]

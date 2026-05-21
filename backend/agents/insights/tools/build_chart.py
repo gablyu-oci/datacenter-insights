@@ -1,7 +1,7 @@
-"""build_chart — V2 MCP tool that builds, validates, and persists a ChartSpec.
+"""build_chart — MCP tool that builds, validates, and persists a ChartSpec.
 
-V2 inverts the V1 ordering: the agent issues `build_chart(sql, encoding, ...)`
-*before* it has chosen a final headline. The tool:
+The agent issues `build_chart(sql, encoding, ...)` *before* it has chosen
+a final headline. The tool:
 
     1. Validates the SQL through `sql_gate.validate_sql` (DDL/DML, banned
        schemas, multi-statement, function blocklist, attached LIMIT).
@@ -25,7 +25,7 @@ V2 inverts the V1 ordering: the agent issues `build_chart(sql, encoding, ...)`
        result has more than 200 rows; sets `truncated=True`.
     7. Persists the ChartSpec to `agent_chart` scoped to `ctx.session_id`,
        leaving `insight_id` NULL (migration 018 made the column nullable).
-       `persist_insight_v2` later updates `agent_chart.insight_id` to bind
+       `persist_insight` later updates `agent_chart.insight_id` to bind
        the chart to the freshly minted insight.
 
 Returns ``{ok, chart_id, chart_spec, truncated, row_count, executed_sql}``.
@@ -190,7 +190,7 @@ def _validate_encoding_shape(
     else:
         raise BuildChartError(
             "unsupported_chart_type",
-            f"chart_type={chart_type!r} is not a recognised v1 ChartType",
+            f"chart_type={chart_type!r} is not a recognised ChartType",
             detail={"chart_type": chart_type},
         )
 
@@ -309,7 +309,7 @@ async def _resolve_insight(
 ) -> tuple[Any | None, str | None]:
     """Round 3: locate an `ai_insight` row to bind a freshly built chart to.
 
-    Mirrors persist_insight_v2._resolve_chart shape. Returns
+    Mirrors persist_insight._resolve_chart shape. Returns
     (insight_row, error_code). When db is None or insight_id is None/empty
     callers should NOT call this — guard at the caller side.
     """
@@ -352,7 +352,7 @@ async def _persist_chart_row(
     is populated at INSERT time so the chart binds to the freshly
     persisted insight in the same MCP transaction. When None, the
     legacy chart-first behaviour is preserved (`insight_id NULL`,
-    persist_insight_v2 patches it later).
+    persist_insight patches it later).
 
     Best-effort: persistence failure is logged but does not blow the
     tool.
@@ -404,7 +404,7 @@ async def build_chart(
 ) -> dict[str, Any]:
     """Build, validate, and persist a ChartSpec for the current session.
 
-    Parameters mirror the JSON tool schema in registry.py V2_TOOL_DEFS.
+    Parameters mirror the JSON tool schema in registry.py TOOL_DEFS.
     `db` is an injection point so unit tests can pass a FakeDB without
     standing up a real Postgres; production callers leave it None and
     the orchestrator persists via `emit_chart_for_insight` afterwards.
@@ -415,7 +415,7 @@ async def build_chart(
     in the same session — guarded with ``insight_not_found`` /
     ``insight_session_mismatch``). When None or empty, behaviour is
     byte-identical to Round 2: the row lands with ``insight_id IS
-    NULL`` and ``persist_insight_v2`` patches the FK on the other
+    NULL`` and ``persist_insight`` patches the FK on the other
     edge.
     """
     # ------------------------------------------------------------------
@@ -428,7 +428,7 @@ async def build_chart(
     }:
         return _err(
             "unsupported_chart_type",
-            f"chart_type={chart_type!r} is not a v1 ChartType",
+            f"chart_type={chart_type!r} is not a recognised ChartType",
             chart_type=chart_type,
         )
     if not title or len(title) > 200:

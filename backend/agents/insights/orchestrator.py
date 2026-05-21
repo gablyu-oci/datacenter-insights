@@ -1,4 +1,4 @@
-"""InsightOrchestrator — multi-insight session driver (v2).
+"""InsightOrchestrator — multi-insight session driver.
 
 Two phases per session:
 
@@ -8,8 +8,7 @@ Two phases per session:
        insights through OpenClaw + MCP write-tools and emits SSE events
        back into this generator's event queue. The agent orients via
        `read_workspace` (SCHEMA.md / FRESHNESS.md / playbook) and grounds
-       claims with `search_documents` + `query_database`; there is no
-       server-built FactPack in v2.
+       claims with `search_documents` + `query_database`.
 
 Caps (PRD §5.1, ARCH A10):
     - 40 tool calls per session
@@ -72,19 +71,15 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Caps (V1 — PRD §5.1)
+# Session caps (PRD §5.1)
 # ---------------------------------------------------------------------------
 
-V1_TOOL_CALL_CAP = 40
-V1_WALL_CLOCK_S = 480.0          # 8 minutes
-V1_BOOTSTRAP_SURVEY_CAP = 8
-V1_MIN_HYPOTHESES = 5
-V1_MAX_HYPOTHESES = 15
-V1_MIN_INSIGHTS = 5
-V1_MAX_INSIGHTS = 10
-V1_NOVELTY_COSINE_THRESHOLD = 0.85
-V1_MAX_VERIFY_CALLS_PER_HYP = 4
-V1_REASONING_MODEL = "oci/openai.gpt-5.4"   # mirrors LlmClient default
+TOOL_CALL_CAP = 40
+WALL_CLOCK_S = 480.0              # 8 minutes
+BOOTSTRAP_SURVEY_CAP = 8
+MIN_INSIGHTS = 5
+MAX_INSIGHTS = 10
+REASONING_MODEL = "oci/openai.gpt-5.4"   # mirrors LlmClient default
 
 
 # Fixed survey endpoints (from ARCH A6.3 + A8.1). Capped at 8 calls.
@@ -98,7 +93,7 @@ SURVEY_ENDPOINTS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("/api/permits/building", {"days": 180}),
     ("/api/coverage/freshness", {}),
 )
-assert len(SURVEY_ENDPOINTS) <= V1_BOOTSTRAP_SURVEY_CAP
+assert len(SURVEY_ENDPOINTS) <= BOOTSTRAP_SURVEY_CAP
 
 
 # ---------------------------------------------------------------------------
@@ -116,102 +111,6 @@ def _now_event_id() -> str:
 
 def _short_chart_id() -> str:
     return f"c_{uuid.uuid4().hex[:8]}"
-
-
-_VALID_CHART_TYPES = {
-    "bar", "stacked_bar", "grouped_bar", "line", "area", "stacked_area",
-    "pie", "donut", "scatter", "bubble", "kpi_tile", "sparkline",
-    "table", "treemap", "radar", "histogram",
-}
-
-# Types that render naturally from the FactPack's `entity → value` row shape
-# we synthesize here. Anything outside this set needs a different data
-# layout (time on x, two numeric axes, series dimension, etc.) so we
-# downgrade to bar rather than emit a malformed chart.
-_ENTITY_VALUE_NATIVE = {
-    "bar", "pie", "donut", "treemap", "table", "kpi_tile", "histogram",
-}
-_KPI_UNIT_MAP = {
-    "MW": "MW", "GW": "GW", "USD": "USD", "%": "%",
-    "count": "count", "sites": "count",
-}
-
-
-def _chart_from_supporting_rows(
-    supporting_rows: list,
-    headline: str,
-    chart_type_hint: str | None = None,
-    y_label_hint: str | None = None,
-) -> "ChartSpec | None":
-    """Build a ChartSpec from FactRows the LLM cited. The LLM picks the
-    chart_type; we fall back to 'bar' (or 'kpi_tile' for single rows) when
-    the hint is missing or invalid. Returns None when the LLM said "none"
-    or when fewer than 1 rows have a numeric value.
-    """
-    from .specs.chart_spec import (
-        ChartSpec,
-        DataSource,
-        Encoding,
-        Styling,
-        XEncoding,
-        YEncoding,
-    )
-
-    if chart_type_hint == "none":
-        return None
-
-    by_entity: dict[str, float] = {}
-    for r in supporting_rows:
-        v = getattr(r, "value", None)
-        ent = getattr(r, "entity", None) or getattr(r, "row_id", "")
-        if isinstance(v, (int, float)) and ent:
-            ent_s = str(ent)
-            cur = by_entity.get(ent_s)
-            if cur is None or float(v) > cur:
-                by_entity[ent_s] = float(v)
-    n = len(by_entity)
-    if n == 0:
-        return None
-
-    points = [{"entity": e, "value": v} for e, v in by_entity.items()]
-    points.sort(key=lambda p: p["value"], reverse=True)
-    points = points[:12]
-
-    chart_type = chart_type_hint if chart_type_hint in _VALID_CHART_TYPES else None
-    if chart_type is None:
-        chart_type = "kpi_tile" if n == 1 else "bar"
-    if n == 1 and chart_type not in {"kpi_tile", "sparkline"}:
-        chart_type = "kpi_tile"
-    # If the agent picked a type whose data shape we can't synthesize from
-    # entity+value supporting rows (needs time on x, two numeric axes, a
-    # series dimension, multi-axis polar, etc.), fall back to bar so the
-    # insight still renders. The native set covers bar / pie / donut /
-    # treemap / table / kpi_tile / histogram.
-    if chart_type not in _ENTITY_VALUE_NATIVE:
-        chart_type = "bar"
-
-    y_label = y_label_hint or "MW"
-    y_unit = _KPI_UNIT_MAP.get(y_label, None)
-    row_hash = ChartSpec.compute_row_hash(points)
-    return ChartSpec(
-        chart_id=_short_chart_id(),
-        chart_type=chart_type,  # type: ignore[arg-type]
-        title=headline[:80],
-        subtitle=None,
-        data_source=DataSource(
-            kind="db_query",
-            spec={"sql": "-- factpack supporting_rows (synthetic chart) --"},
-            rows=len(points),
-            fetched_at=datetime.now(timezone.utc),
-            row_hash=row_hash,
-        ),
-        data=points,
-        encoding=Encoding(
-            x=XEncoding(field="entity", type="category", label=None, tick_format=None),
-            y=YEncoding(field="value", type="quantitative", label=y_label, tick_format=None),
-        ),
-        styling=Styling(palette="oci_brand", y_unit=y_unit, y_precision=0),
-    )
 
 
 def _truncate_args(args: Any, max_len: int = 200) -> str:
@@ -244,12 +143,12 @@ class InsightOrchestrator:
         llm: Any | None = None,
         *,
         max_insights: int = 7,
-        model: str = V1_REASONING_MODEL,
+        model: str = REASONING_MODEL,
     ) -> None:
         self.session_id = session_id
         self.db = db
         self.llm = llm  # LLMAdapter-shape; optional for unit tests
-        self.max_insights = max(V1_MIN_INSIGHTS, min(V1_MAX_INSIGHTS, max_insights))
+        self.max_insights = max(MIN_INSIGHTS, min(MAX_INSIGHTS, max_insights))
         self.model = model
 
         # Caps + run state
@@ -333,9 +232,9 @@ class InsightOrchestrator:
                         yield term
                     return
 
-            # v2: no server-built FactPack. The agent orients via
-            # read_workspace(SCHEMA.md / FRESHNESS.md / playbook) and
-            # grounds claims with search_documents + query_database.
+            # The agent orients via read_workspace(SCHEMA.md /
+            # FRESHNESS.md / playbook) and grounds claims with
+            # search_documents + query_database.
 
             # Lazy import to avoid a hard dependency at import time
             # (agentic_synthesis pulls in openclaw.forwarder which
@@ -436,7 +335,7 @@ class InsightOrchestrator:
         from .tools.call_api import call_api
 
         # Respect the bootstrap cap independently of the global tool cap.
-        budget = min(V1_BOOTSTRAP_SURVEY_CAP, len(SURVEY_ENDPOINTS))
+        budget = min(BOOTSTRAP_SURVEY_CAP, len(SURVEY_ENDPOINTS))
         candidates_seen = 0
         for endpoint, params in SURVEY_ENDPOINTS[:budget]:
             if self._cancel_event.is_set():
@@ -501,16 +400,16 @@ class InsightOrchestrator:
         Returns False if the cap has been reached (the caller MUST then
         skip the dispatch and unwind to terminate the session).
         """
-        if self._tool_calls_used >= V1_TOOL_CALL_CAP:
+        if self._tool_calls_used >= TOOL_CALL_CAP:
             return False
         self._tool_calls_used += 1
         return True
 
     def _tool_call_cap_exceeded(self) -> bool:
-        return self._tool_calls_used >= V1_TOOL_CALL_CAP
+        return self._tool_calls_used >= TOOL_CALL_CAP
 
     def _wall_clock_exceeded(self) -> bool:
-        return (time.monotonic() - self._started_monotonic) > V1_WALL_CLOCK_S
+        return (time.monotonic() - self._started_monotonic) > WALL_CLOCK_S
 
     async def _terminate(self, reason: str, message: str) -> AsyncIterator[_SSEBase]:
         """Emit a terminal `error` + `session_complete` + persist."""
@@ -537,7 +436,7 @@ class InsightOrchestrator:
                 budget_status="clipped",
             ),
         )
-        # Map V1 reasons to ai_session.status/budget_status fields.
+        # Map terminal reasons to ai_session.status/budget_status fields.
         await self._persist_session_finish(
             status="cancelled" if reason == "cancelled" else "failed" if reason == "error" else "complete",
             budget_status="clipped",
@@ -562,7 +461,7 @@ class InsightOrchestrator:
         return cls(**kwargs)
 
     def _build_skill_context(self) -> SkillContext:
-        budget_remaining = max(0.0, V1_WALL_CLOCK_S - (time.monotonic() - self._started_monotonic))
+        budget_remaining = max(0.0, WALL_CLOCK_S - (time.monotonic() - self._started_monotonic))
         return SkillContext(
             session_id=str(self.session_id),
             turn_id=uuid.uuid4().hex[:8],
@@ -626,7 +525,6 @@ class InsightOrchestrator:
                 model=self.model,
                 focus=str(filters.get("focus") or "")[:240] or None,
                 max_insights=self.max_insights,
-                version="v2",
                 created_by=created_by,
                 cron_run_date=cron_run_date,
             )
@@ -735,8 +633,8 @@ class InsightOrchestrator:
             logger.warning("ai_insights.orchestrator.persist_insight_failed", extra={"err": str(exc)})
 
     def _record_skill_invocation(self, skill_name: str, outputs: dict[str, Any]) -> None:
-        # Skill rows are persisted async outside the hot loop in V2; in V1
-        # we keep them in-memory and let the dispatcher's logger emit JSON.
+        # Skill invocations are kept in-memory; the dispatcher's logger
+        # emits a JSON entry per call.
         logger.info(
             "ai_insights.orchestrator.skill_invocation",
             extra={"skill": skill_name, "session_id": str(self.session_id)},
@@ -815,8 +713,8 @@ class InsightOrchestrator:
     ) -> AsyncIterator[_SSEBase]:
         """Persist + emit a chart event for an insight that is mid-flight.
 
-        Public so the V2 ToolLoopDriver path can plug in without monkey-
-        patching.  Emits exactly one `chart` event.
+        Public so the agentic-loop driver can plug in without monkey-
+        patching. Emits exactly one `chart` event.
         """
         if not chart.chart_id:
             chart = chart.model_copy(update={"chart_id": _short_chart_id()})
@@ -845,9 +743,8 @@ class InsightOrchestrator:
 
 __all__ = [
     "InsightOrchestrator",
-    "V1_TOOL_CALL_CAP",
-    "V1_WALL_CLOCK_S",
-    "V1_BOOTSTRAP_SURVEY_CAP",
-    "V1_NOVELTY_COSINE_THRESHOLD",
+    "TOOL_CALL_CAP",
+    "WALL_CLOCK_S",
+    "BOOTSTRAP_SURVEY_CAP",
     "SURVEY_ENDPOINTS",
 ]

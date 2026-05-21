@@ -17,7 +17,6 @@ from .models import (  # noqa: F401
     AgentCitation,
     SkillInvocation,
     SkillReference,
-    # V2 additions
     InsightThread,
     InsightSubscription,
 )

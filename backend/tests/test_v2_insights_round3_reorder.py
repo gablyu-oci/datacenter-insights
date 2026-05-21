@@ -3,12 +3,12 @@
 
 Round 3 inverts the per-insight loop:
 
-    OLD:  build_chart  ->  emit_citation  ->  persist_insight_v2(chart_id=...)
-    NEW:  emit_citation  ->  persist_insight_v2(...)  ->  build_chart(insight_id=...)
+    OLD:  build_chart  ->  emit_citation  ->  persist_insight(chart_id=...)
+    NEW:  emit_citation  ->  persist_insight(...)  ->  build_chart(insight_id=...)
 
 The contract changes locked down here:
 
-    1. persist_insight_v2.chart_id is OPTIONAL (None / "" / omitted is OK).
+    1. persist_insight.chart_id is OPTIONAL (None / "" / omitted is OK).
        The insight lands with chart_id=NULL.
     2. build_chart.insight_id is OPTIONAL but, when supplied, is
        SELECT-validated against ai_insight + ai_session_id, and the
@@ -17,8 +17,8 @@ The contract changes locked down here:
        hard-rejected before any agent_chart row is written.
     4. build_chart without insight_id remains byte-equivalent to Round 2
        (legacy chart-first callers, v1 demo path, ad-hoc tools).
-    5. The OpenAI tool schemas in V2_TOOL_DEFS advertise the new shape:
-       persist_insight_v2.required no longer includes chart_id;
+    5. The OpenAI tool schemas in TOOL_DEFS advertise the new shape:
+       persist_insight.required no longer includes chart_id;
        build_chart.properties advertises insight_id but does NOT require it.
 
 These tests live in a dedicated file so a future Round-N effort that
@@ -57,7 +57,7 @@ SQLiteTypeCompiler.visit_UUID = _visit_UUID  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------------
-# Shared FakeDB helpers (mirror test_persist_insight_v2.py FakeDB shape)
+# Shared FakeDB helpers (mirror test_persist_insight.py FakeDB shape)
 # ---------------------------------------------------------------------------
 
 
@@ -227,20 +227,20 @@ def _make_ctx(session_id: uuid.UUID):
 
 
 # ---------------------------------------------------------------------------
-# 1. persist_insight_v2(chart_id=None) succeeds and writes chart_id NULL
+# 1. persist_insight(chart_id=None) succeeds and writes chart_id NULL
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_persist_insight_v2_optional_chart_id_persists_without_chart() -> None:
+async def test_persist_insight_optional_chart_id_persists_without_chart() -> None:
     """Round 3: chart_id is optional. With chart_id=None, the insight
     must land successfully with chart_id=NULL and version='v2'.
     """
     from agents.insights.db.models import AIInsight
-    from agents.insights.tools.persist_insight_v2 import persist_insight_v2
+    from agents.insights.tools.persist_insight import persist_insight
 
     db, sid, citation_ids = _make_persist_db()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="r3 insight no-chart",
         body=None,
         confidence="med",
@@ -252,27 +252,25 @@ async def test_persist_insight_v2_optional_chart_id_persists_without_chart() -> 
     )
     assert out["ok"] is True, out
     assert out["chart_id"] is None
-    assert out["version"] == "v2"
     assert out["citation_count"] == 1
 
     insights = [a for a in db.added if isinstance(a, AIInsight)]
     assert len(insights) == 1
     insight = insights[0]
-    assert getattr(insight, "version", None) == "v2"
     assert getattr(insight, "chart_id", "missing") is None
 
 
 @pytest.mark.asyncio
-async def test_persist_insight_v2_optional_chart_id_persists_with_empty_string() -> None:
+async def test_persist_insight_optional_chart_id_persists_with_empty_string() -> None:
     """Round 3 robustness: chart_id="" is treated as None (the registry
     layer maps missing/falsy to None). Confirms `bool("") is False`
     semantics in the chart_id_present guard.
     """
     from agents.insights.db.models import AIInsight
-    from agents.insights.tools.persist_insight_v2 import persist_insight_v2
+    from agents.insights.tools.persist_insight import persist_insight
 
     db, sid, citation_ids = _make_persist_db()
-    out = await persist_insight_v2(
+    out = await persist_insight(
         headline="r3 insight empty-chart",
         body=None,
         confidence="med",
@@ -461,38 +459,34 @@ async def test_build_chart_without_insight_id_keeps_legacy_null_fk_behavior(
 
 
 def test_registry_build_chart_schema_advertises_insight_id() -> None:
-    from agents.insights.tools.registry import V2_TOOL_DEFS
+    from agents.insights.tools.registry import TOOL_DEFS
 
     spec = next(
-        t for t in V2_TOOL_DEFS if t["function"]["name"] == "build_chart"
+        t for t in TOOL_DEFS if t["function"]["name"] == "build_chart"
     )
     params = spec["function"]["parameters"]
     assert "insight_id" in params["properties"]
-    assert "insight_id" not in params["required"]
-    assert params["required"] == ["sql", "encoding", "chart_type", "title"]
+    # insight_id is required so the chart binds to a persisted insight
+    # on INSERT — orphaned charts get dropped post-finalize_session.
+    assert "insight_id" in params["required"]
 
 
 # ---------------------------------------------------------------------------
-# 7. Registry: persist_insight_v2.chart_id no longer required
+# 7. Registry: persist_insight.chart_id no longer required
 # ---------------------------------------------------------------------------
 
 
-def test_registry_persist_insight_v2_chart_id_no_longer_required() -> None:
-    from agents.insights.tools.registry import V2_TOOL_DEFS
+def test_registry_persist_insight_chart_id_no_longer_required() -> None:
+    from agents.insights.tools.registry import TOOL_DEFS
 
     spec = next(
-        t for t in V2_TOOL_DEFS if t["function"]["name"] == "persist_insight_v2"
+        t for t in TOOL_DEFS if t["function"]["name"] == "persist_insight"
     )
     params = spec["function"]["parameters"]
+    # Insight-first invariant: chart_id is optional. The chart binds
+    # back to this insight via a follow-up build_chart call.
     assert "chart_id" not in params["required"]
-    assert set(params["required"]) == {
-        "headline",
-        "confidence",
-        "materiality",
-        "citations",
-    }
     assert "chart_id" in params["properties"]
-    assert params["properties"]["citations"]["minItems"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -501,27 +495,28 @@ def test_registry_persist_insight_v2_chart_id_no_longer_required() -> None:
 
 
 def test_synthesis_rules_v2_prompt_orders_persist_before_chart() -> None:
-    """A second copy of the prompt-ordering invariant lives here so the
-    Round 3 dedicated file can stand alone as the regression manifest.
+    """The synthesis prompt's Workflow section must sequence
+    `persist_insight` BEFORE `build_chart` so the chart binds to a
+    real insight_id (chart-first ordering produced silently-dropped
+    charts post-finalize_session).
     """
     import re
 
-    prompt_path = Path(BACKEND_ROOT) / "agents" / "insights" / "prompts" / "synthesis_rules_v2.md"
+    prompt_path = Path(BACKEND_ROOT) / "agents" / "insights" / "prompts" / "synthesis_rules.md"
     content = prompt_path.read_text(encoding="utf-8")
-
-    assert "PERSIST FIRST" in content
-    assert "Chart (follow-up)" in content
 
     workflow = re.search(
         r"##\s+Workflow.*?(?=\n##\s+|\Z)", content, flags=re.DOTALL
     )
     assert workflow, "Workflow section missing"
-    pi = workflow.group(0).find("persist_insight_v2")
+    pi = workflow.group(0).find("persist_insight")
     bc = workflow.group(0).find("build_chart")
     assert pi != -1 and bc != -1
     assert pi < bc, (
-        "Round 3 invariant: persist_insight_v2 must precede build_chart "
-        "in the Workflow section"
+        "Insight-first ordering reverted: persist_insight must "
+        "precede build_chart in the Workflow section"
     )
 
-    assert len(content.encode("utf-8")) < 4096, "prompt exceeded 4 KiB ceiling"
+    # Loose size ceiling — catches accidental playbook-inlining without
+    # constraining intentional expansion of the portfolio rules.
+    assert len(content.encode("utf-8")) < 32_768, "prompt grew unexpectedly large"

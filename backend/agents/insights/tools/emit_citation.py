@@ -1,4 +1,4 @@
-"""emit_citation (V2) -- validate + persist + emit a web citation.
+"""emit_citation -- validate + persist + emit a web citation.
 
 Per ARCH A6.7 / PRD §5.3:
 - snippet ≤280 chars
@@ -10,15 +10,8 @@ Per ARCH A6.7 / PRD §5.3:
   ``\\d+\\.?\\d*\\s*(GW|MW|%|\\$)`` -- if not, downgrade to `context` and
   surface a non-fatal warning (still ok=True).
 
-Persistence: writes a row into the existing `agent_citation` table (created
-in alembic 009; see backend/agents/insights/db/models.py::AgentCitation).
-The kickoff spec used the table name "citations" (plural); we use the
-already-created singular table name to avoid a redundant rename. The
-migration 011 still adds the V2 fk-stub `insight_subscription` table and
-alters `ai_insight` columns.
-
-The legacy `EmitCitationDisabledError` symbol stays exported for any V1
-callers that imported it; it is no longer raised from this function.
+Persistence: writes a row into the existing `agent_citation` table (see
+backend/agents/insights/db/models.py::AgentCitation).
 """
 from __future__ import annotations
 
@@ -40,10 +33,6 @@ URL_HEAD_TIMEOUT = 5.0
 # Numeric/qualified token regex per the spec.
 _QUANT_RE = re.compile(r"\d+\.?\d*\s*(GW|MW|%|\$)", re.IGNORECASE)
 _WS_RE = re.compile(r"\s+")
-
-
-class EmitCitationDisabledError(NotImplementedError):
-    """Legacy V1 marker; no longer raised. Retained for import-stability."""
 
 
 def _normalise(s: str) -> str:

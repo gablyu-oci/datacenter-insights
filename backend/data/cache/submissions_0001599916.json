@@ -1,0 +1,167 @@
+{
+  "cik": "0001599916",
+  "entityType": "other",
+  "sic": "",
+  "sicDescription": "",
+  "ownerOrg": "",
+  "insiderTransactionForOwnerExists": 1,
+  "insiderTransactionForIssuerExists": 0,
+  "name": "DeNunzio Jeffrey",
+  "tickers": [],
+  "exchanges": [],
+  "ein": null,
+  "lei": null,
+  "description": "",
+  "website": "",
+  "investorWebsite": "",
+  "category": "",
+  "fiscalYearEnd": null,
+  "stateOfIncorporation": "",
+  "stateOfIncorporationDescription": "",
+  "addresses": {
+    "mailing": {
+      "street1": "780 RESERVOIR AVENUE,#123",
+      "street2": null,
+      "city": "CRANSTON",
+      "stateOrCountry": "RI",
+      "zipCode": "02910",
+      "stateOrCountryDescription": "RI",
+      "isForeignLocation": null,
+      "foreignStateTerritory": null,
+      "country": null,
+      "countryCode": null
+    },
+    "business": {
+      "street1": null,
+      "street2": null,
+      "city": null,
+      "stateOrCountry": "",
+      "zipCode": null,
+      "stateOrCountryDescription": "",
+      "isForeignLocation": null,
+      "foreignStateTerritory": null,
+      "country": null,
+      "countryCode": null
+    }
+  },
+  "phone": null,
+  "flags": "",
+  "formerNames": [],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001599916-24-000161",
+        "0001599916-23-000088",
+        "0001599916-22-000317",
+        "0001599916-22-000208",
+        "0001657250-16-000007"
+      ],
+      "filingDate": [
+        "2024-06-12",
+        "2023-04-25",
+        "2022-11-29",
+        "2022-08-04",
+        "2016-01-19"
+      ],
+      "reportDate": [
+        "2024-06-05",
+        "2023-04-21",
+        "2022-11-15",
+        "2021-09-01",
+        "2015-05-01"
+      ],
+      "acceptanceDateTime": [
+        "2024-06-12T12:27:21.000Z",
+        "2023-04-25T15:52:52.000Z",
+        "2022-11-29T11:17:21.000Z",
+        "2022-08-04T16:52:32.000Z",
+        "2016-01-19T16:48:31.000Z"
+      ],
+      "act": [
+        "34",
+        "34",
+        "34",
+        "34",
+        "34"
+      ],
+      "form": [
+        "3",
+        "4",
+        "3",
+        "3",
+        "3"
+      ],
+      "fileNumber": [
+        "000-56019",
+        "000-56358",
+        "000-56358",
+        "000-56315",
+        "333-165538"
+      ],
+      "filmNumber": [
+        "241037914",
+        "23844674",
+        "221429650",
+        "221137467",
+        "161348783"
+      ],
+      "items": [
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "core_type": [
+        "3",
+        "4",
+        "3",
+        "3",
+        "3"
+      ],
+      "size": [
+        4993,
+        4979,
+        4054,
+        4795,
+        3438
+      ],
+      "isXBRL": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "isInlineXBRL": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "isXBRLNumeric": [
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "primaryDocument": [
+        "xslF345X02/ownership.xml",
+        "xslF345X04/ownership.xml",
+        "xslF345X02/ownership.xml",
+        "xslF345X02/ownership.xml",
+        "xslF345X02/jeff_f3.xml"
+      ],
+      "primaryDocDescription": [
+        "",
+        "",
+        "",
+        "",
+        "OWNERSHIP DOCUMENT"
+      ]
+    },
+    "files": []
+  }
+}

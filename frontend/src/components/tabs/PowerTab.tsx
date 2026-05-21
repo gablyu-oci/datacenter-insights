@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, Line, ResponsiveContainer,
@@ -59,6 +59,9 @@ interface GWSummaryEntry {
   deals: number;
   nuclear_gw: number;
   renewable_gw: number;
+  gas_gw?: number;
+  storage_gw?: number;
+  other_gw?: number;
 }
 
 interface AnnouncementsResponse {
@@ -458,6 +461,9 @@ function DealsModal({
                 { label: "Total Contracted", value: `${gwEntry.gw_total.toFixed(1)} GW`, c: color },
                 { label: "Nuclear",          value: `${gwEntry.nuclear_gw.toFixed(1)} GW`, c: "#f59e0b" },
                 { label: "Renewable",        value: `${gwEntry.renewable_gw.toFixed(1)} GW`, c: "#22c55e" },
+                { label: "Natural Gas",      value: `${(gwEntry.gas_gw ?? 0).toFixed(1)} GW`, c: "#ef4444" },
+                { label: "Storage",          value: `${(gwEntry.storage_gw ?? 0).toFixed(1)} GW`, c: "#a78bfa" },
+                { label: "Other",            value: `${(gwEntry.other_gw ?? 0).toFixed(1)} GW`, c: "#64748b" },
                 { label: "Deals",            value: String(gwEntry.deals), c: "#94a3b8" },
               ].map(({ label, value, c }) => (
                 <div key={label} style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "8px 14px", flex: 1, minWidth: 90 }}>
@@ -524,6 +530,16 @@ export default function PowerTab() {
     else { setDealSortField(f); setDealSortAsc(false); }
   };
 
+  // Pagination state for the announcements table.
+  const [dealPage, setDealPage] = useState(0);
+  const [dealPageSize, setDealPageSize] = useState(25);
+  // Reset to page 0 whenever any filter / sort / page-size changes so the
+  // user never lands on an empty page. MUST be declared before any early
+  // return below, or the Rules of Hooks will trip on loading renders.
+  useEffect(() => {
+    setDealPage(0);
+  }, [filterCompany, filterType, dealColFilters, dealSortField, dealSortAsc, dealPageSize]);
+
   if (capLoading || annLoading) return <LoadingSpinner />;
 
   if (capError) {
@@ -566,12 +582,19 @@ export default function PowerTab() {
     )
   );
 
-  const realGWData = Object.entries(gwSummary).map(([company, v]) => ({
-    company,
-    "Total GW": v.gw_total,
-    "Nuclear GW": v.nuclear_gw,
-    "Renewable GW": v.renewable_gw,
-  })).sort((a, b) => b["Total GW"] - a["Total GW"]);
+  // Grouped layout: omit fields that are zero so tooltips only list
+  // categories the company actually contracted. (Recharts still reserves
+  // the slot width on the x-axis for declared <Bar> components, but the
+  // missing-value bar renders nothing.)
+  const realGWData = Object.entries(gwSummary).map(([company, v]) => {
+    const row: Record<string, string | number> = { company, _total: v.gw_total, "Total GW": v.gw_total };
+    if (v.nuclear_gw > 0)        row["Nuclear GW"]   = v.nuclear_gw;
+    if (v.renewable_gw > 0)      row["Renewable GW"] = v.renewable_gw;
+    if ((v.gas_gw ?? 0) > 0)     row["Gas GW"]       = v.gas_gw as number;
+    if ((v.storage_gw ?? 0) > 0) row["Storage GW"]   = v.storage_gw as number;
+    if ((v.other_gw ?? 0) > 0)   row["Other GW"]     = v.other_gw as number;
+    return row;
+  }).sort((a, b) => (b._total as number) - (a._total as number));
 
   const filteredDeals = deals.filter(d => {
     // Defensive: edgar rows may have null buyer/energy_source post-Track-C.
@@ -633,6 +656,13 @@ export default function PowerTab() {
     });
   })();
 
+  // Paginated slice of displayedDeals. Pure derived state — no hooks.
+  // The reset-on-filter useEffect is declared above with the other hooks.
+  const dealPageCount = Math.max(1, Math.ceil(displayedDeals.length / dealPageSize));
+  const dealPageSafe = Math.min(dealPage, dealPageCount - 1);
+  const dealPageStart = dealPageSafe * dealPageSize;
+  const pagedDeals = displayedDeals.slice(dealPageStart, dealPageStart + dealPageSize);
+
   // Cumulative power-procurement trend, derived from the live announcements
   // (curated_deals + edgar_extractions). For each (quarter × buyer) we take
   // the running sum of capacity_mw and emit GW. No separate timeseries
@@ -640,11 +670,22 @@ export default function PowerTab() {
   // deal in the DB.
   const lineData: Array<Record<string, string | number>> = (() => {
     type Item = { date: string; buyer: string; mw: number };
+    // Keep in sync with _BUYER_ALIASES in backend/routers/power.py —
+    // Aterio still uses "Facebook" for Meta campuses, some EDGAR filings
+    // reference "Alphabet" rather than Google, and "AWS" is Amazon.
+    const aliases: Record<string, string> = {
+      facebook: "Meta",
+      alphabet: "Google",
+      aws: "Amazon",
+    };
     const canon = (raw: string | null | undefined): string => {
       if (!raw) return "";
-      const head = raw.split(" / ")[0].split("/")[0].trim();
+      const head = raw.split(" / ")[0].split("/")[0].trim().toLowerCase();
+      for (const [alias, mapped] of Object.entries(aliases)) {
+        if (head.includes(alias)) return mapped;
+      }
       for (const c of companies) {
-        if (head.toLowerCase().includes(c.toLowerCase())) return c;
+        if (head.includes(c.toLowerCase())) return c;
       }
       return "";
     };
@@ -762,7 +803,8 @@ export default function PowerTab() {
               Contracted Power by Company -- Verified Public Announcements (GW)
             </h3>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              Click any company column to open deal details
+              Source: Aterio + SEC EDGAR. Includes per-deal PPAs and co-location agreements with disclosed MW.
+              Excludes grid-tariff service and aggregate 10-K disclosures. Click a column for deal details.
             </p>
           </div>
           <button onClick={() => setShowCharts(v => !v)} style={{ background: "none", border: "none", color: "#64748b", cursor: "pointer", fontSize: "12px" }}>
@@ -790,9 +832,12 @@ export default function PowerTab() {
                 cursor={{ fill: "#ffffff10" }}
               />
               <Legend wrapperStyle={{ color: "#94a3b8", fontSize: "12px" }} />
-              <Bar dataKey="Total GW"    fill="#3b82f6" radius={[4,4,0,0]} />
-              <Bar dataKey="Nuclear GW"  fill="#f59e0b" radius={[4,4,0,0]} />
+              <Bar dataKey="Total GW"     fill="#3b82f6" radius={[4,4,0,0]} />
+              <Bar dataKey="Nuclear GW"   fill="#f59e0b" radius={[4,4,0,0]} />
               <Bar dataKey="Renewable GW" fill="#22c55e" radius={[4,4,0,0]} />
+              <Bar dataKey="Gas GW"       fill="#ef4444" radius={[4,4,0,0]} />
+              <Bar dataKey="Storage GW"   fill="#a78bfa" radius={[4,4,0,0]} />
+              <Bar dataKey="Other GW"     fill="#64748b" radius={[4,4,0,0]} />
             </BarChart>
           </ResponsiveContainer>
         )}
@@ -811,7 +856,7 @@ export default function PowerTab() {
             <div>
               <h3 style={{ color: "white", fontWeight: 600, fontSize: "15px", margin: 0 }}>Cumulative Power Procurement Trend</h3>
               <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-                Running cumulative GW per hyperscaler · derived from curated_deals + live EDGAR extractions, bucketed by announcement quarter
+                Source: Aterio + SEC EDGAR.
               </p>
             </div>
             <TrendingUp size={18} color="#3b82f6" />
@@ -871,7 +916,10 @@ export default function PowerTab() {
               )}
             </div>
             <p style={{ color: "#64748b", fontSize: "12px", margin: "4px 0 0" }}>
-              {displayedDeals.length} of {filteredDeals.length} matching · click column headers to sort · type or pick from each filter dropdown to narrow
+              {displayedDeals.length === 0
+                ? `0 of ${filteredDeals.length} matching`
+                : `Showing ${dealPageStart + 1}–${Math.min(dealPageStart + dealPageSize, displayedDeals.length)} of ${displayedDeals.length} (filtered from ${filteredDeals.length})`}
+              {" "}· click column headers to sort · type or pick from each filter dropdown to narrow
             </p>
           </div>
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -1066,11 +1114,73 @@ export default function PowerTab() {
                     </td>
                   </tr>
                 )}
-                {displayedDeals.map(deal => (
+                {pagedDeals.map(deal => (
                   <DealRow key={deal.id} deal={deal} expanded={expandedId === deal.id} onToggle={() => setExpandedId(expandedId === deal.id ? null : deal.id)} />
                 ))}
               </tbody>
             </table>
+            {/* Pagination controls */}
+            {displayedDeals.length > 0 && (
+              <div style={{
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "12px 4px 0", gap: 12, flexWrap: "wrap",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#94a3b8", fontSize: 12 }}>
+                  <span>Page {dealPageSafe + 1} of {dealPageCount}</span>
+                  <span style={{ color: "#475569" }}>·</span>
+                  <span>Page size:</span>
+                  <select
+                    value={dealPageSize}
+                    onChange={e => setDealPageSize(Number(e.target.value))}
+                    style={{ background: "#0f172a", border: "1px solid #334155", borderRadius: 4, color: "#94a3b8", padding: "3px 6px", fontSize: 12 }}
+                  >
+                    {[10, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    onClick={() => setDealPage(0)}
+                    disabled={dealPageSafe === 0}
+                    style={{
+                      background: "#0f172a", border: "1px solid #334155", borderRadius: 4,
+                      color: dealPageSafe === 0 ? "#475569" : "#94a3b8",
+                      padding: "4px 10px", fontSize: 12,
+                      cursor: dealPageSafe === 0 ? "not-allowed" : "pointer",
+                    }}
+                  >« First</button>
+                  <button
+                    onClick={() => setDealPage(p => Math.max(0, p - 1))}
+                    disabled={dealPageSafe === 0}
+                    style={{
+                      background: "#0f172a", border: "1px solid #334155", borderRadius: 4,
+                      color: dealPageSafe === 0 ? "#475569" : "#94a3b8",
+                      padding: "4px 10px", fontSize: 12,
+                      cursor: dealPageSafe === 0 ? "not-allowed" : "pointer",
+                    }}
+                  >‹ Prev</button>
+                  <button
+                    onClick={() => setDealPage(p => Math.min(dealPageCount - 1, p + 1))}
+                    disabled={dealPageSafe >= dealPageCount - 1}
+                    style={{
+                      background: "#0f172a", border: "1px solid #334155", borderRadius: 4,
+                      color: dealPageSafe >= dealPageCount - 1 ? "#475569" : "#94a3b8",
+                      padding: "4px 10px", fontSize: 12,
+                      cursor: dealPageSafe >= dealPageCount - 1 ? "not-allowed" : "pointer",
+                    }}
+                  >Next ›</button>
+                  <button
+                    onClick={() => setDealPage(dealPageCount - 1)}
+                    disabled={dealPageSafe >= dealPageCount - 1}
+                    style={{
+                      background: "#0f172a", border: "1px solid #334155", borderRadius: 4,
+                      color: dealPageSafe >= dealPageCount - 1 ? "#475569" : "#94a3b8",
+                      padding: "4px 10px", fontSize: 12,
+                      cursor: dealPageSafe >= dealPageCount - 1 ? "not-allowed" : "pointer",
+                    }}
+                  >Last »</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
         <CitationFooter

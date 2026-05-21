@@ -12,10 +12,52 @@ from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.session import get_db
-from db.models import Site, SiteCompanyAssociation, Company
+from db.models import Site, SiteCompanyAssociation, Company, Event
 from schemas.common import CoverageEnvelope, CoverageMeta, LineageMeta
 
 router = APIRouter(prefix="/api/sites", tags=["sites"])
+
+# event_type -> per-site date field that downstream consumers (chart, detail
+# view) already understand. We populate these from the events table rather
+# than from sites.* columns; the inventory CSV no longer carries these dates.
+_EVENT_TYPE_TO_SITE_FIELD = {
+    "announcement": "announced_date",
+    "construction_start": "construction_start_date",
+    "activation": "activation_date",
+    "cancellation": "cancelled_date",
+    "withdrawn": "project_withdrawn_date",
+}
+
+
+async def _milestone_dates_for_uids(
+    db: AsyncSession, dc_uids: list[str]
+) -> dict[str, dict[str, str]]:
+    """For each dc_uid, return the earliest event_date per relevant event_type
+    as ISO strings, keyed by the site-column name the frontend expects.
+
+    Returns {dc_uid: {announced_date: "2024-...", construction_start_date: "..."}}.
+    Empty dict for uids with no relevant events.
+    """
+    if not dc_uids:
+        return {}
+    stmt = (
+        select(
+            Event.aterio_dc_uid,
+            Event.event_type,
+            func.min(Event.event_date),
+        )
+        .where(Event.aterio_dc_uid.in_(dc_uids))
+        .where(Event.event_type.in_(_EVENT_TYPE_TO_SITE_FIELD.keys()))
+        .group_by(Event.aterio_dc_uid, Event.event_type)
+    )
+    rows = (await db.execute(stmt)).all()
+    out: dict[str, dict[str, str]] = {}
+    for dc_uid, event_type, event_date in rows:
+        field = _EVENT_TYPE_TO_SITE_FIELD.get(event_type)
+        if field is None or event_date is None:
+            continue
+        out.setdefault(dc_uid, {})[field] = event_date.isoformat()
+    return out
 
 
 @router.get("/")
@@ -65,6 +107,23 @@ async def list_sites(
     result = await db.execute(query)
     sites = result.scalars().all()
 
+    # Enrich each site with milestone dates joined from the events table.
+    # The inventory CSV no longer carries these columns, so events is now
+    # the source of truth -- we surface min(event_date) per type back onto
+    # the site response for the chart and detail view to consume.
+    dc_uids = [s.aterio_dc_uid for s in sites if s.aterio_dc_uid]
+    milestone_map = await _milestone_dates_for_uids(db, dc_uids)
+
+    site_dicts: list[dict] = []
+    for s in sites:
+        d = _site_to_dict(s)
+        milestones = milestone_map.get(s.aterio_dc_uid or "", {})
+        for field, value in milestones.items():
+            # Events table is authoritative -- overwrite even if a stale
+            # value happens to be on the sites row.
+            d[field] = value
+        site_dicts.append(d)
+
     # Distinct states for coverage metadata
     states_result = await db.execute(
         select(Site.state_code).where(Site.state_code.isnot(None)).distinct()
@@ -73,7 +132,7 @@ async def list_sites(
 
     return CoverageEnvelope(
         data={
-            "data": [_site_to_dict(s) for s in sites],
+            "data": site_dicts,
             "total": total,
             "page": page,
             "page_size": page_size,

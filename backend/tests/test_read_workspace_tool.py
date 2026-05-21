@@ -71,7 +71,16 @@ async def test_read_workspace_rejects_disallowed_files(tmp_path, monkeypatch, na
     assert result == {
         "ok": False,
         "error": "file_not_allowed",
-        "detail": {"file": name, "allowed": ["FRESHNESS.md", "SCHEMA.md"]},
+        "detail": {
+            "file": name,
+            "allowed": [
+                "AI_INSIGHTS_PLAYBOOK.md",
+                "AI_INSIGHTS_PREFLIGHT_CHECKLIST.md",
+                "AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
+                "FRESHNESS.md",
+                "SCHEMA.md",
+            ],
+        },
     }
 
 

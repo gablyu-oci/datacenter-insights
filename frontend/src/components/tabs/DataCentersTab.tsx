@@ -37,6 +37,7 @@ interface SiteRecord {
   longitude: number | null;
   total_mw: number | null;
   provider_name: string | null;
+  end_user: string | null;
   stage: string | null;
   sqft: number | null;
   // Lifecycle dates — used to derive end-of-year snapshot of pipeline state.
@@ -279,6 +280,7 @@ export default function DataCentersTab() {
   type MwOp = ">=" | "<=" | ">" | "<" | "=" | "between";
   const [colFilters, setColFilters] = useState<{
     provider: string;
+    end_user: string;
     site: string;
     city: string;
     state: string;
@@ -286,6 +288,7 @@ export default function DataCentersTab() {
     mw: { op: MwOp; value: string; value2: string };
   }>({
     provider: "",
+    end_user: "",
     site: "",
     city: "",
     state: "",
@@ -297,7 +300,7 @@ export default function DataCentersTab() {
   };
   const clearColFilters = () =>
     setColFilters({
-      provider: "", site: "", city: "", state: "", stage: "",
+      provider: "", end_user: "", site: "", city: "", state: "", stage: "",
       mw: { op: ">=", value: "", value2: "" },
     });
 
@@ -319,6 +322,7 @@ export default function DataCentersTab() {
         (s.aterio_est_mw as number | null) ??
         null,
       provider_name: (s.provider_name as string | null) ?? null,
+      end_user: (s.end_user_companies as string | null) ?? null,
       stage: (s.stage as string | null) ?? null,
       sqft:
         (s.tot_facility_space_sqft as number | null) ??
@@ -361,10 +365,18 @@ export default function DataCentersTab() {
   // Distinct values per filterable column — populates the datalist
   // suggestions (combobox-with-search behavior).
   const distinctOptions = useMemo(() => {
-    const prov = new Set<string>(), site = new Set<string>(),
+    const prov = new Set<string>(), endUser = new Set<string>(), site = new Set<string>(),
       city = new Set<string>(), state = new Set<string>(), stage = new Set<string>();
     for (const s of sites) {
       if (s.provider_name) prov.add(s.provider_name);
+      if (s.end_user) {
+        // end_user_companies is a comma-separated string of tenant names.
+        // Split so the datalist suggests individual companies, not joined blobs.
+        for (const name of s.end_user.split(",")) {
+          const trimmed = name.trim();
+          if (trimmed) endUser.add(trimmed);
+        }
+      }
       if (s.site_name) site.add(s.site_name);
       if (s.city) city.add(s.city);
       if (s.state) state.add(s.state);
@@ -373,6 +385,7 @@ export default function DataCentersTab() {
     const sorted = (set: Set<string>) => [...set].sort((a, b) => a.localeCompare(b));
     return {
       provider: sorted(prov),
+      end_user: sorted(endUser),
       site: sorted(site),
       city: sorted(city),
       state: sorted(state),
@@ -403,6 +416,7 @@ export default function DataCentersTab() {
     };
     return sorted.filter(d =>
       m(d.provider_name, colFilters.provider) &&
+      m(d.end_user, colFilters.end_user) &&
       m(d.site_name, colFilters.site) &&
       m(d.city, colFilters.city) &&
       m(d.state, colFilters.state) &&
@@ -446,13 +460,11 @@ export default function DataCentersTab() {
   }, [filtered]);
 
   // End-of-year snapshot of pipeline state. For each recent year Y, classify
-  // every filtered site by what state it was in at 12-31-Y, derived from the
-  // lifecycle date columns. Mutually exclusive cohorts so the per-year totals
-  // sum cleanly.
-  //
-  // Note for the current year (2026): "Active" includes projected activations
-  // (Aterio's `activation_date` is the planned activation date), not just
-  // already-realised ones. That's an honest quirk of the source data.
+  // every filtered site by what state it was in at 12-31-Y. The per-stage
+  // milestone dates (announced_date, construction_start_date, etc.) come
+  // from the events table, joined onto the /api/sites/ response server-side;
+  // the inventory CSV no longer carries those columns. Mutually exclusive
+  // cohorts so per-year totals sum cleanly.
   const yearStage = useMemo(() => {
     const PIPELINE_STAGES = ["Announced", "Under Construction", "Active", "Withdrawn", "Cancelled"] as const;
     type PipelineStage = typeof PIPELINE_STAGES[number];
@@ -469,13 +481,12 @@ export default function DataCentersTab() {
       if (beforeOrEqual(s.activation_date, yearEnd)) return "Active";
       if (beforeOrEqual(s.construction_start_date, yearEnd)) return "Under Construction";
       if (beforeOrEqual(s.announced_date, yearEnd)) return "Announced";
-      return null; // not yet announced as of this year-end
+      return null;
     };
 
     const currentYear = new Date().getFullYear();
     const recentYears = [currentYear - 2, currentYear - 1, currentYear];
 
-    // cube[year][stage] = { count, mw }
     const cube: Record<number, Record<PipelineStage, { count: number; mw: number }>> = {};
     recentYears.forEach(y => {
       cube[y] = {} as Record<PipelineStage, { count: number; mw: number }>;
@@ -493,7 +504,6 @@ export default function DataCentersTab() {
       });
     });
 
-    // Transposed: one row per stage, one numeric column per year.
     const data = PIPELINE_STAGES.map(stage => {
       const row: Record<string, string | number> = { stage };
       recentYears.forEach(y => {
@@ -529,7 +539,19 @@ export default function DataCentersTab() {
     );
   }
 
-  const totalMW = filtered.reduce((s, d) => s + (d.total_mw ?? 0), 0);
+  // Split MW capacity by lifecycle stage. The single "Total MW" KPI used to
+  // sum every stage (Active + Announcement + Construction + Cancelled + ...),
+  // which inflated the headline ~9× over the operating fleet and confused
+  // stakeholders comparing against public "US datacenter capacity" figures.
+  // Active = operating today; Announcement = pre-permit pipeline.
+  const activeMW = filtered.reduce(
+    (s, d) => s + (d.stage === "Active" ? d.total_mw ?? 0 : 0),
+    0,
+  );
+  const announcedMW = filtered.reduce(
+    (s, d) => s + (d.stage === "Announcement" ? d.total_mw ?? 0 : 0),
+    0,
+  );
   const totalFacilities = filtered.length;
   const uniqueStates = new Set(filtered.map(d => d.state).filter(Boolean)).size;
   const uniqueProviders = new Set(filtered.map(d => d.provider_name).filter(Boolean)).size;
@@ -577,8 +599,9 @@ export default function DataCentersTab() {
       {/* KPI row */}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <MetricCard label="Facilities Shown" value={String(totalFacilities)} sub={`${uniqueProviders} providers`} accent="#3b82f6" icon={Building2} />
-        <MetricCard label="Total MW Capacity" value={Math.round(totalMW).toLocaleString()} unit="MW" sub="IT load capacity" accent="#f59e0b" icon={Zap} />
-        <MetricCard label="US States" value={String(uniqueStates)} sub="geographic coverage" accent="#22c55e" icon={MapPin} />
+        <MetricCard label="Active MW Capacity" value={Math.round(activeMW).toLocaleString()} unit="MW" sub="operating today" accent={STAGE_COLOR.Active} icon={Zap} />
+        <MetricCard label="Announced MW Capacity" value={Math.round(announcedMW).toLocaleString()} unit="MW" sub="pre-permit pipeline" accent={STAGE_COLOR.Announcement} icon={Zap} />
+        <MetricCard label="US States" value={String(uniqueStates)} sub="geographic coverage" accent="#f59e0b" icon={MapPin} />
         <MetricCard label="Total in Database" value={totalInDb.toLocaleString()} sub="full Aterio dataset" accent="#8b5cf6" icon={Server} />
       </div>
 
@@ -835,7 +858,6 @@ export default function DataCentersTab() {
               />
               <Legend wrapperStyle={{ fontSize: 11, color: "#94a3b8" }} />
               {yearStage.years.map((year, i) => {
-                // Older year → cooler/dimmer; latest year → bright accent.
                 const palette = ["#475569", "#3b82f6", "#f59e0b"];
                 const fill = palette[(palette.length - yearStage.years.length) + i] ?? palette[i];
                 return (
@@ -859,7 +881,7 @@ export default function DataCentersTab() {
           </ResponsiveContainer>
         ) : (
           <div style={{ color: "#64748b", textAlign: "center", padding: 40 }}>
-            No sites with an announcement date in the current filter.
+            No sites with milestone events in the current filter.
           </div>
         )}
         <CitationFooter
@@ -886,6 +908,7 @@ export default function DataCentersTab() {
               <tr style={{ borderBottom: "1px solid #334155" }}>
                 {[
                   { label: "Provider", field: null },
+                  { label: "End User", field: null },
                   { label: "Site", field: "site_name" as const },
                   { label: "City", field: null },
                   { label: "State", field: null },
@@ -914,6 +937,7 @@ export default function DataCentersTab() {
               <tr style={{ borderBottom: "1px solid #334155", background: "#0b1220" }}>
                 {([
                   ["provider", "Provider", distinctOptions.provider],
+                  ["end_user", "End User", distinctOptions.end_user],
                   ["site", "Site", distinctOptions.site],
                   ["city", "City", distinctOptions.city],
                   ["state", "State", distinctOptions.state],
@@ -999,7 +1023,7 @@ export default function DataCentersTab() {
                   </datalist>
                 </th>
                 <th style={{ padding: "4px 8px" }}>
-                  {(colFilters.provider || colFilters.site || colFilters.city ||
+                  {(colFilters.provider || colFilters.end_user || colFilters.site || colFilters.city ||
                     colFilters.state || colFilters.stage ||
                     colFilters.mw.value !== "" || colFilters.mw.value2 !== "") && (
                     <button
@@ -1014,7 +1038,7 @@ export default function DataCentersTab() {
               {/* Aggregate stats row */}
               <tr style={{ borderBottom: "2px solid #334155", background: "#111c2e" }}>
                 <td style={{ padding: "8px 12px", color: "#64748b", fontSize: 10, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Total</td>
-                <td colSpan={3} style={{ padding: "8px 12px", color: "#cbd5e1", fontSize: 11 }}>
+                <td colSpan={4} style={{ padding: "8px 12px", color: "#cbd5e1", fontSize: 11 }}>
                   <span style={{ color: "#64748b" }}>count:</span>{" "}
                   <span style={{ color: "#60a5fa", fontWeight: 700 }}>{tableStats.count.toLocaleString()}</span>
                 </td>
@@ -1053,6 +1077,18 @@ export default function DataCentersTab() {
                           {dc.provider_name ?? "Unknown"}
                         </span>
                       </td>
+                      <td
+                        style={{ padding: "9px 12px", color: "#cbd5e1", fontSize: "11px", maxWidth: 180 }}
+                        title={dc.end_user ?? undefined}
+                      >
+                        {dc.end_user ? (
+                          <span style={{ display: "inline-block", maxWidth: "100%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", verticalAlign: "middle" }}>
+                            {dc.end_user}
+                          </span>
+                        ) : (
+                          <span style={{ color: "#475569" }}>--</span>
+                        )}
+                      </td>
                       <td style={{ padding: "9px 12px", color: "#e2e8f0", fontWeight: 500 }}>{dc.site_name || dc.aterio_dc_uid}</td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{dc.city ?? "--"}</td>
                       <td style={{ padding: "9px 12px", color: "#94a3b8", fontSize: "11px" }}>{dc.state ?? "--"}</td>
@@ -1081,7 +1117,7 @@ export default function DataCentersTab() {
                     </tr>
                     {isExpanded && (
                       <tr style={{ borderBottom: "1px solid #1e293b", background: "#162032" }}>
-                        <td colSpan={7} style={{ padding: "12px 16px 16px 48px" }}>
+                        <td colSpan={8} style={{ padding: "12px 16px 16px 48px" }}>
                           <SiteRoleBreakdown siteUid={dc.aterio_dc_uid} />
                         </td>
                       </tr>

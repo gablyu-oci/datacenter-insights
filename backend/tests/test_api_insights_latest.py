@@ -74,6 +74,7 @@ from agents.insights.db.models import (  # noqa: E402
     AgentMessage,
     AIInsight,
     AISession,
+    InsightSubscription,
     InsightThread,
 )
 
@@ -98,6 +99,7 @@ async def sqlite_engine():
         AgentMessage.__table__,
         AgentChart.__table__,
         AgentCitation.__table__,
+        InsightSubscription.__table__,
     ]
     async with eng.begin() as conn:
         await conn.run_sync(
@@ -287,27 +289,19 @@ async def test_latest_ignores_running_session(patched_app, session_factory):
 
 
 # ---------------------------------------------------------------------------
-# Case 4: two completed sessions same UTC day, scheduler wins over manual.
+# Case 4: two completed sessions same UTC day -> the more recent one wins,
+# regardless of scheduler-vs-manual. The previous "prefer scheduler" rule
+# masked freshly-triggered manual runs behind the morning cron output.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_latest_prefers_scheduler_over_manual_same_day(
+async def test_latest_picks_most_recent_regardless_of_created_by(
     patched_app, session_factory
 ):
     from httpx import ASGITransport, AsyncClient
 
     today = datetime.utcnow().replace(hour=12, minute=0, second=0, microsecond=0)
-    # Manual is the more recent of the two by started_at, but scheduler
-    # must still win per the §6 contract.
-    manual_id = await _seed_session(
-        session_factory,
-        status="complete",
-        started_at=today + timedelta(hours=1),
-        finished_at=today + timedelta(hours=1, minutes=5),
-        created_by="manual",
-        insights=2,
-    )
     scheduler_id = await _seed_session(
         session_factory,
         status="complete",
@@ -316,16 +310,24 @@ async def test_latest_prefers_scheduler_over_manual_same_day(
         created_by="scheduler",
         insights=1,
     )
+    # Manual is more recent — it should win.
+    manual_id = await _seed_session(
+        session_factory,
+        status="complete",
+        started_at=today + timedelta(hours=1),
+        finished_at=today + timedelta(hours=1, minutes=5),
+        created_by="manual",
+        insights=2,
+    )
 
     transport = ASGITransport(app=patched_app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.get("/api/insights/latest")
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["session"]["id"] == str(scheduler_id)
-    assert body["session"]["created_by"] == "scheduler"
-    # Sanity: the manual row exists in the DB but is not the chosen one.
-    assert body["session"]["id"] != str(manual_id)
+    assert body["session"]["id"] == str(manual_id)
+    assert body["session"]["created_by"] == "manual"
+    assert body["session"]["id"] != str(scheduler_id)
 
 
 # ---------------------------------------------------------------------------

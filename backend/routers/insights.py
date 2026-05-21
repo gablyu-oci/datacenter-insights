@@ -1,19 +1,16 @@
-"""
-AI Insights HTTP surface (V1 + V2) -- per ARCHITECTURE.md A3.
+"""AI Insights HTTP surface — per ARCHITECTURE.md A3.
 
 Prefix: /api/insights
 
-V1 endpoints implemented:
-    POST /api/insights/sessions              SSE stream of typed events
-    GET  /api/insights/sessions/{id}         status snapshot
-    GET  /api/insights/sessions/{id}/insights list insights for a session
-    GET  /api/insights/insights/{id}          insight detail (with chart)
-    POST /api/insights/sessions/{id}/cancel   request cancellation
-
-V2 endpoints implemented:
-    POST /api/insights/insights/{id}/chat            SSE chat stream
-    GET  /api/insights/insights/{id}/chat            paginated thread history
-    GET  /api/insights/insights/{id}/citations       list current citations
+Endpoints:
+    POST /api/insights/sessions                       SSE stream of typed events
+    GET  /api/insights/sessions/{id}                  status snapshot
+    GET  /api/insights/sessions/{id}/insights         list insights for a session
+    GET  /api/insights/insights/{id}                  insight detail (with chart)
+    POST /api/insights/sessions/{id}/cancel           request cancellation
+    POST /api/insights/insights/{id}/chat             SSE chat stream
+    GET  /api/insights/insights/{id}/chat             paginated thread history
+    GET  /api/insights/insights/{id}/citations        list current citations
 
 Latency budget per chat turn: ≤20s p50, ≤45s p95 (PRD §5.4).
 """
@@ -27,10 +24,10 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, AsyncIterator, Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from agents.insights.orchestrator import InsightOrchestrator
@@ -43,6 +40,7 @@ from agents.insights.db.models import (
     AgentChart,
     AgentCitation,
     AgentMessage,
+    InsightSubscription,
     InsightThread,
 )
 from db.session import async_session_factory, get_db
@@ -143,6 +141,9 @@ class InsightSummary(BaseModel):
     skills_run: list[str]
     low_external_support: Optional[bool]
     created_at: Optional[datetime]
+    # Save & History (Phase A): present on /sessions/{id}/insights and /latest;
+    # left optional for backward compat with older callers.
+    is_saved: Optional[bool] = None
 
 
 class InsightListResponse(BaseModel):
@@ -162,6 +163,8 @@ class InsightDetail(BaseModel):
     low_external_support: Optional[bool]
     created_at: Optional[datetime]
     chart: Optional[dict[str, Any]] = None
+    # Save & History (Phase A); optional for backward compat.
+    is_saved: Optional[bool] = None
 
 
 class CancelResponse(BaseModel):
@@ -169,7 +172,127 @@ class CancelResponse(BaseModel):
     status: str
 
 
-# V2 -------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Save & History (Phase A) — Pydantic response shapes
+# ---------------------------------------------------------------------------
+
+
+class SubscribeResponse(BaseModel):
+    """Returned by POST/DELETE /api/insights/insights/{insight_id}/subscribe."""
+
+    saved: bool
+    id: Optional[uuid.UUID] = None  # subscription row id; None when no row exists
+
+
+class SavedInsightsResponse(BaseModel):
+    """Returned by GET /api/insights/saved.
+
+    `items` mirrors the dict shape used by /latest (id, session_id, idx,
+    headline, body, confidence, materiality, skills_run, low_external_support,
+    created_at, chart, citations) plus `is_saved=True` and `saved_at`
+    (insight_subscription.created_at).
+    """
+
+    items: list[dict[str, Any]]
+    total: int
+
+
+class SessionRow(BaseModel):
+    """One row in the past-runs list."""
+
+    id: uuid.UUID
+    status: str
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+    model: Optional[str]
+    focus: Optional[str]
+    insights_emitted: int
+    duration_ms: Optional[int]
+    created_by: Optional[str]
+
+
+class SessionsPage(BaseModel):
+    """Returned by GET /api/insights/sessions."""
+
+    items: list[SessionRow]
+    limit: int
+    offset: int
+    total: int
+    has_more: bool
+
+
+# ---------------------------------------------------------------------------
+# Save & History (Phase A) — helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_is_saved_column():
+    """Correlated EXISTS subquery used as a labeled column on AIInsight selects.
+
+    Returns a SQL expression that evaluates to True when there is at least
+    one `insight_subscription` row for the current `ai_insight.id` with
+    `enabled=true`. Robust against duplicate subscription rows because EXISTS
+    short-circuits on the first match.
+    """
+    return (
+        select(1)
+        .where(InsightSubscription.insight_id == AIInsight.id)
+        .where(InsightSubscription.enabled.is_(True))
+        .exists()
+        .label("is_saved")
+    )
+
+
+async def _set_subscription_enabled(
+    db: AsyncSession,
+    *,
+    insight_id: uuid.UUID,
+    enabled: bool,
+) -> Optional[uuid.UUID]:
+    """Soft-upsert the insight_subscription row for `insight_id`.
+
+    Returns the subscription row id when one exists after the call, else None
+    (i.e. when caller asked to disable a never-saved insight).
+
+    Idempotency: repeat calls with the same `enabled` value perform no write
+    on the second+ invocation. The SELECT uses ORDER BY created_at DESC LIMIT 1
+    so it is defensive against duplicate rows (the table lacks a UNIQUE
+    constraint on insight_id; see 03-architecture.md §8 / ADR-2).
+
+    Caller is responsible for committing the transaction.
+    """
+    existing = (
+        await db.execute(
+            select(InsightSubscription)
+            .where(InsightSubscription.insight_id == insight_id)
+            .order_by(InsightSubscription.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if existing is None:
+        if not enabled:
+            # User un-saves an insight that was never saved — no-op.
+            return None
+        new_row = InsightSubscription(
+            id=uuid.uuid4(),
+            insight_id=insight_id,
+            enabled=True,
+        )
+        db.add(new_row)
+        await db.flush()
+        return new_row.id
+
+    if existing.enabled == enabled:
+        # Already in the desired state — no write needed.
+        return existing.id
+
+    existing.enabled = enabled
+    await db.flush()
+    return existing.id
+
+
+# Chat + citations ------------------------------------------------------------
 
 
 class ChatTurnBody(BaseModel):
@@ -215,7 +338,7 @@ class CitationListResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# SSE create/stream (V1 sessions endpoint -- unchanged)
+# SSE create/stream — POST /sessions + GET /sessions/{id}/stream
 # ---------------------------------------------------------------------------
 
 
@@ -425,17 +548,14 @@ async def list_session_insights(
     if sess is None:
         raise HTTPException(status_code=404, detail="session not found")
 
+    saved_expr = _build_is_saved_column()
     rows = (
-        (
-            await db.execute(
-                select(AIInsight)
-                .where(AIInsight.session_id == session_id)
-                .order_by(AIInsight.created_at.asc(), AIInsight.idx.asc())
-            )
+        await db.execute(
+            select(AIInsight, saved_expr)
+            .where(AIInsight.session_id == session_id)
+            .order_by(AIInsight.created_at.asc(), AIInsight.idx.asc())
         )
-        .scalars()
-        .all()
-    )
+    ).all()
 
     items = [
         InsightSummary(
@@ -448,8 +568,9 @@ async def list_session_insights(
             skills_run=r.skills_run or [],
             low_external_support=r.low_external_support,
             created_at=r.created_at,
+            is_saved=bool(is_saved_val),
         )
-        for r in rows
+        for (r, is_saved_val) in rows
     ]
     return InsightListResponse(items=items, total=len(items))
 
@@ -481,6 +602,18 @@ async def get_insight(
             "created_at": chart_row.created_at,
         }
 
+    # Save & History (Phase A): does an enabled subscription exist?
+    is_saved_val = (
+        await db.execute(
+            select(
+                select(1)
+                .where(InsightSubscription.insight_id == insight_id)
+                .where(InsightSubscription.enabled.is_(True))
+                .exists()
+            )
+        )
+    ).scalar()
+
     return InsightDetail(
         id=row.id,
         session_id=row.session_id,
@@ -493,6 +626,7 @@ async def get_insight(
         low_external_support=row.low_external_support,
         created_at=row.created_at,
         chart=chart_payload,
+        is_saved=bool(is_saved_val),
     )
 
 
@@ -507,6 +641,221 @@ async def cancel_session(session_id: uuid.UUID) -> CancelResponse:
         raise HTTPException(status_code=404, detail="session not active")
     active.orch.cancel()
     return CancelResponse(ok=True, status="cancelled")
+
+
+# ===========================================================================
+# Save & History (Phase A) — subscribe toggle, saved list, sessions history
+# ===========================================================================
+
+
+@router.post(
+    "/insights/{insight_id}/subscribe",
+    response_model=SubscribeResponse,
+)
+async def subscribe_insight(
+    insight_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> SubscribeResponse:
+    """Mark an insight as saved (idempotent soft-upsert)."""
+    insight = (
+        await db.execute(select(AIInsight.id).where(AIInsight.id == insight_id))
+    ).scalar_one_or_none()
+    if insight is None:
+        raise HTTPException(status_code=404, detail="insight not found")
+
+    row_id = await _set_subscription_enabled(
+        db, insight_id=insight_id, enabled=True
+    )
+    await db.commit()
+    return SubscribeResponse(saved=True, id=row_id)
+
+
+@router.delete(
+    "/insights/{insight_id}/subscribe",
+    response_model=SubscribeResponse,
+)
+async def unsubscribe_insight(
+    insight_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+) -> SubscribeResponse:
+    """Soft-delete the saved state (flip enabled=false; idempotent)."""
+    insight = (
+        await db.execute(select(AIInsight.id).where(AIInsight.id == insight_id))
+    ).scalar_one_or_none()
+    if insight is None:
+        raise HTTPException(status_code=404, detail="insight not found")
+
+    await _set_subscription_enabled(db, insight_id=insight_id, enabled=False)
+    await db.commit()
+    return SubscribeResponse(saved=False, id=None)
+
+
+@router.get(
+    "/saved",
+    response_model=SavedInsightsResponse,
+)
+async def list_saved_insights(
+    limit: int = Query(default=100, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> SavedInsightsResponse:
+    """List currently-saved insights, newest-saved first (hard cap 100)."""
+    # Single JOIN query: subscription → insight, only enabled rows.
+    sub_rows = (
+        await db.execute(
+            select(InsightSubscription, AIInsight)
+            .join(AIInsight, AIInsight.id == InsightSubscription.insight_id)
+            .where(InsightSubscription.enabled.is_(True))
+            .order_by(InsightSubscription.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+
+    if not sub_rows:
+        return SavedInsightsResponse(items=[], total=0)
+
+    insight_ids = [ins.id for (_sub, ins) in sub_rows]
+
+    # Bulk-load charts + citations exactly as /latest does (no N+1).
+    chart_rows = (
+        (
+            await db.execute(
+                select(AgentChart).where(AgentChart.insight_id.in_(insight_ids))
+            )
+        )
+        .scalars()
+        .all()
+    )
+    charts_by_insight: dict[uuid.UUID, AgentChart] = {
+        c.insight_id: c for c in chart_rows
+    }
+
+    citation_rows = (
+        (
+            await db.execute(
+                select(AgentCitation)
+                .where(AgentCitation.insight_id.in_(insight_ids))
+                .order_by(AgentCitation.created_at.asc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    citations_by_insight: dict[uuid.UUID, list[AgentCitation]] = {}
+    for cit in citation_rows:
+        citations_by_insight.setdefault(cit.insight_id, []).append(cit)
+
+    items: list[dict[str, Any]] = []
+    for sub, ins in sub_rows:
+        chart_row = charts_by_insight.get(ins.id)
+        chart_payload: Optional[dict[str, Any]] = None
+        if chart_row is not None:
+            chart_payload = {
+                "chart_id": chart_row.id,
+                "spec": chart_row.spec,
+                "data_source": chart_row.data_source,
+                "row_hash": chart_row.row_hash,
+                "created_at": chart_row.created_at.isoformat()
+                if chart_row.created_at
+                else None,
+            }
+        citation_payload = [
+            {
+                "id": str(cit.id),
+                "url": cit.url,
+                "title": cit.title,
+                "snippet": cit.snippet,
+                "search_query": cit.search_query,
+                "provider": cit.provider,
+                "agree_or_disagree": cit.agree_or_disagree,
+            }
+            for cit in citations_by_insight.get(ins.id, [])
+        ]
+        items.append(
+            {
+                "id": str(ins.id),
+                "session_id": str(ins.session_id),
+                "idx": ins.idx,
+                "headline": ins.headline,
+                "body": ins.body,
+                "confidence": ins.confidence,
+                "materiality": ins.materiality,
+                "skills_run": ins.skills_run or [],
+                "low_external_support": ins.low_external_support,
+                "created_at": ins.created_at.isoformat()
+                if ins.created_at
+                else None,
+                "chart": chart_payload,
+                "citations": citation_payload,
+                "is_saved": True,
+                "saved_at": sub.created_at.isoformat() if sub.created_at else None,
+            }
+        )
+
+    return SavedInsightsResponse(items=items, total=len(items))
+
+
+# Status alias map: request-side "completed" -> DB-side "complete" (singular).
+_STATUS_ALIAS: dict[str, Optional[str]] = {
+    "completed": "complete",
+    "complete": "complete",
+    "cancelled": "cancelled",
+    "failed": "failed",
+    "all": None,  # sentinel → no filter
+}
+
+
+@router.get(
+    "/sessions",
+    response_model=SessionsPage,
+)
+async def list_sessions_history(
+    limit: int = Query(default=20, ge=1, le=50),
+    offset: int = Query(default=0, ge=0),
+    status: str = Query(default="completed"),
+    db: AsyncSession = Depends(get_db),
+) -> SessionsPage:
+    """Paginated history of past sessions (insights are NOT inlined)."""
+    if status not in _STATUS_ALIAS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid status '{status}'; expected one of "
+            f"{sorted(_STATUS_ALIAS.keys())}",
+        )
+    db_status = _STATUS_ALIAS[status]
+
+    list_stmt = select(AISession).order_by(AISession.started_at.desc())
+    count_stmt = select(func.count()).select_from(AISession)
+    if db_status is not None:
+        list_stmt = list_stmt.where(AISession.status == db_status)
+        count_stmt = count_stmt.where(AISession.status == db_status)
+
+    list_stmt = list_stmt.limit(limit).offset(offset)
+
+    rows = (await db.execute(list_stmt)).scalars().all()
+    total = (await db.execute(count_stmt)).scalar_one() or 0
+
+    items = [
+        SessionRow(
+            id=r.id,
+            status=r.status,
+            started_at=r.started_at,
+            finished_at=r.finished_at,
+            model=r.model,
+            focus=r.focus,
+            insights_emitted=r.insights_emitted or 0,
+            duration_ms=r.duration_ms,
+            created_by=r.created_by,
+        )
+        for r in rows
+    ]
+    has_more = (offset + len(items)) < int(total)
+    return SessionsPage(
+        items=items,
+        limit=limit,
+        offset=offset,
+        total=int(total),
+        has_more=has_more,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -527,23 +876,18 @@ async def get_latest_insights(
 ) -> dict[str, Any]:
     """Return the most recent AI Insights session and its insights.
 
-    Selection rules (architecture §6):
-      1. Look at the 5 most recent sessions (ORDER BY started_at DESC). When
-         `include_failed=False` (default), only `status='complete'` rows are
-         considered; otherwise rows of any status are considered.
-      2. Among rows whose `date(started_at)` matches today's UTC date, prefer
-         `created_by='scheduler'` over `'manual'`.
-      3. If no row matches today's date, fall back to the single most recent
-         row in the candidate set.
+    Selection:
+      * `include_failed=False` (default): the single most-recent session
+        with `status='complete'`.
+      * `include_failed=True`: the single most-recent session of any
+        status. When that row is `status='failed'`, additionally fetch
+        the most recent completed session and return it as
+        `last_successful: {session, insights}`; otherwise `last_successful`
+        is `null`.
 
-    For the chosen session, fetch all `ai_insight` rows ordered by `idx ASC`
-    and attach the matching `agent_chart` (LEFT JOIN-style) — mirroring the
-    behavior of `GET /api/insights/insights/{id}`.
-
-    When `include_failed=True` and the chosen session has `status='failed'`,
-    additionally fetch the most recent completed session (any date) and
-    return it as `last_successful: {session, insights}`. For non-failed
-    chosen sessions, `last_successful` is `null`.
+    For the chosen session, fetch all `ai_insight` rows ordered by `idx
+    ASC` and attach the matching `agent_chart` (LEFT JOIN-style) —
+    mirroring the behavior of `GET /api/insights/insights/{id}`.
 
     Returns 404 with detail "no completed session yet" when no candidate
     session exists. (Wording preserved for back-compat.)
@@ -559,17 +903,18 @@ async def get_latest_insights(
         Returns an empty `insights` list if the session has no rows (which is
         expected for `running` / `failed` / `cancelled` sessions).
         """
-        insight_rows = (
-            (
-                await db.execute(
-                    select(AIInsight)
-                    .where(AIInsight.session_id == ai_session_row.id)
-                    .order_by(AIInsight.idx.asc())
-                )
+        saved_expr = _build_is_saved_column()
+        insight_pairs = (
+            await db.execute(
+                select(AIInsight, saved_expr)
+                .where(AIInsight.session_id == ai_session_row.id)
+                .order_by(AIInsight.idx.asc())
             )
-            .scalars()
-            .all()
-        )
+        ).all()
+        insight_rows = [ins for (ins, _is_saved) in insight_pairs]
+        saved_flag_by_id: dict[uuid.UUID, bool] = {
+            ins.id: bool(is_saved_val) for (ins, is_saved_val) in insight_pairs
+        }
 
         charts_by_insight: dict[uuid.UUID, AgentChart] = {}
         citations_by_insight: dict[uuid.UUID, list[AgentCitation]] = {}
@@ -645,6 +990,7 @@ async def get_latest_insights(
                     else None,
                     "chart": chart_payload,
                     "citations": citation_payload,
+                    "is_saved": saved_flag_by_id.get(ins.id, False),
                 }
             )
 
@@ -669,50 +1015,24 @@ async def get_latest_insights(
 
         return {"session": session_payload, "insights": insights_payload}
 
-    # Build the candidate query. Default branch keeps the existing
-    # `status='complete'` filter so behaviour is byte-identical.
-    base_query = select(AISession).order_by(AISession.started_at.desc()).limit(5)
+    # Pick the most recent session. `include_failed=False` filters to
+    # complete; `include_failed=True` accepts any status (failed rows
+    # get a `last_successful` companion below).
+    base_query = (
+        select(AISession).order_by(AISession.started_at.desc()).limit(1)
+    )
     if not include_failed:
         base_query = (
             select(AISession)
             .where(AISession.status == "complete")
             .order_by(AISession.started_at.desc())
-            .limit(5)
+            .limit(1)
         )
 
-    recent_rows = (await db.execute(base_query)).scalars().all()
-    if not recent_rows:
+    chosen = (await db.execute(base_query)).scalars().first()
+    if chosen is None:
         # Wording preserved for back-compat regardless of include_failed.
         raise HTTPException(status_code=404, detail="no completed session yet")
-
-    today = datetime.now(UTC).date()
-
-    def _row_date(s: AISession) -> Optional[Any]:
-        return s.started_at.date() if s.started_at is not None else None
-
-    todays = [s for s in recent_rows if _row_date(s) == today]
-    chosen: AISession
-    if todays:
-        # Selection key (lower wins): (status_priority, scheduler_priority,
-        # negative-started_at). Effect:
-        #   1. complete rows beat non-complete (degraded/failed/cancelled)
-        #   2. within the same status tier, scheduler beats manual
-        #   3. within both ties, the most recent wins
-        # The default branch (include_failed=False) already filters to
-        # status='complete', so dimension 1 is uniform and the ordering
-        # is byte-identical to the old "prefer scheduler" logic. The
-        # include_failed=True branch now correctly surfaces a recent
-        # complete manual run instead of an earlier degraded scheduler run.
-        def _selection_key(s: AISession) -> tuple[int, int, float]:
-            status_priority = 0 if s.status == "complete" else 1
-            scheduler_priority = 0 if (s.created_by or "") == "scheduler" else 1
-            ts = -s.started_at.timestamp() if s.started_at is not None else 0.0
-            return (status_priority, scheduler_priority, ts)
-
-        chosen = sorted(todays, key=_selection_key)[0]
-    else:
-        # No row for today -> most recent in the candidate set.
-        chosen = recent_rows[0]
 
     primary = await _build_session_payload(db, chosen)
 
@@ -754,7 +1074,7 @@ async def get_latest_insights(
 
 
 # ===========================================================================
-# V2: chat + citations
+# Chat + citations
 # ===========================================================================
 
 
@@ -780,9 +1100,9 @@ async def _get_or_create_thread(
 ) -> InsightThread:
     """Return the (single) chat thread for an insight, creating it if missing.
 
-    V2 scope is one-thread-per-insight (PRD §5.4 "Per-insight thread").
-    Sets `delete_after = now() + 90 days` on insert (retention is in app code
-    per the migration comment).
+    Scope is one-thread-per-insight (PRD §5.4 "Per-insight thread").
+    Sets `delete_after = now() + 90 days` on insert (retention is in app
+    code per the migration comment).
     """
     existing = (
         await db.execute(
@@ -1028,7 +1348,7 @@ async def list_insight_citations(
     insight_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
 ) -> CitationListResponse:
-    """List current citations for an insight (V2)."""
+    """List current citations for an insight."""
     insight = (
         await db.execute(select(AIInsight).where(AIInsight.id == insight_id))
     ).scalar_one_or_none()
@@ -1063,37 +1383,6 @@ async def list_insight_citations(
         for r in rows
     ]
     return CitationListResponse(items=items, total=len(items))
-
-
-# ---------------------------------------------------------------------------
-# Legacy V2 stubs (keep V1 surface stable; the new endpoints above replace
-# the per-session/messages stubs as well; the old stub paths return 410 now
-# to signal they have moved to /insights/{id}/chat).
-# ---------------------------------------------------------------------------
-
-
-@router.post("/sessions/{session_id}/messages", deprecated=True)
-async def post_session_message(session_id: uuid.UUID) -> None:
-    raise HTTPException(
-        status_code=410,
-        detail="V2 chat moved to POST /api/insights/insights/{insight_id}/chat",
-    )
-
-
-@router.get("/sessions/{session_id}/messages", deprecated=True)
-async def list_session_messages(session_id: uuid.UUID) -> None:
-    raise HTTPException(
-        status_code=410,
-        detail="V2 chat moved to GET /api/insights/insights/{insight_id}/chat",
-    )
-
-
-@router.post("/citations", deprecated=True)
-async def create_citation() -> None:
-    raise HTTPException(
-        status_code=410,
-        detail="Citations are emitted by the agent via emit_citation; manual POST is no longer supported",
-    )
 
 
 __all__ = ["router"]

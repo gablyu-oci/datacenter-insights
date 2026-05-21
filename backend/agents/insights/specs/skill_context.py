@@ -22,9 +22,9 @@ from pydantic import BaseModel, ConfigDict, Field
 class Capabilities(BaseModel):
     """Boolean flags governing which agent tools the skill may invoke.
 
-    Defaults match V1 conservative posture: read-only data access OFF,
-    emit OFF, web search OFF (V1 doesn't ship it), citation emit OFF (V2),
-    and `run_skill` recursion OFF (PRD §5.1 — flat tool-use only).
+    Defaults are conservative: read-only data access OFF, emit OFF,
+    web search OFF, citation emit OFF, and `run_skill` recursion OFF
+    (PRD §5.1 — flat tool-use only).
 
     Per-skill grants come from the SKILL_CONVERSION.md S4.3 matrix:
     only `visualization-builder` is granted `can_emit_chart`; only
@@ -38,10 +38,9 @@ class Capabilities(BaseModel):
     can_call_api: bool = False
     can_get_chart_data: bool = False
     can_emit_chart: bool = False
-    # Recursion is enforced upstream; the flag exists for audit and is
-    # always False in V1.
+    # Recursion is enforced upstream; the flag exists for audit and
+    # stays False everywhere today.
     can_run_skill: bool = False
-    # V2 capabilities — always False in V1.
     can_emit_citation: bool = False
     can_web_search: bool = False
 
@@ -98,11 +97,8 @@ class SkillContext(BaseModel):
     # least-privilege read-only role per ARCH A1.3 / A10.1.
     db_role: str = "ai_agent"
 
-    # ------------------------------------------------------------------
-    # V2 additions (additive; V1 callers ignore these).
-    # ------------------------------------------------------------------
     # Per-session web_search counter. Capped at 8 by `tools/web_search.py`
-    # (PRD §5.3 V2 rate guardrail). Default 0 keeps V1 contract unchanged.
+    # (PRD §5.3 rate guardrail).
     web_search_count: int = Field(default=0, ge=0)
 
     # Optional thread handle for chat sessions; None for batch insight runs.
@@ -115,7 +111,7 @@ class SkillContext(BaseModel):
     # `Callable[[BaseModel], Awaitable[None]]` here so tools (esp.
     # web_search and emit_citation) can publish progress events without
     # threading the queue through every signature. Pydantic stores it via
-    # arbitrary-type allowance below; it stays None for V1.
+    # arbitrary-type allowance below.
     emit_event: Any | None = None
 
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)

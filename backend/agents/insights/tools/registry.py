@@ -1,12 +1,11 @@
-"""Tool registry — OpenAI-shaped function specs for the V1+V2 tool surface.
+"""Tool registry — OpenAI-shaped function specs for the agent's tool surface.
 
 Each entry maps to an async dispatcher function. The list is consumed by
 the LlmClient.reason()/chat_stream() `tools=` parameter; the dispatcher map
-is consumed by the ToolLoopDriver to invoke the matching async function
-when the model emits a tool_call.
-
-V2 lights up `web_search` + `emit_citation` (ARCH A6.4 / A6.7). The
-`run_skill` tool's `skill_name` enum now lists 15 names (V1 + V2).
+is consumed by the agentic driver to invoke the matching async function
+when the model emits a tool_call. The surface includes `web_search` and
+`emit_citation` (ARCH A6.4 / A6.7), and `run_skill` enumerates the 15
+converted analytical skills (see `agents.insights.skills.ALL_SKILL_NAMES`).
 """
 from __future__ import annotations
 
@@ -136,17 +135,17 @@ TOOL_DEFS: list[dict[str, Any]] = [
                 "type": "object",
                 "properties": {},
                 "additionalProperties": True,
-                "description": "Inline ChartSpec v1 object (see chart_spec.schema.json).",
+                "description": "Inline ChartSpec object (see chart_spec.schema.json).",
             },
         },
     },
-    # ---------------- V2 tools ----------------
+    # ---------------- Web search + citations ----------------
     {
         "type": "function",
         "function": {
             "name": "web_search",
             "description": (
-                "V2: run a Brave Search query and return up to 5 results. "
+                "Run a Brave Search query and return up to 5 results. "
                 "Per-session cap: 8 calls (PRD §5.3). Snippets are pre-truncated "
                 "to 280 characters. If the API key is missing or the upstream "
                 "circuit is open, the tool returns degraded=true with a reason."
@@ -175,7 +174,7 @@ TOOL_DEFS: list[dict[str, Any]] = [
         "function": {
             "name": "emit_citation",
             "description": (
-                "V2: persist + emit a validated web citation for the current "
+                "Persist + emit a validated web citation for the current "
                 "insight. Validates snippet ≤280 chars, agree_or_disagree enum, "
                 "URL reachability (HEAD 2xx/3xx), and rationale-substring-of-snippet. "
                 "agree/disagree tags require a numeric GW/MW/%/$ token in the "
@@ -206,15 +205,18 @@ TOOL_DEFS: list[dict[str, Any]] = [
             },
         },
     },
-    # ---------------- v2 tools (phase A/B) ----------------
+    # ---------------- search + persistence ----------------
     {
         "type": "function",
         "function": {
             "name": "search_documents",
             "description": (
-                "BM25 search over EDGAR filings + permits corpora. Use BEFORE "
-                "query_database for qualitative or disclosure-oriented questions. "
-                "Returns up to k passages with source/url/snippet/score."
+                "BM25 search over EDGAR filings + permits + earnings-call "
+                "transcripts. Use BEFORE query_database for qualitative or "
+                "disclosure-oriented questions. Prefer source='earnings' for "
+                "forward-looking guidance and management commentary; prefer "
+                "source='edgar' for executed commitments. Returns up to k "
+                "passages with source/url/snippet/score."
             ),
             "parameters": {
                 "type": "object",
@@ -222,7 +224,7 @@ TOOL_DEFS: list[dict[str, Any]] = [
                     "query": {"type": "string"},
                     "source": {
                         "type": "string",
-                        "enum": ["edgar", "permits", "all"],
+                        "enum": ["edgar", "permits", "earnings", "all"],
                         "default": "all",
                     },
                     "k": {
@@ -322,9 +324,9 @@ TOOL_DEFS: list[dict[str, Any]] = [
         "function": {
             "name": "persist_insight",
             "description": (
-                "Persist a v2 insight with structured citations and an optional "
-                "chart_id. Round 3 insight-first flow: chart_id and citations "
-                "are both optional. The server auto-decorates if omitted."
+                "Persist an insight with structured citations and an optional "
+                "chart_id. Insight-first flow: chart_id and citations are both "
+                "optional. The server auto-decorates if omitted."
             ),
             "parameters": {
                 "type": "object",
@@ -384,8 +386,8 @@ async def dispatch(
     """Run the dispatcher for the named tool with the provided args.
 
     `db` (AsyncSession) is forwarded to tools that need a transaction —
-    primarily v2 tools (build_chart, persist_insight) that write rows.
-    Read-only tools (query_database, search_documents, etc.) ignore it.
+    write tools (build_chart, persist_insight). Read-only tools
+    (query_database, search_documents, etc.) ignore it.
     """
     fn = _DISPATCH.get(name)
     if fn is None:

@@ -56,6 +56,10 @@ export interface InsightCardProps {
   isV2Enabled?: boolean;
   /** Stable insight id (needed for V2 chat dock + subscribe). */
   insightId?: string;
+  /** Seeded from backend `is_saved` field. */
+  initialSaved?: boolean;
+  /** Bubbled from SubscribeButton when the toggle resolves. */
+  onSaveToggle?: (next: boolean) => void;
   style?: CSSProperties;
 }
 
@@ -79,6 +83,8 @@ export default function InsightCard({
   citations,
   isV2Enabled = false,
   insightId,
+  initialSaved,
+  onSaveToggle,
   style,
 }: InsightCardProps) {
   const headlineColor = streaming ? c.text.caption : c.text.primary;
@@ -246,7 +252,11 @@ export default function InsightCard({
               <MessageSquare size={14} aria-hidden="true" />
               {chatOpen ? "Close discussion" : "Discuss this insight"}
             </button>
-            <SubscribeButton insightId={insightId} />
+            <SubscribeButton
+              insightId={insightId}
+              initialSaved={initialSaved ?? false}
+              onToggle={onSaveToggle}
+            />
           </div>
           <div id={`insight-chat-${insightId}`}>
             <InsightChatDock

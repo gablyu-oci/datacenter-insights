@@ -40,7 +40,7 @@ def test_tool_defs_contains_search_documents():
     assert "query" in params["required"]
     # Source enum mirrors ALLOWED_SOURCES.
     src = params["properties"]["source"]
-    assert sorted(src["enum"]) == ["all", "edgar", "permits"]
+    assert sorted(src["enum"]) == ["all", "earnings", "edgar", "permits"]
     # k is bounded.
     k = params["properties"]["k"]
     assert k["minimum"] == 1

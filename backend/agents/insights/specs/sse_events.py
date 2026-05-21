@@ -4,7 +4,7 @@ Authoritative reference: ARCHITECTURE.md A5. Names below match A5 exactly:
   session_started, surveying, insight_started, token, reasoning_step,
   tool_call, tool_result, chart, citation, insight_complete,
   session_complete, error, ping
-(13 events, V1 + V2 inclusive — `citation` is V2-only on the wire.)
+(13 events total — `citation` is only emitted when a citation is bound.)
 
 Each event carries:
   - event_id: monotonic id used by the SSE `id:` line; clients echo it back
@@ -159,9 +159,9 @@ class ChartEvent(_SSEBase):
 
 
 class WebCitation(BaseModel):
-    """V2 web citation payload (ARCH A6.7). Defined here so the SSE event is
-    self-contained; canonical persistence shape lives in persistence/models.py
-    when V2 lights up.
+    """Web citation payload (ARCH A6.7). Defined here so the SSE event is
+    self-contained; canonical persistence shape lives in
+    `agents.insights.db.models::AgentCitation`.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -246,7 +246,7 @@ class PingEvent(_SSEBase):
 
 
 # ---------------------------------------------------------------------------
-# V2 events: web_search availability + chat-thread lifecycle
+# web_search availability + chat-thread lifecycle events
 # ---------------------------------------------------------------------------
 
 
@@ -347,7 +347,6 @@ SSEEvent = Annotated[
         SessionCompleteEvent,
         ErrorEvent,
         PingEvent,
-        # V2 additions
         WebSearchUnavailableEvent,
         AssistantMessageTokenEvent,
         ToolCallStartedEvent,

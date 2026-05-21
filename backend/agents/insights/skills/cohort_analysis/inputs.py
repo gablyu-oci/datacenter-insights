@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class CohortAnalysisInputs(BaseModel):
-    """Inputs for cohort_analysis skill (V2).
+    """Inputs for cohort_analysis skill.
 
     Per SKILL_CONVERSION.md S4.2 row 13: build a cohort x time matrix from a
     flat row set, computing simple retention-style fractions. The agent

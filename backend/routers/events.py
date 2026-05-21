@@ -70,11 +70,35 @@ async def list_events(
 
 
 def _event_to_dict(event: Event) -> dict:
-    """Convert Event model to dict."""
+    """Convert Event model to dict.
+
+    Aliases `event_description` → `description` so the frontend timeline
+    component (which reads `ev.description`) shows the per-event detail line,
+    e.g. "Construction 40% complete" on construction_progress rows.
+
+    Marks future-dated events as projected: Aterio emits forward-looking
+    milestones (e.g. an "Active" row with event_date = 2029-03-31 for a
+    site still under construction) using the same schema as historical
+    ones. Without disambiguation, "Site activated 2029-03-31" reads as if
+    it already happened. We prefix the description with "Projected: " and
+    set `is_projected = true` so the UI (and any consumer) can render
+    differently if it wants to.
+    """
     d = {}
     for col in Event.__table__.columns:
         val = getattr(event, col.name, None)
         if isinstance(val, (datetime, date)):
             val = val.isoformat()
         d[col.name] = val
+
+    description = d.get("event_description")
+    is_projected = False
+    if event.event_date is not None and event.event_date > date.today():
+        is_projected = True
+        if description:
+            description = f"Projected: {description}"
+        else:
+            description = "Projected"
+    d["description"] = description
+    d["is_projected"] = is_projected
     return d

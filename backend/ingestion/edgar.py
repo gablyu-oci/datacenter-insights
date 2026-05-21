@@ -25,6 +25,7 @@ from config import settings
 from agents.edgar_agent import (
     ENERGY_COMPANIES,
     HYPERSCALERS,
+    TRACKED_FILERS,
     CACHE_DIR,
     CACHE_TTL_HOURS,
     _html_to_text,
@@ -285,9 +286,12 @@ class EdgarAdapter:
         session.add(run_record)
         await session.flush()
 
-        all_companies = {}
-        all_companies.update({name: cik for name, cik in ENERGY_COMPANIES.items() if cik})
-        all_companies.update({name: cik for name, cik in HYPERSCALERS.items() if cik})
+        # Iterate the full TRACKED_FILERS union (energy companies +
+        # hyperscalers + POWER_FILERS additions like REITs, IPPs, utilities).
+        # Previously this only iterated ENERGY_COMPANIES + HYPERSCALERS,
+        # silently skipping every POWER_FILERS-only CIK (American Tower,
+        # NRG, Brookfield Renewable, Xcel, WEC, Duke, Southern, AEP, etc.).
+        all_companies = {name: cik for name, cik in TRACKED_FILERS.items() if cik}
 
         records_fetched = 0
         records_stored = 0
@@ -381,13 +385,12 @@ class EdgarAdapter:
                             records_skipped += 1
                         except Exception as exc:
                             logger.error(
-                                "edgar.filing_process_error",
-                                extra={
-                                    "company": company_name,
-                                    "accession": filing.get("accession_number"),
-                                    "error_class": type(exc).__name__,
-                                    "error": str(exc),
-                                },
+                                "edgar.filing_process_error company=%s accession=%s %s: %s",
+                                company_name,
+                                filing.get("accession_number"),
+                                type(exc).__name__,
+                                exc,
+                                exc_info=True,
                             )
                             records_skipped += 1
 

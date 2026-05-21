@@ -16,17 +16,20 @@ Plus:
 from __future__ import annotations
 
 import logging
+import os
+import re
 from datetime import date, datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import polars as pl
 from openpyxl import load_workbook
-from sqlalchemy import select, func, text
+from sqlalchemy import insert, select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from db.models import (
     Site,
+    SiteNotesHistory,
     Event,
     EnergyProject,
     SiteCompanyAssociation,
@@ -170,6 +173,45 @@ _DATE_TO_EVENT_TYPE = {
 
 # Reverse lookup: model field -> CSV column name (built once)
 _MODEL_TO_CSV: Dict[str, str] = {v: k for k, v in COLUMN_MAP.items()}
+
+# ---------------------------------------------------------------------------
+# Events CSV (data_center_events_*.csv) -- the real source of milestone dates.
+# Vendor delivers one row per (site, milestone) on the marketplace S3 prefix
+# `data-centers/events/`. We normalize the EVENT_TYPE string into a small
+# canonical vocab so the Facility Directory's stage column doesn't sprawl,
+# while preserving the % completion for construction-progress rows in
+# payload.pct_complete + the human-readable description.
+# ---------------------------------------------------------------------------
+
+_EVENTS_CSV_TYPE_MAP: Dict[str, str] = {
+    "Announced": "announcement",
+    "Construction Started": "construction_start",
+    "Construction Finished": "construction_finished",
+    "Active": "activation",
+    "Not Approved/Withdrawn": "withdrawn",
+    "Cancelled": "cancellation",
+    "Delayed": "delayed",
+    "Land Bank Purchase": "land_bank_purchase",
+}
+
+_EVENT_DESCRIPTIONS: Dict[str, str] = {
+    "announcement": "Project announced",
+    "construction_start": "Construction started",
+    "construction_finished": "Construction finished",
+    "activation": "Site activated",
+    "withdrawn": "Project withdrawn",
+    "cancellation": "Project cancelled",
+    "delayed": "Project delayed",
+    "land_bank_purchase": "Land bank purchase",
+}
+
+# "Under Construction (40% Complete)" -- multiple variants collapse to a
+# single canonical type with the percentage preserved in payload.
+_CONSTRUCTION_PCT_RE = re.compile(r"^Under Construction \((\d+)% Complete\)$")
+
+# Tag for events ingested from the marketplace events CSV (vs the legacy
+# date-column-synthesized path). Used for idempotent reload.
+_EVENTS_CSV_SOURCE_TAG = "aterio_events_csv"
 
 # ---------------------------------------------------------------------------
 # Role-edge mapping for site <-> company associations
@@ -355,10 +397,15 @@ class AterioAdapter:
         csv_path: str,
         events_xlsx_path: str,
         energy_xlsx_path: str,
+        events_csv_path: Optional[str] = None,
     ):
         self.csv_path = csv_path
         self.events_xlsx_path = events_xlsx_path
         self.energy_xlsx_path = energy_xlsx_path
+        # The marketplace events CSV (data_center_events_*.csv). When set,
+        # we load real events from it instead of synthesizing from inventory
+        # date columns -- the inventory CSV no longer carries those dates.
+        self.events_csv_path = events_csv_path
 
     # -----------------------------------------------------------------------
     # Public entry point
@@ -388,6 +435,7 @@ class AterioAdapter:
 
         stats: Dict[str, int] = {
             "sites_upserted": 0,
+            "notes_history_appended": 0,
             "events_upserted": 0,
             "energy_projects_upserted": 0,
             "role_edges_upserted": 0,
@@ -397,14 +445,34 @@ class AterioAdapter:
 
         try:
             # A. Sites
-            sites_count = await self._ingest_sites(session)
+            sites_count, notes_history_count, schema_diff = await self._ingest_sites(
+                session, run_id=run_id
+            )
             stats["sites_upserted"] = sites_count
-            logger.info("sites.ingested", extra={"count": sites_count})
+            stats["notes_history_appended"] = notes_history_count
+            logger.info(
+                "sites.ingested",
+                extra={"count": sites_count, "notes_history": notes_history_count},
+            )
+            # Persist schema-drift snapshot on the audit row so an engineer
+            # can spot dropped/new Aterio columns from ingestion_runs alone.
+            if schema_diff["missing_columns"] or schema_diff["unknown_columns"]:
+                run_record.config_snapshot = {"schema_diff": schema_diff}
 
-            # B. Events (synthesized from CSV date columns)
-            events_count = await self._synthesize_events(session)
+            # B. Events. Prefer the real marketplace events CSV when it's
+            # configured; the synthesized-from-inventory-date-columns path
+            # is the legacy fallback (Aterio dropped those columns from the
+            # inventory CSV in May 2026, so synthesis is now a no-op for
+            # most types anyway).
+            if self.events_csv_path:
+                events_count = await self._ingest_events_csv(session)
+                logger.info(
+                    "events.ingested_from_csv", extra={"count": events_count}
+                )
+            else:
+                events_count = await self._synthesize_events(session)
+                logger.info("events.synthesized", extra={"count": events_count})
             stats["events_upserted"] = events_count
-            logger.info("events.synthesized", extra={"count": events_count})
 
             # C. Energy Projects
             energy_count = await self._ingest_energy_projects(session)
@@ -454,8 +522,29 @@ class AterioAdapter:
     # A. Sites ingestion
     # -----------------------------------------------------------------------
 
-    async def _ingest_sites(self, session: AsyncSession) -> int:
-        """Read CSV with polars, map all 73 columns, upsert into sites table."""
+    async def _ingest_sites(
+        self, session: AsyncSession, *, run_id: Optional[int] = None
+    ) -> tuple[int, int, Dict[str, List[str]]]:
+        """Read CSV with polars, map all 73 columns, upsert into sites table.
+
+        Before each batch's upsert, diff the incoming NOTES column against the
+        existing `sites.notes` for the same `aterio_dc_uid`s and append one
+        `site_notes_history` row per changed value. Notes that are unchanged,
+        empty, or whitespace-only do not generate history rows. The site row
+        is still upserted normally so `sites.notes` always reflects the
+        latest CSV.
+
+        Schema-drift handling:
+          - Mapped columns absent from this CSV are skipped (existing DB
+            values are preserved on update, rather than overwritten with
+            NULL).
+          - Unknown columns (in the CSV but neither mapped nor explicitly
+            skipped) are logged and reported back so the engineer can add a
+            COLUMN_MAP entry + migration.
+
+        Returns (sites_upserted, notes_history_appended, schema_diff)
+        where schema_diff = {"missing_columns": [...], "unknown_columns": [...]}.
+        """
         df = pl.read_csv(
             self.csv_path,
             null_values=["", "N/A", "n/a", "NA", "None", "null"],
@@ -463,7 +552,25 @@ class AterioAdapter:
         )
         logger.info("csv.loaded", extra={"rows": len(df), "cols": len(df.columns)})
 
+        # Detect schema drift against our expected COLUMN_MAP / skip-list.
+        present_csv_cols: Set[str] = set(df.columns)
+        mapped_csv_cols: Set[str] = set(COLUMN_MAP.keys())
+        known_csv_cols: Set[str] = mapped_csv_cols | _SKIP_CSV_COLS
+        missing_csv_cols = sorted(mapped_csv_cols - present_csv_cols)
+        unknown_csv_cols = sorted(present_csv_cols - known_csv_cols)
+        if missing_csv_cols:
+            logger.warning(
+                "aterio_csv.missing_columns",
+                extra={"columns": missing_csv_cols},
+            )
+        if unknown_csv_cols:
+            logger.warning(
+                "aterio_csv.unknown_columns",
+                extra={"columns": unknown_csv_cols},
+            )
+
         upserted = 0
+        history_appended = 0
         rows = df.to_dicts()
 
         for batch_start in range(0, len(rows), BATCH_SIZE):
@@ -472,7 +579,7 @@ class AterioAdapter:
 
             for row in batch:
                 try:
-                    record = self._map_site_row(row)
+                    record = self._map_site_row(row, present_csv_cols)
                 except Exception:
                     logger.warning(
                         "site_row.map_failed",
@@ -487,8 +594,16 @@ class AterioAdapter:
             if not records:
                 continue
 
+            # ----- NOTES diff-and-append (must run BEFORE the upsert) -----
+            history_appended += await self._append_notes_history(
+                session, records, run_id=run_id
+            )
+
             stmt = pg_insert(Site).values(records)
-            # On conflict: update every column except the unique key itself
+            # On conflict: update every column present in the record, except
+            # the unique key. Fields whose CSV column wasn't in this file are
+            # absent from the record dict (see _map_site_row), so they fall
+            # out of update_cols and existing DB values survive.
             update_cols = {
                 col: stmt.excluded[col]
                 for col in records[0].keys()
@@ -502,13 +617,90 @@ class AterioAdapter:
             upserted += len(records)
 
         await session.flush()
-        return upserted
+        schema_diff = {
+            "missing_columns": missing_csv_cols,
+            "unknown_columns": unknown_csv_cols,
+        }
+        return upserted, history_appended, schema_diff
 
-    def _map_site_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
-        """Transform a single CSV row dict into a Site-compatible dict."""
+    async def _append_notes_history(
+        self,
+        session: AsyncSession,
+        records: List[Dict[str, Any]],
+        *,
+        run_id: Optional[int],
+    ) -> int:
+        """Append one site_notes_history row per dc_uid whose NOTES changed.
+
+        We compare incoming `record["notes"]` against the currently-stored
+        `sites.notes` for the same uid. A change counts when the incoming
+        value is non-empty after strip() AND differs from the stored value
+        (None counts as a change to non-None). Pure-whitespace and "" land
+        as None during mapping, so they don't fire spurious history rows.
+        """
+        # Only consider records that carry a non-empty incoming note.
+        incoming: Dict[str, str] = {}
+        for r in records:
+            uid = r.get("aterio_dc_uid")
+            note = r.get("notes")
+            if uid and isinstance(note, str) and note.strip():
+                incoming[uid] = note
+
+        if not incoming:
+            return 0
+
+        # Bulk-fetch the currently-stored notes for these uids.
+        existing_q = await session.execute(
+            select(Site.aterio_dc_uid, Site.notes).where(
+                Site.aterio_dc_uid.in_(list(incoming.keys()))
+            )
+        )
+        existing: Dict[str, Optional[str]] = {
+            uid: notes for uid, notes in existing_q.all()
+        }
+
+        history_rows: List[Dict[str, Any]] = []
+        observed = datetime.utcnow()
+        for uid, new_note in incoming.items():
+            prev = existing.get(uid)
+            if prev == new_note:
+                continue  # unchanged, skip
+            history_rows.append(
+                {
+                    "aterio_dc_uid": uid,
+                    "notes_text": new_note,
+                    "observed_at": observed,
+                    "ingestion_run_id": run_id,
+                }
+            )
+
+        if not history_rows:
+            return 0
+
+        await session.execute(insert(SiteNotesHistory), history_rows)
+        return len(history_rows)
+
+    def _map_site_row(
+        self,
+        row: Dict[str, Any],
+        present_csv_cols: Optional[Set[str]] = None,
+    ) -> Dict[str, Any]:
+        """Transform a single CSV row dict into a Site-compatible dict.
+
+        If `present_csv_cols` is provided, any mapped CSV column that is NOT
+        in that set is skipped entirely — its model field will be absent from
+        the returned record. The upsert builds its on-conflict update set
+        from the record's keys, so omitted fields are preserved in the DB
+        (rather than overwritten with NULL when the source drops a column).
+        """
         record: Dict[str, Any] = {}
 
         for csv_col, model_field in COLUMN_MAP.items():
+            # Source no longer provides this column -- skip entirely so the
+            # upsert won't overwrite the existing DB value with NULL.
+            if present_csv_cols is not None and csv_col not in present_csv_cols:
+                continue
+
             raw_val = row.get(csv_col)
 
             # Boolean (Y/N) columns
@@ -562,8 +754,11 @@ class AterioAdapter:
         The Data Dictionary xlsx describes the event schema but does not
         contain actual event data rows.  We synthesize events from the
         site date columns (announced_date, construction_start_date, etc.).
-        Deduplication: delete existing synthesized events for each batch's
-        dc_uids, then re-insert.
+        Deduplication: for each batch, delete existing synthesized events
+        for *only the event types whose source column is present in today's
+        CSV*, then re-insert. Event types whose source column has been
+        dropped by Aterio (e.g. DATA_CENTER_ANNOUNCED_DATE going away) are
+        left untouched so historical rows survive.
         """
         df = pl.read_csv(
             self.csv_path,
@@ -571,22 +766,44 @@ class AterioAdapter:
             infer_schema_length=0,
         )
 
+        present_csv_cols: Set[str] = set(df.columns)
+        # Event types whose source date column actually exists in this CSV.
+        # If the column is missing, we neither delete nor re-create that type.
+        refreshable_event_types: Set[str] = {
+            evt_type
+            for date_model_field, evt_type in _DATE_TO_EVENT_TYPE.items()
+            if (csv_col := _MODEL_TO_CSV.get(date_model_field)) is not None
+            and csv_col in present_csv_cols
+        }
+        if not refreshable_event_types:
+            logger.warning(
+                "aterio_events.no_date_columns_in_csv",
+                extra={"note": "skipping event synthesis to preserve history"},
+            )
+            return 0
+
         upserted = 0
         rows = df.to_dicts()
 
         for batch_start in range(0, len(rows), BATCH_SIZE):
             batch = rows[batch_start : batch_start + BATCH_SIZE]
             event_records: List[Dict[str, Any]] = []
+            # Track which dc_uids in this batch actually appear in the CSV
+            # (whether or not they generate a date event). Their refreshable
+            # event types need to be cleared so deletions still happen for
+            # rows where the CSV value is now blank.
+            dc_uids_in_batch: Set[str] = set()
 
             for row in batch:
                 dc_uid = row.get("ATERIO_DATA_CENTER_UID")
                 if not dc_uid or not str(dc_uid).strip():
                     continue
                 dc_uid = str(dc_uid).strip()
+                dc_uids_in_batch.add(dc_uid)
 
                 for date_model_field, evt_type in _DATE_TO_EVENT_TYPE.items():
                     csv_col = _MODEL_TO_CSV.get(date_model_field)
-                    if csv_col is None:
+                    if csv_col is None or csv_col not in present_csv_cols:
                         continue
 
                     raw_date = row.get(csv_col)
@@ -618,23 +835,139 @@ class AterioAdapter:
                         "updated_at": datetime.utcnow(),
                     })
 
-            if not event_records:
+            if not dc_uids_in_batch:
                 continue
 
-            # Delete existing synthesized events for dc_uids in this batch,
-            # then re-insert. This makes the operation idempotent.
-            dc_uids_in_batch = list({r["aterio_dc_uid"] for r in event_records})
+            # Delete only refreshable event types for these dc_uids — leave
+            # event types whose source column has been dropped intact.
             await session.execute(
                 text(
                     "DELETE FROM events WHERE aterio_dc_uid = ANY(:uids) "
+                    "AND event_type = ANY(:types) "
                     "AND payload->>'source' = 'aterio_csv_synthesized'"
                 ),
-                {"uids": dc_uids_in_batch},
+                {
+                    "uids": list(dc_uids_in_batch),
+                    "types": list(refreshable_event_types),
+                },
             )
 
-            stmt = pg_insert(Event).values(event_records)
+            if event_records:
+                stmt = pg_insert(Event).values(event_records)
+                await session.execute(stmt)
+                upserted += len(event_records)
+
+        await session.flush()
+        return upserted
+
+    async def _ingest_events_csv(self, session: AsyncSession) -> int:
+        """Load events from the marketplace data_center_events_*.csv.
+
+        Vendor delivers one row per (site, milestone). The EVENT_TYPE strings
+        are normalized into a small canonical vocab (see _EVENTS_CSV_TYPE_MAP)
+        so the Facility Directory's stage column stays tidy. The 11 "Under
+        Construction (X% Complete)" variants collapse to a single
+        ``construction_progress`` type; the percentage survives in
+        ``payload.pct_complete`` plus a human-readable description like
+        "Construction 40% complete".
+
+        Idempotent: delete all rows previously tagged
+        ``payload.source = 'aterio_events_csv'`` before insert. Events from
+        the legacy synthesis path (different source tag) are left alone.
+        """
+        if not self.events_csv_path:
+            logger.info("aterio_events_csv.skipped reason=no_path")
+            return 0
+        if not os.path.exists(self.events_csv_path):
+            logger.warning(
+                "aterio_events_csv.not_found",
+                extra={"path": self.events_csv_path},
+            )
+            return 0
+
+        df = pl.read_csv(
+            self.events_csv_path,
+            null_values=["", "N/A", "n/a", "NA", "None", "null"],
+            infer_schema_length=0,
+        )
+        logger.info(
+            "aterio_events_csv.loaded",
+            extra={"rows": len(df), "cols": len(df.columns)},
+        )
+
+        unknown_types: Set[str] = set()
+        event_records: List[Dict[str, Any]] = []
+        now = datetime.utcnow()
+
+        for row in df.to_dicts():
+            dc_uid = (row.get("ATERIO_DATA_CENTER_UID") or "").strip()
+            raw_type = (row.get("EVENT_TYPE") or "").strip()
+            raw_date = row.get("EVENT_DATE")
+            if not dc_uid or not raw_type or not raw_date:
+                continue
+
+            pct: Optional[int] = None
+            if raw_type in _EVENTS_CSV_TYPE_MAP:
+                canonical = _EVENTS_CSV_TYPE_MAP[raw_type]
+                description = _EVENT_DESCRIPTIONS.get(canonical, raw_type)
+            else:
+                m = _CONSTRUCTION_PCT_RE.match(raw_type)
+                if m:
+                    pct = int(m.group(1))
+                    canonical = "construction_progress"
+                    description = f"Construction {pct}% complete"
+                else:
+                    unknown_types.add(raw_type)
+                    continue
+
+            event_date = _parse_date(raw_date)
+            if event_date is None:
+                continue
+
+            payload: Dict[str, Any] = {
+                "source": _EVENTS_CSV_SOURCE_TAG,
+                "vendor_event_type": raw_type,
+                "provider_name": row.get("PROVIDER_NAME"),
+            }
+            if pct is not None:
+                payload["pct_complete"] = pct
+
+            event_records.append({
+                "aterio_dc_uid": dc_uid,
+                "event_type": canonical,
+                "event_date": event_date,
+                "event_description": description,
+                "source_url": None,
+                "payload": payload,
+                "created_at": now,
+                "updated_at": now,
+            })
+
+        if unknown_types:
+            logger.warning(
+                "aterio_events_csv.unknown_types",
+                extra={"types": sorted(unknown_types)},
+            )
+
+        if not event_records:
+            return 0
+
+        # Wipe prior rows from this source so the reload is idempotent.
+        # Events synthesized by the legacy path (different source tag) and
+        # any future hand-curated rows are untouched.
+        await session.execute(
+            text(
+                "DELETE FROM events WHERE payload->>'source' = :tag"
+            ),
+            {"tag": _EVENTS_CSV_SOURCE_TAG},
+        )
+
+        upserted = 0
+        for batch_start in range(0, len(event_records), BATCH_SIZE):
+            batch = event_records[batch_start : batch_start + BATCH_SIZE]
+            stmt = pg_insert(Event).values(batch)
             await session.execute(stmt)
-            upserted += len(event_records)
+            upserted += len(batch)
 
         await session.flush()
         return upserted

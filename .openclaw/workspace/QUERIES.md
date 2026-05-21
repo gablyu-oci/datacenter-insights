@@ -141,7 +141,7 @@ LIMIT 20;
 - With end-user count: add `array_length(string_to_array(end_user_companies, ','), 1) AS n_tenants`.
 **Common pitfalls:**
 - `stage` is free-text — values include "Active under construction", "Operational", etc. Use `ILIKE '%active%'`, not `=`.
-- `pct_construction` is 0–100 (percent), not 0–1.
+- `pct_construction` is a **0–1.0 fraction**, not 0–100. DB max across all rows is 1.0. For display multiply by 100; for filters use `>= 0.70` not `>= 70`. It's derived from Aterio satellite imagery, not operator-declared.
 - `building_name` is sometimes NULL — fall back to `campus_name` then `aterio_dc_uid` for display.
 
 ---
@@ -189,7 +189,9 @@ LIMIT 20;
 **Tunable bits:** swap `provider_name`, swap `ticker`, change form_type to `'10-K'` / `'10-Q'`, change window.
 **Returns:** date-ordered event/filing rows with citation URL.
 **Variants:**
-- Activations only: `WHERE e.event_type = 'activation'`.
+- Activations only: `WHERE e.event_type = 'activation' AND e.event_date <= CURRENT_DATE` (the clamp matters — projected/planned activations have future dates and pollute "recent activation" cuts).
+- Construction-progress milestones with %: `WHERE e.event_type = 'construction_progress'`, then `(e.payload->>'pct_complete')::int` gives the percentage (5/10/20/.../95). Useful for "median time from 30% → 70%", "sites stalled above N% for >M months", "% complete distribution by operator".
+- Other event types now available: `withdrawn`, `delayed`, `land_bank_purchase`, `construction_finished`. Avoid `permit_filed` and `expansion` — they don't exist in current data.
 - All events for a state: drop the `provider_name` filter, add `WHERE s.state_code = 'VA'`.
 - Power-related EDGAR only (any form): `WHERE e.is_power_related = true`.
 **Common pitfalls:**
@@ -269,11 +271,17 @@ permits AS (
     AND (g.issued_date IS NULL OR g.issued_date >= CURRENT_DATE - INTERVAL '12 months')
 ),
 sites AS (
-  SELECT 'site'::text            AS source,
-         s.activation_date       AS event_date,
-         s.power_capacity_mw     AS mw,
-         s.stage                 AS detail,
-         s.datasheet_url         AS source_url,
+  -- Pull activation date from the events table -- sites.activation_date is
+  -- now NULL in raw SQL (Aterio dropped the inventory date columns).
+  SELECT 'site'::text                                    AS source,
+         (SELECT MIN(ev.event_date)::text
+            FROM events ev
+            WHERE ev.aterio_dc_uid = s.aterio_dc_uid
+              AND ev.event_type = 'activation'
+              AND ev.event_date <= CURRENT_DATE)        AS event_date,
+         s.power_capacity_mw                             AS mw,
+         s.stage                                         AS detail,
+         s.datasheet_url                                 AS source_url,
          (s.building_name || ' (' || COALESCE(s.state_code,'?') || ')') AS context
   FROM sites s, target t
   WHERE s.provider_name ILIKE '%' || t.canonical_name || '%'
@@ -290,7 +298,7 @@ LIMIT 50;
 - Just SEC + permit (skip the site-side endpoint): drop the `sites` CTE.
 - MW-bucket dedup: wrap with another CTE that buckets `mw` to 100-MW intervals and counts distinct sources per bucket — buckets with `>= 2` sources are corroborated.
 **Common pitfalls:**
-- `sites.activation_date` is `varchar` (not date) — comparisons against dates will silently mismatch. The query above doesn't filter on it; if you need recency, prefer `s.record_updated_at`.
+- `sites.activation_date` (and the other milestone-date columns on `sites`) are **NULL in raw SQL** — Aterio dropped them from the inventory CSV (May 2026). All historical milestone dates live in the `events` table. The query above already pulls activation from `events`; if you need a different milestone, swap `event_type = 'activation'` for `'announcement' / 'construction_start' / 'cancellation' / 'withdrawn'`. Clamp `event_date <= CURRENT_DATE` for historical analyses (future event rows are projections).
 - `provider_name ILIKE '%amazon%'` will catch "Amazon AWS" AND "Amazon Web Services" AND occasionally false positives — review the matches. Tighter: `provider_name IN ('Amazon AWS', 'Amazon')`.
 - The `companies` table has multiple rows per ticker (canonical-name aliases). `ORDER BY id LIMIT 1` picks the lowest-id canonical row, which is usually the short form ("Amazon" vs "Amazon.com Inc.").
 

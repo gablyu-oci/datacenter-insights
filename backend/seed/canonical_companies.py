@@ -95,19 +95,27 @@ async def seed_companies(db: AsyncSession) -> None:
         parent_short_name: Optional[str] = row.get("parent_short_name")
         db_row = {k: v for k, v in row.items() if k != "parent_short_name"}
 
-        # Try to find existing by ticker (if set) or canonical_name
+        # Try to find existing by ticker (if set) or canonical_name.
+        # Use `.scalars().first()` rather than `scalar_one_or_none()` so a
+        # pre-existing duplicate (e.g. AMZN appearing twice from an earlier
+        # ingest path) does NOT crash the seeder. We update the first match
+        # by id ASC, which keeps the older/canonical row as the survivor.
         existing = None
         if db_row.get("ticker"):
             result = await db.execute(
-                select(Company).where(Company.ticker == db_row["ticker"])
+                select(Company)
+                .where(Company.ticker == db_row["ticker"])
+                .order_by(Company.id)
             )
-            existing = result.scalar_one_or_none()
+            existing = result.scalars().first()
 
         if existing is None:
             result = await db.execute(
-                select(Company).where(Company.canonical_name == db_row["canonical_name"])
+                select(Company)
+                .where(Company.canonical_name == db_row["canonical_name"])
+                .order_by(Company.id)
             )
-            existing = result.scalar_one_or_none()
+            existing = result.scalars().first()
 
         if existing:
             # Update existing

@@ -144,8 +144,15 @@ def stub_dispatch(monkeypatch: pytest.MonkeyPatch):
     calls: list[dict[str, Any]] = []
     behavior: dict[str, Any] = {"return_value": None, "raise": None}
 
-    async def _fake_dispatch(name: str, args: dict[str, Any], ctx: Any) -> Any:
-        calls.append({"name": name, "args": dict(args), "ctx": ctx})
+    async def _fake_dispatch(
+        name: str, args: dict[str, Any], ctx: Any, **kwargs: Any
+    ) -> Any:
+        # `**kwargs` absorbs the `db=` kwarg that the v2 dispatch added
+        # for tools needing a DB handle. The stub records the call shape
+        # but doesn't act on the connection.
+        calls.append(
+            {"name": name, "args": dict(args), "ctx": ctx, "kwargs": kwargs}
+        )
         if behavior["raise"] is not None:
             raise behavior["raise"]
         return behavior["return_value"]

@@ -1,4 +1,4 @@
-"""Converted skills (V1 + V2).
+"""Converted skills.
 
 Each skill is a subpackage with:
     - inputs.py            Pydantic Inputs model
@@ -9,12 +9,10 @@ Each skill is a subpackage with:
 The dispatcher (`tools/run_skill.py`) imports each subpackage by name and
 calls its top-level `run(...)` re-export.
 
-`SKILL_REGISTRY` below is the package-level enumeration of all converted
-skills (V1 + V2). The authoritative dispatch list is
-`tools/run_skill.py::ALL_SKILLS` (with `V1_SKILLS` retained as a
-backward-compatible alias for the original 12 names); this module mirrors
-it so other modules (orchestrator, tests) can import the registry from here
-without depending on the tools layer.
+`SKILL_REGISTRY` is the package-level enumeration of every converted
+skill. The authoritative dispatch list is `tools/run_skill.py::ALL_SKILLS`;
+this module mirrors it so other modules (orchestrator, tests) can import
+the registry from here without depending on the tools layer.
 """
 from __future__ import annotations
 
@@ -24,7 +22,7 @@ from typing import Callable
 # load every skill package at startup (and pull pandas/etc.). The dispatcher
 # already imports lazily by name, so we just expose the canonical name list.
 
-V1_SKILL_NAMES: tuple[str, ...] = (
+ALL_SKILL_NAMES: tuple[str, ...] = (
     "programmatic_eda",
     "data_quality_audit",
     "root_cause_investigation",
@@ -37,15 +35,10 @@ V1_SKILL_NAMES: tuple[str, ...] = (
     "data_narrative_builder",
     "impact_quantification",
     "technical_to_business_translator",
-)
-
-V2_SKILL_NAMES: tuple[str, ...] = (
     "cohort_analysis",
     "methodology_explainer",
     "peer_review_template",
 )
-
-ALL_SKILL_NAMES: tuple[str, ...] = V1_SKILL_NAMES + V2_SKILL_NAMES
 
 
 def _load_run(skill_name: str) -> Callable[..., object]:
@@ -65,7 +58,5 @@ SKILL_REGISTRY: dict[str, Callable[[], Callable[..., object]]] = {
 
 __all__ = [
     "SKILL_REGISTRY",
-    "V1_SKILL_NAMES",
-    "V2_SKILL_NAMES",
     "ALL_SKILL_NAMES",
 ]

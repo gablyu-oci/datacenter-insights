@@ -1,4 +1,4 @@
-"""web_search (V2) -- Brave Search API wrapper + agree/disagree judge.
+"""web_search -- Brave Search API wrapper + agree/disagree judge.
 
 Provider: Brave Search (primary; per kickoff override of RESEARCH §1.3).
 Endpoint: https://api.search.brave.com/res/v1/web/search

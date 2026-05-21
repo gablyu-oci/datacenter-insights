@@ -389,7 +389,7 @@ def _emit_message_complete(
 
 
 # Convenience alias for any of the events the synthesis translator can produce.
-# Includes the V1 InsightStarted/InsightComplete/SessionComplete event classes
+# Includes the InsightStarted/InsightComplete/SessionComplete event classes
 # already on the SSEEvent union plus the chat-lane primitives we re-use for
 # tool-call lifecycle and assistant text.
 SynthesisTranslatedEvent = (

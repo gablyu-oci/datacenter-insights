@@ -322,7 +322,7 @@ _AGENTS: list[dict] = [
     },
     {
         "name": "AI Insights Orchestrator",
-        "description": "Multi-skill session driver: bootstraps a FactPack via call_api, then runs hypothesizer + 13 analytical skills (cohort, time-series, segmentation, root-cause, etc.) and persists each insight + chart.",
+        "description": "v2 agentic session driver: bootstraps via call_api, then delegates to run_agentic_synthesis. The agent grounds claims with search_documents + query_database and persists each insight + chart through MCP write-tools.",
         "used_by": "AI Insights tab",
         "model": "oci/openai.gpt-5.4 (reasoning) + oci/openai.gpt-5.4-mini (extraction)",
     },
