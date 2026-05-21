@@ -384,6 +384,12 @@ class InsightSubscription(SQLModel, table=True):
     )
     created_at: datetime = Field(default_factory=datetime.utcnow)
     enabled: bool = False
+    # Per-user owner column (migration 021). Always set by the application
+    # layer from `current_user_email` (lowercased oauth2-proxy
+    # X-Forwarded-Email). The DB-level NOT NULL constraint is added on
+    # Postgres only; SQLite tests rely on this non-Optional annotation
+    # for application-level enforcement.
+    user_email: str = Field(max_length=254, index=True)
 
 
 # ---------------------------------------------------------------------------

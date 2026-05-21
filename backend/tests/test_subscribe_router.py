@@ -205,8 +205,15 @@ async def _seed_subscription(
     insight_id: uuid.UUID,
     enabled: bool,
     created_at: datetime | None = None,
+    user_email: str = "dev@local",
 ) -> uuid.UUID:
-    """Insert an InsightSubscription row and return its id."""
+    """Insert an InsightSubscription row and return its id.
+
+    `user_email` defaults to "dev@local" so existing tests that don't
+    set an `X-Forwarded-Email` header (and therefore resolve to the dev
+    fallback in `current_user_email`) still see their seeded rows in
+    /saved and /latest after migration 021's per-user scoping landed.
+    """
     sub_id = uuid.uuid4()
     async with factory() as s:
         s.add(
@@ -215,6 +222,7 @@ async def _seed_subscription(
                 insight_id=insight_id,
                 enabled=enabled,
                 created_at=created_at or _utcnow_naive(),
+                user_email=user_email,
             )
         )
         await s.commit()
