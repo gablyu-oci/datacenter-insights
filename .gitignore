@@ -110,3 +110,8 @@ backend/data/cache/submissions_*.json
 backend/data/cache/filing_*.json
 backend/data/cache/earnings_av_*.json
 backend/data/cache/real_quarterly_*.json
+
+# Aterio daily snapshots: archived to OCI Object Storage (bucket: aterio-archive,
+# tenancy namespace iduyx1qnmway). Adapter mirrors to bucket; local files are
+# kept on disk as parser input but not in git.
+backend/data/aterio_archive/
