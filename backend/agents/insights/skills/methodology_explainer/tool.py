@@ -1,4 +1,4 @@
-"""methodology_explainer (V2) -- prompt-only skill.
+"""methodology_explainer -- prompt-only skill.
 
 Drives a low-effort gpt-5.4-mini call (via `_shared.llm_reason_short` against
 `MODELS["extraction"]`) to produce a Markdown walkthrough of how an insight

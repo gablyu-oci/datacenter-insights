@@ -9,6 +9,7 @@ Usage (from the backend/ directory):
 import asyncio
 import logging
 import sys
+from datetime import datetime
 
 import click
 
@@ -110,6 +111,24 @@ async def _run_ingest(source: str, days_back: int, limit: int = 500, llm_cap: in
             import os
             from ingestion.aterio import AterioAdapter
             base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            # Events CSV is optional -- if present, it's the SoT for milestone
+            # dates. Falls back to the legacy date-column-synthesis path when
+            # absent. Prefer today's archived copy over the static datasets/
+            # one because the marketplace exports change frequently.
+            events_csv_candidates = [
+                os.path.join(
+                    base,
+                    "data",
+                    "aterio_archive",
+                    datetime.utcnow().strftime("%Y-%m-%d"),
+                    "events",
+                    f"data_center_events_{datetime.utcnow().strftime('%Y%m%d')}.csv",
+                ),
+                os.path.join(base, "datasets", "data_center_events_20260428.csv"),
+            ]
+            events_csv_path = next(
+                (p for p in events_csv_candidates if os.path.exists(p)), None
+            )
             adapter = AterioAdapter(
                 csv_path=os.path.join(base, "datasets", "data_center_inventory_20260428.csv"),
                 events_xlsx_path=os.path.join(
@@ -118,6 +137,7 @@ async def _run_ingest(source: str, days_back: int, limit: int = 500, llm_cap: in
                 energy_xlsx_path=os.path.join(
                     base, "datasets", "Energy Project Inventory Data Sample.xlsx"
                 ),
+                events_csv_path=events_csv_path,
             )
             result = await adapter.run(session)
             await session.commit()

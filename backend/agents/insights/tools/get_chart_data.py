@@ -1,8 +1,8 @@
 """get_chart_data — registry of (tab, chart_id) -> internal endpoint mappings.
 
-ARCH A6.3 enumerates the V1 registry. We implement at least 3 stubs that
-delegate to `call_api`. Unknown (tab, chart_id) combinations return a
-`tool_error` shape so the agent can recover.
+ARCH A6.3 enumerates the registry. Each entry delegates to `call_api`.
+Unknown (tab, chart_id) combinations return a `tool_error` shape so the
+agent can recover.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from .call_api import call_api
 logger = logging.getLogger(__name__)
 
 
-# Each value is a (endpoint, params) tuple. Static for V1.
+# Each value is a (endpoint, params) tuple.
 _REGISTRY: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {
     # Power tab — gigawatts by hyperscaler
     ("power", "gw_by_company"): ("/api/power/gw-summary", {}),

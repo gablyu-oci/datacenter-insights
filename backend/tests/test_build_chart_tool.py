@@ -338,7 +338,7 @@ async def test_happy_path_emits_chart_id_and_persists(monkeypatch):
     persisted = db.added[0]
     assert persisted.id == out["chart_id"]
     assert str(persisted.session_id) == ctx.session_id
-    assert persisted.insight_id is None  # filled by persist_insight_v2 later
+    assert persisted.insight_id is None  # filled by persist_insight later
 
 
 @pytest.mark.asyncio

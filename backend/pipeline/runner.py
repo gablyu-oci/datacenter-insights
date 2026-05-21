@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 import re
 from datetime import datetime
 
@@ -61,6 +62,17 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=6, minute=15),               # 15 6 * * *
         "phase": 2,
     },
+    # Earnings call transcripts — Alpha Vantage. Earnings-calendar-gated;
+    # the adapter pulls only for tickers reporting in the past 14 days
+    # (or planned in the next 14 days). Runs after EDGAR (06:00) and
+    # quarterly filings (06:15), well before insights_daily (09:00) so
+    # transcripts are in the search corpus for the morning synthesis run.
+    "earnings_transcripts_daily": {
+        "adapter": "earnings_transcripts",
+        "trigger": CronTrigger(hour=6, minute=45),               # 45 6 * * *
+        "phase": 2,
+        "enabled": True,
+    },
     "anomaly_detection_nightly": {
         "adapter": "_anomaly_detection",
         "trigger": CronTrigger(hour=2, minute=30),              # 30 2 * * *
@@ -85,6 +97,15 @@ JOB_CONFIG: dict[str, dict] = {
         "trigger": CronTrigger(hour=8, minute=0),                # 0 8 * * *
         "phase": 1,
     },
+    # PJM interconnection-queue daily refresh. PJM publishes the
+    # PlanningQueues XML several times a day; an idempotent upsert means
+    # daily fire is safe even if the queue hasn't changed. Sits at 05:30
+    # UTC so it lands before the rest of the permit-pillar block.
+    "pjm_iso_daily": {
+        "adapter": "pjm_iso",
+        "trigger": CronTrigger(hour=5, minute=30),               # 30 5 * * *
+        "phase": 1,
+    },
     # aterio_manual is API-trigger only -- not scheduled
     "coverage_refresh": {
         "adapter": "_coverage_refresh",
@@ -107,15 +128,29 @@ JOB_CONFIG: dict[str, dict] = {
         "phase": 1,
         "enabled": True,
     },
-    # Phase 3 (AI Insights automation): fires once per UTC day at 09:00,
-    # one hour after the morning EPA ECHO ingest at 08:00. The headless
-    # job drains InsightOrchestrator and writes IngestionRun audit. App-
-    # level idempotency guard inside _invoke_insights_daily makes a
-    # repeat fire on the same UTC day a no-op (D5).
+    # Phase 3 (AI Insights automation): fires once per UTC week on
+    # Monday at 09:00, after the weekend's SEC/permit/transcript
+    # ingests have landed. The headless job drains InsightOrchestrator
+    # and writes IngestionRun audit. App-level idempotency guard inside
+    # _invoke_insights_daily makes a repeat fire on the same UTC day a
+    # no-op (D5); a weekly cadence avoids stakeholder fatigue from
+    # near-duplicate insights generated day-over-day on a slow-moving
+    # corpus.
     "insights_daily": {
         "adapter": "_insights_daily",
-        "trigger": CronTrigger(hour=9, minute=0),                      # 0 9 * * *
+        "trigger": CronTrigger(day_of_week="mon", hour=9, minute=0),   # 0 9 * * 1
         "phase": 2,
+        "enabled": True,
+    },
+    # Aterio daily refresh. Fires at 11:30 America/Los_Angeles (handles
+    # PST/PDT automatically). The job lists the S3 access point, compares
+    # ETags against an on-disk sidecar, downloads the new inventory CSV
+    # if it changed, and runs AterioAdapter against it. ETag-skip makes a
+    # same-day re-run a no-op.
+    "aterio_daily": {
+        "adapter": "_aterio_daily",
+        "trigger": CronTrigger(hour=11, minute=30, timezone="America/Los_Angeles"),
+        "phase": 1,
         "enabled": True,
     },
 }
@@ -133,6 +168,16 @@ async def run_edgar_job() -> None:
 async def run_edgar_quarterly_job() -> None:
     """Scheduled job: fetch recent 10-K + 10-Q filings (chunked, multi-form)."""
     await _run_adapter_job("edgar_quarterly", _invoke_edgar_quarterly)
+
+
+async def run_earnings_transcripts_job() -> None:
+    """Scheduled job: fetch Alpha Vantage earnings call transcripts.
+
+    Earnings-calendar-gated inside the adapter (not the cron) — the
+    daily fire pulls only for tickers reporting in the past or next 14
+    days. Daily-budget cap (24/day) enforced inside the adapter as well.
+    """
+    await _run_adapter_job("earnings_transcripts", _invoke_earnings_transcripts)
 
 
 async def run_anomaly_detection_job() -> None:
@@ -159,6 +204,11 @@ async def run_county_permits_weekly_job() -> None:
 async def run_epa_echo_job() -> None:
     """Scheduled job: fetch EPA ECHO air-permit data."""
     await _run_adapter_job("epa_echo", _invoke_epa_echo)
+
+
+async def run_pjm_iso_job() -> None:
+    """Scheduled job: fetch PJM interconnection-queue XML and upsert."""
+    await _run_adapter_job("pjm_iso", _invoke_pjm_iso)
 
 
 async def run_coverage_refresh_job() -> None:
@@ -190,6 +240,11 @@ async def run_insights_daily_job() -> None:
     successful no-op rather than a failure.
     """
     await _run_adapter_job("_insights_daily", _invoke_insights_daily)
+
+
+async def run_aterio_daily_job() -> None:
+    """Scheduled job: pull the daily Aterio inventory CSV + re-ingest."""
+    await _run_adapter_job("_aterio_daily", _invoke_aterio_daily)
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +297,20 @@ async def _invoke_edgar(session) -> dict:
     return result
 
 
+async def _invoke_earnings_transcripts(session) -> dict:
+    """Fetch Alpha Vantage earnings call transcripts for US-public TRACKED_FILERS.
+
+    Adapter handles ticker resolution, calendar gating, daily budget cap,
+    and dispatches the chunker + LLM extractor in-line per the
+    architecture doc.
+    """
+    from ingestion.earnings_transcripts import EarningsTranscriptsAdapter
+    adapter = EarningsTranscriptsAdapter()
+    result = await adapter.run(session, days_back=90)
+    await session.commit()
+    return result
+
+
 async def _invoke_edgar_quarterly(session) -> dict:
     """Fetch 10-K + 10-Q filings across all TRACKED_FILERS, chunked, with merge."""
     from agents.edgar_extractor import run_llm_extraction_quarterly
@@ -281,6 +350,15 @@ async def _invoke_epa_echo(session) -> dict:
     from ingestion.epa_echo import EpaEchoAdapter
     adapter = EpaEchoAdapter()
     return await adapter.run(session)
+
+
+async def _invoke_pjm_iso(session) -> dict:
+    from ingestion.iso.pjm import PjmIsoAdapter
+    adapter = PjmIsoAdapter()
+    try:
+        return await adapter.run(session)
+    finally:
+        await adapter.close()
 
 
 async def _invoke_permits_county(session) -> dict:
@@ -375,7 +453,7 @@ async def _invoke_weekly_brief(session) -> dict:
 # ---------------------------------------------------------------------------
 
 # Per-attempt outer wall-clock guard (D11). Belt-and-suspenders against the
-# orchestrator's internal V1_WALL_CLOCK_S=480 — if the iterator hangs on a
+# orchestrator's internal WALL_CLOCK_S=480 — if the iterator hangs on a
 # stuck embed call before the internal check fires, this terminates cleanly.
 INSIGHTS_DAILY_TIMEOUT_S = 600
 
@@ -390,19 +468,16 @@ INSIGHTS_DAILY_RETRY_SLEEP_S = 60
 async def _invoke_insights_daily(session) -> dict:
     """Drive an OpenClaw agentic-synthesis turn for today's AI Insights.
 
-    Phase 3 retarget (PRD/ARCH §14, FR-3.1..FR-3.6): replaces the
-    previous `InsightOrchestrator.run_session` drain with a server-side
-    `build_factpack` + `run_agentic_synthesis` against the OpenClaw
-    gateway. The legacy orchestrator is intentionally retained for the
-    manual UI path (Phase 5 cleanup).
+    The v2 synthesis driver grounds its own claims via the OpenClaw
+    MCP tools (`search_documents`, `query_database`, `read_workspace`)
+    rather than consuming a server-built FactPack, so this runner just
+    pre-creates the AISession row and drives the agent.
 
     Behaviour:
       1. Idempotency guard: if a `created_by='scheduler'` AISession
          already exists today with status in (running, complete), no-op.
-      2. Build the FactPack server-side (so the agent sees a stable
-         input regardless of MCP availability) and pre-create the
-         AISession row in `status='running'`. Commit so a same-day
-         retry hits the idempotency guard.
+      2. Pre-create the AISession row in `status='running'` and commit
+         so a same-day retry hits the idempotency guard.
       3. Drive `run_agentic_synthesis` under a 600s wall-clock guard.
          The agent persists insight rows + finalizes the AISession via
          MCP tools (`persist_insight`, `finalize_session`). This driver
@@ -428,7 +503,6 @@ async def _invoke_insights_daily(session) -> dict:
         run_agentic_synthesis,
     )
     from agents.insights.db.models import AISession
-    from agents.insights.hypothesizer import build_factpack
 
     log = logging.getLogger(__name__)
     today = date.today()
@@ -457,39 +531,13 @@ async def _invoke_insights_daily(session) -> dict:
     last_exc: BaseException | None = None
     sid: _uuid.UUID | None = None
     insights_emitted = 0
-    fact_pack_rows = 0
     degraded_final = False
 
     for attempt in range(INSIGHTS_DAILY_MAX_RETRIES + 1):
         sid = _uuid.uuid4()
         attempt_started = time.monotonic()
 
-        # 2a. Build the FactPack server-side. Done per attempt so a
-        # transient DB blip on the first attempt is recoverable.
-        try:
-            fact_pack = await build_factpack(session)
-            fact_pack_rows = (
-                fact_pack.total_rows()
-                if hasattr(fact_pack, "total_rows")
-                else sum(len(s.rows or []) for s in getattr(fact_pack, "sections", []))
-            )
-        except Exception as exc:
-            last_exc = exc
-            log.warning(
-                "insights_daily.factpack_build_failed",
-                extra={
-                    "attempt": attempt + 1,
-                    "session_id": str(sid),
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(),
-                },
-            )
-            if attempt < INSIGHTS_DAILY_MAX_RETRIES:
-                await asyncio.sleep(INSIGHTS_DAILY_RETRY_SLEEP_S)
-                continue
-            raise
-
-        # 2b. Pre-create the AISession row so the idempotency guard
+        # 2a. Pre-create the AISession row so the idempotency guard
         # catches a same-day retry once we've started this attempt.
         ai_session = AISession(
             id=sid,
@@ -524,12 +572,11 @@ async def _invoke_insights_daily(session) -> dict:
                 ev_type = "?"
             log.info("insights_daily.sse type=%s", ev_type)
 
-        # 2c. Drive the agentic synthesis under the outer wall-clock.
+        # 2b. Drive the agentic synthesis under the outer wall-clock.
         try:
             result = await asyncio.wait_for(
                 run_agentic_synthesis(
                     session_id=sid,
-                    fact_pack=fact_pack,
                     max_insights=5,
                     db=session,
                     sse_emit=_scheduler_sse_log,
@@ -562,7 +609,6 @@ async def _invoke_insights_daily(session) -> dict:
                     "attempt": attempt + 1,
                     "session_id": str(sid),
                     "cron_run_date": today.isoformat(),
-                    "factpack_rows": fact_pack_rows,
                     "total_insights": insights_emitted,
                     "degraded": degraded_final,
                     "wall_clock_seconds": wall_seconds,
@@ -656,7 +702,7 @@ async def _invoke_insights_daily(session) -> dict:
         raise last_exc
 
     return {
-        "fetched": fact_pack_rows,
+        "fetched": 0,
         "stored": insights_emitted,
         "skipped": 0,
         "session_id": str(sid) if sid else None,
@@ -703,6 +749,208 @@ async def _force_finalize_status(session, session_id, *, status: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# aterio_daily — S3 pull + AterioAdapter run, with ETag skip
+# ---------------------------------------------------------------------------
+
+# Aterio's S3 access point ARN. Daily exports land under inventory/.
+_ATERIO_S3_ACCESS_POINT = (
+    "arn:aws:s3:us-east-1:947486744615:accesspoint/"
+    "aterio-ap-prod-data-centers-oracle"
+)
+_ATERIO_S3_PREFIX = "data-centers/inventory/"
+_ATERIO_S3_EVENTS_PREFIX = "data-centers/events/"
+_ATERIO_S3_REGION = "us-east-1"
+_ATERIO_S3_PROFILE = "aterio"
+
+# Where the daily download lands + sidecars with the most-recent ETags we
+# successfully ingested. Same archive root the existing adapter already uses.
+_ATERIO_ARCHIVE_ROOT = pathlib.Path(__file__).resolve().parents[1] / "data" / "aterio_archive"
+_ATERIO_ETAG_SIDECAR = _ATERIO_ARCHIVE_ROOT / ".last_inventory_etag"
+_ATERIO_EVENTS_ETAG_SIDECAR = _ATERIO_ARCHIVE_ROOT / ".last_events_etag"
+
+
+def _latest_aterio_object(prefix: str) -> dict | None:
+    """Return the S3 object metadata for the newest CSV under `prefix`.
+
+    Picks by LastModified DESC. Returns None if the prefix is empty or
+    boto3 / the profile is unavailable (we log + skip rather than crash).
+    """
+    try:
+        import boto3  # type: ignore
+    except Exception as exc:  # pragma: no cover - import guard
+        logger.warning("aterio_daily.boto3_missing %s", exc)
+        return None
+    try:
+        session = boto3.Session(profile_name=_ATERIO_S3_PROFILE)
+        s3 = session.client("s3", region_name=_ATERIO_S3_REGION)
+        # Access points list via ListObjectsV2 with Bucket=<ARN>.
+        paginator = s3.get_paginator("list_objects_v2")
+        candidates: list[dict] = []
+        for page in paginator.paginate(
+            Bucket=_ATERIO_S3_ACCESS_POINT, Prefix=prefix
+        ):
+            for obj in page.get("Contents", []):
+                key = obj.get("Key", "")
+                if key.endswith("/") or not key.lower().endswith(".csv"):
+                    continue
+                candidates.append(obj)
+        if not candidates:
+            return None
+        # Sort by LastModified descending; pick newest.
+        candidates.sort(key=lambda o: o.get("LastModified"), reverse=True)
+        return candidates[0]
+    except Exception as exc:
+        logger.exception("aterio_daily.s3_list_failed prefix=%s %s", prefix, exc)
+        return None
+
+
+def _read_last_etag(sidecar: pathlib.Path = _ATERIO_ETAG_SIDECAR) -> str | None:
+    try:
+        return sidecar.read_text().strip() or None
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("aterio_daily.etag_read_failed %s %s", sidecar, exc)
+        return None
+
+
+def _write_last_etag(etag: str, sidecar: pathlib.Path = _ATERIO_ETAG_SIDECAR) -> None:
+    try:
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(etag.strip())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("aterio_daily.etag_write_failed %s %s", sidecar, exc)
+
+
+def _download_aterio_object(obj: dict, subdir: str) -> pathlib.Path:
+    """Download `obj` to aterio_archive/<YYYY-MM-DD>/<subdir>/<basename>."""
+    import boto3  # type: ignore
+
+    boto_session = boto3.Session(profile_name=_ATERIO_S3_PROFILE)
+    s3 = boto_session.client("s3", region_name=_ATERIO_S3_REGION)
+
+    key = obj["Key"]
+    basename = key.rsplit("/", 1)[-1]
+    today = datetime.utcnow().strftime("%Y-%m-%d")
+    dest_dir = _ATERIO_ARCHIVE_ROOT / today / subdir
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / basename
+
+    if not dest.exists():
+        s3.download_file(_ATERIO_S3_ACCESS_POINT, key, str(dest))
+    return dest
+
+
+async def _invoke_aterio_daily(session) -> dict:
+    """Pull the daily Aterio inventory + events CSVs and re-ingest if either
+    changed.
+
+    Behaviour:
+      1. List inventory/ and events/ under the access point, pick the newest
+         CSV under each by LastModified.
+      2. Compare each ETag against its on-disk sidecar
+         (.last_inventory_etag, .last_events_etag). If BOTH are unchanged,
+         log `aterio_daily.no_change` and return skipped=1 — no ingest.
+      3. Otherwise download both into data/aterio_archive/<YYYY-MM-DD>/{inventory,events}/,
+         run AterioAdapter (which upserts sites, ingests events from the
+         events CSV when present, reloads energy_projects, emits role
+         edges, refreshes coverage), and write the new ETags.
+
+    Returns the standard runner summary dict so the audit row reports
+    truthfully.
+    """
+    inv_obj = _latest_aterio_object(_ATERIO_S3_PREFIX)
+    if inv_obj is None:
+        logger.warning("aterio_daily.no_csv_found")
+        return {"fetched": 0, "stored": 0, "skipped": 1, "reason": "no_csv"}
+
+    evt_obj = _latest_aterio_object(_ATERIO_S3_EVENTS_PREFIX)
+    # Events CSV is optional -- the adapter falls back to the legacy date-
+    # column-synthesis path when absent, so don't fail if it's missing.
+
+    inv_etag = (inv_obj.get("ETag") or "").strip('"')
+    evt_etag = (evt_obj.get("ETag") or "").strip('"') if evt_obj else ""
+    last_inv_etag = _read_last_etag(_ATERIO_ETAG_SIDECAR)
+    last_evt_etag = _read_last_etag(_ATERIO_EVENTS_ETAG_SIDECAR)
+
+    inv_unchanged = bool(inv_etag) and inv_etag == last_inv_etag
+    # If no events CSV is available, treat events as "unchanged" so the
+    # decision only depends on inventory.
+    evt_unchanged = (
+        evt_obj is None or (bool(evt_etag) and evt_etag == last_evt_etag)
+    )
+    if inv_unchanged and evt_unchanged:
+        logger.info(
+            "aterio_daily.no_change inv_etag=%s evt_etag=%s",
+            inv_etag, evt_etag,
+        )
+        return {"fetched": 0, "stored": 0, "skipped": 1, "reason": "no_change"}
+
+    # Download both (idempotent — local files are reused if already present).
+    try:
+        csv_path = _download_aterio_object(inv_obj, "inventory")
+    except Exception as exc:
+        logger.exception("aterio_daily.download_failed %s", exc)
+        raise
+
+    events_csv_path: pathlib.Path | None = None
+    if evt_obj is not None:
+        try:
+            events_csv_path = _download_aterio_object(evt_obj, "events")
+        except Exception as exc:
+            # Events fetch failure shouldn't tank the whole run -- log and
+            # carry on; adapter falls back to legacy synthesis.
+            logger.warning("aterio_daily.events_download_failed %s", exc)
+
+    logger.info(
+        "aterio_daily.downloaded inv=%s events=%s",
+        csv_path, events_csv_path,
+    )
+
+    # Run the adapter. Energy / data-dictionary xlsx paths still come from
+    # the repo `datasets/` dir -- S3 doesn't ship those.
+    # `parents[2]` walks from `.../backend/pipeline/runner.py` up to the
+    # repo root (parents[1] is `backend/`, parents[2] is the project root).
+    from ingestion.aterio import AterioAdapter
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    adapter = AterioAdapter(
+        csv_path=str(csv_path),
+        events_xlsx_path=str(
+            repo_root / "datasets" / "Data Centers's Data Dictionary (Data Product).xlsx"
+        ),
+        energy_xlsx_path=str(
+            repo_root / "datasets" / "Energy Project Inventory Data Sample.xlsx"
+        ),
+        events_csv_path=str(events_csv_path) if events_csv_path else None,
+    )
+    result = await adapter.run(session)
+    await session.commit()
+
+    # Persist ETags only after a successful ingest -- a failed run will
+    # re-attempt the same CSVs tomorrow.
+    if inv_etag:
+        _write_last_etag(inv_etag, _ATERIO_ETAG_SIDECAR)
+    if evt_etag:
+        _write_last_etag(evt_etag, _ATERIO_EVENTS_ETAG_SIDECAR)
+
+    return {
+        "fetched": int(result.get("sites_upserted", 0)),
+        "stored": int(
+            result.get("sites_upserted", 0)
+            + result.get("events_upserted", 0)
+            + result.get("energy_projects_upserted", 0)
+        ),
+        "skipped": 0,
+        "notes_history_appended": int(result.get("notes_history_appended", 0)),
+        "csv_key": inv_obj.get("Key"),
+        "events_csv_key": evt_obj.get("Key") if evt_obj else None,
+        "etag": inv_etag or None,
+        "events_etag": evt_etag or None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Map job IDs to their async functions
 # ---------------------------------------------------------------------------
 
@@ -710,15 +958,18 @@ _JOB_FUNCTIONS: dict[str, callable] = {
     "edgar_daily": run_edgar_job,
     # Renamed weekly -> daily per the user round-2 AC6.
     "quarterly_filings_daily": run_edgar_quarterly_job,
+    "earnings_transcripts_daily": run_earnings_transcripts_job,
     "anomaly_detection_nightly": run_anomaly_detection_job,
     "permits_state_daily": run_permits_weekly_job,
     "county_permits_daily": run_county_permits_weekly_job,
     "permits_air_daily": run_epa_echo_job,
+    "pjm_iso_daily": run_pjm_iso_job,
     "coverage_refresh": run_coverage_refresh_job,
     "cache_cleanup": run_cache_cleanup_job,
     "stale_check": run_stale_check_job,
     "weekly_brief": run_weekly_brief_job,
     "insights_daily": run_insights_daily_job,
+    "aterio_daily": run_aterio_daily_job,
 }
 
 
@@ -756,7 +1007,7 @@ def create_scheduler() -> AsyncIOScheduler:
         # run forever (this is the AC7 weekly_brief bug). 24h grace +
         # coalesce=True means we still fire once at the next opportunity.
         # Daily jobs are fine with 1h.
-        if job_id == "weekly_brief":
+        if job_id in ("weekly_brief", "insights_daily"):
             grace = 86400
             coalesce = True
         else:

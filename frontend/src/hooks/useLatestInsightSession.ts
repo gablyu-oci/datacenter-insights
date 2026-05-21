@@ -58,6 +58,11 @@ export interface LatestInsight {
   created_at?: string | null;
   chart?: Record<string, unknown> | null;
   citations?: LatestCitation[] | null;
+  /**
+   * Phase A: backend includes a per-insight `is_saved` boolean. Missing /
+   * undefined is treated as false on the consumer side.
+   */
+  is_saved?: boolean;
 }
 
 export interface LatestSessionResponse {

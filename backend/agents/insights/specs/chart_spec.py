@@ -1,4 +1,4 @@
-"""ChartSpec v1 — Pydantic schema for agent-emitted charts.
+"""ChartSpec — Pydantic schema for agent-emitted charts.
 
 Authoritative source for the JSON the agent's `emit_chart` tool produces and
 the frontend's `<InsightChart>` consumes. The on-disk JSON Schema lives in
@@ -38,7 +38,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 # Closed-set type aliases
 # ---------------------------------------------------------------------------
 
-# Per ARCHITECTURE.md A4.1. Closed set; no maps in V1 (deferred V3).
+# Per ARCHITECTURE.md A4.1. Closed set; map types are not yet supported.
 ChartType = Literal[
     "line",
     "bar",
@@ -205,7 +205,7 @@ class Styling(BaseModel):
 
 
 class ChartSpec(BaseModel):
-    """ChartSpec v1 — see ARCHITECTURE.md A4."""
+    """ChartSpec — see ARCHITECTURE.md A4."""
 
     model_config = ConfigDict(extra="forbid")
 

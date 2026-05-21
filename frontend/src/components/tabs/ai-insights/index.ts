@@ -15,6 +15,9 @@ export { default as SurveyingBanner } from "./SurveyingBanner";
 export { default as SkeletonStack } from "./SkeletonStack";
 export { default as EmptyState } from "./EmptyState";
 export { default as ErrorState } from "./ErrorState";
+export { default as InsightSidebar } from "./InsightSidebar";
+export { default as InsightDetailPane } from "./InsightDetailPane";
+export { default as SidebarRow } from "./SidebarRow";
 
 export type { SessionRunnerProps } from "./SessionRunner";
 export type { InsightCardProps } from "./InsightCard";

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { tokens } from "../../../styles/insightTokens";
 import InsightCard from "./InsightCard";
 import type { ChartSpec } from "../../../types/chartSpec";
@@ -32,6 +33,10 @@ function adaptCitations(cits?: LatestCitation[] | null): WebCitation[] {
  *
  * Streaming-only affordances (token caret, surveying spinner) are skipped
  * because this is a static snapshot — the SSE pipe is not attached.
+ *
+ * Per 03-architecture.md §6.6, we keep an in-tab override map of saved-state
+ * toggles keyed by insight id so the Save button's optimistic flip survives
+ * re-renders without forcing a `/latest` refetch.
  */
 
 const c = tokens.color;
@@ -51,6 +56,10 @@ export default function SnapshotInsightFeed({
   total,
   session,
 }: SnapshotInsightFeedProps) {
+  const [savedOverrides, setSavedOverrides] = useState<Record<string, boolean>>({});
+  const effectiveSaved = (id: string, fallback: boolean): boolean =>
+    savedOverrides[id] ?? fallback;
+
   if (insights.length === 0) {
     return (
       <div
@@ -102,6 +111,10 @@ export default function SnapshotInsightFeed({
           insightId={ins.id}
           isV2Enabled={true}
           citations={adaptCitations(ins.citations)}
+          initialSaved={effectiveSaved(ins.id, ins.is_saved ?? false)}
+          onSaveToggle={(next) =>
+            setSavedOverrides((m) => ({ ...m, [ins.id]: next }))
+          }
         />
       ))}
     </div>

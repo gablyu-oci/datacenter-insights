@@ -29,7 +29,7 @@ class CitationLite(BaseModel):
 
 
 class PeerReviewTemplateInputs(BaseModel):
-    """Inputs for peer_review_template (V2)."""
+    """Inputs for peer_review_template."""
 
     model_config = ConfigDict(extra="forbid")
 

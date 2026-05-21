@@ -22,6 +22,7 @@ Aim for one card from each band:
 | Forward-looking power supply | `generator_permits[source='pjm']`, `energy_projects` | "Queue attrition: 723 GW withdrawn vs 70 GW active in PJM." |
 | **Neo-cloud / 3rd-party untenanted capacity** (HIGHEST OCI VALUE) | `sites` grouped by `provider_name`, hyperscalers excluded | "Crusoe has 3.3 GW untenanted, WY pipeline 100% open — offtake target." Rotate across Crusoe, CoreWeave, Lambda, Aligned, Compass, CyrusOne. |
 | Document-grounded | `edgar_extractions`, `search_documents` | "Meta's 10-K confirms 9.7 GW AI capacity earmarked." |
+| **Forward-looking guidance from earnings transcripts** | `earnings_transcripts`, `search_documents(source='earnings')` | "Microsoft Q2 call: CEO guides 'every dollar of FY26 capex going into AI-ready capacity'; sentiment_power_constraints=cautious — contradicts the cumulative MW-only read of the filings, raises forward execution risk for peer X." Must cite at least one `source="earnings"` passage. Use when management language on AI / power / capex **contradicts or amplifies** what filings say. |
 | OCI action | any, but body must name a commercial next step | "Fermi America has 10.4 GW uncontracted at site Z — offtake target." |
 
 ### Hard caps
@@ -55,13 +56,25 @@ Static metrics describe a state every analyst already knows. Decision-grade insi
 
 Bias every drill toward:
 
-- **Latest-year filter on every query** — `issued_date >= '2026-01-01'`, `announced_date >= '2026-01-01'`, `period_end >= '2026-01-01'` on EDGAR. Cumulative views are only useful as denominators ("Z% is new this year").
+- **Latest-year filter on every query** — `issued_date >= '2026-01-01'` (permits), `event_date >= '2026-01-01' AND event_date <= CURRENT_DATE` (events; clamp the upper bound — future-dated rows are projections, not history), `period_end >= '2026-01-01'` (EDGAR). **`sites.announced_date` and `sites.construction_start_date` are NULL** in the DB now — use `events` joined on `aterio_dc_uid` instead. Cumulative views are only useful as denominators ("Z% is new this year").
 - **Year-over-year deltas** — 2026 vs 2025: accelerating, decelerating, pattern break. "Microsoft permitted 4 GW in 2026 H1 vs 1.2 GW in 2025 H1" beats "Microsoft has 14 GW total."
 - **Recent filings** — prefer 8-K (event-driven) and 10-Q (latest quarter) over 10-K (annual look-back) when surfacing power moves.
 - **Movement, not stock** — who STARTED building this year, who PULLED OUT, who MOVED concentration from state X to state Y, who SIGNED a new PPA, who ABANDONED a queue position.
 - **`events` table** — event-time-stamped, ideal for recency cuts. Use `events` for partnership / siting / offtake / vendor moves in the last 90 days.
 
 When a static cumulative is the only available view, ALWAYS pair it with a recency cut: "X has Y total, Z% of which is post-2026" or "first-mover in nuclear PPAs (0 GW in 2025, 14.6 GW in 2026)." Never ship a bare cumulative.
+
+## Aterio data quirks — respect these when reading `sites` and `events`
+
+These shape what claims are defensible. Every one is observed on the current dataset; ignore them and you'll ship a wrong number.
+
+1. **Milestone dates live in `events`, not on `sites`.** `sites.announced_date / construction_start_date / cancelled_date / project_withdrawn_date` are NULL in the DB (Aterio dropped them in May 2026). Any query that filters on those columns returns zero rows silently. Join `events e ON e.aterio_dc_uid = sites.aterio_dc_uid` and filter `e.event_type`.
+2. **`events.event_date > CURRENT_DATE` is a PROJECTED milestone, not history.** Aterio emits forward-looking rows (e.g. `event_type = 'activation', event_date = 2029-03-31`) in the same shape as past ones. For historical metrics ("median time to activate", "sites activated this year") always clamp `event_date <= CURRENT_DATE`. For pipeline metrics ("scheduled to activate by 2027"), explicitly call out "projected" in prose.
+3. **`pct_construction` is a 0–1.0 fraction, not 0–100.** Treating it as a percentage (e.g. `WHERE pct_construction >= 70`) silently returns zero rows. Multiply by 100 for display. Max value across the entire table is 1.0.
+4. **`construction_start` is first-imagery-observed, not groundbreak.** For retrofit sites, the shell already existed, so Aterio's `construction_start` date can be late and `pct_construction` jumps from 0 → 50%+ within days (xAI Macroharder: 0 → 60% in 12 days). This is not a data bug — it's how Aterio measures. **Time-to-build distributions are polluted by retrofits.** AI-cohort median total (announce → active) is ~25 months; non-AI is ~32 months — but P10 builds <12 months are almost always retrofits, not heroic execution.
+5. **Aterio does NOT label retrofit vs greenfield.** No structured column carries it. The data dictionary doesn't either. Don't slice by build type from SQL — you cannot. ~71 sites have explicit retrofit language in the free-text `notes` column; the other 7,100+ are unlabeled. If a question requires build-type segmentation, frame as a known gap, not a number.
+6. **`construction_progress` is a new event type with percentage payload.** Multiple rows per site (one per imagery-detected milestone). `payload->>'pct_complete'` is the integer percentage (5, 10, 20, 30, 40, 50, 60, 70, 85, 90, 95). Powerful for "stuck at 30%+ for >6 months" / "construction velocity by operator" / "% complete distribution by region" — these slices are underused.
+7. **Stage column vs event-derived stage are two different concepts.** `sites.stage` is Aterio's CURRENT declared stage (`Announcement / Construction / Active / Cancelled / Withdrawn / Delayed / Land Bank`). Event-derived stage (latest milestone ≤ year-end Y) is a reconstructed historical state. For "X% of sites under construction today" use `sites.stage = 'Construction'`. For "X% of sites were under construction at end-2024" reconstruct from `events`.
 
 ## OCI opportunity vs threat framing
 

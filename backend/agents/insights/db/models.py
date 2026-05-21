@@ -112,14 +112,14 @@ class AIInsight(SQLModel, table=True):
             index=True,
         ),
     )
-    # Phase 2 (migration 013): replaces the Phase 1 stop-gap that wrote
-    # `_Sources: row_ids=[...]_` as a footer string into `body`. Stored as
-    # a JSONB list of "section:n" strings drawn from the FactPack.
+    # Legacy FactPack-era column (migration 013) — provenance now lives
+    # in agent_chart (executed_sql + row_hash) + agent_citation rows, so
+    # this is NULL on every current insight.
     supporting_row_ids: Optional[list[str]] = Field(
         default=None,
         sa_column=Column(JSONB, nullable=True),
     )
-    # v2 columns (migration 018). chart_id is the FK back-edge that
+    # Migration 018 additions. chart_id is the FK back-edge that
     # `persist_insight` writes after `build_chart` has materialized the
     # chart row; citations is the typed grounding list; open_question_id
     # links into OpenClaw memory.
@@ -161,9 +161,8 @@ class AgentMessage(SQLModel, table=True):
             index=True,
         ),
     )
-    # V2: chat-thread scoping. Migration 011_v2_chat_and_citations adds the
-    # column + FK to insight_thread.id (nullable for forward-compat with V1
-    # batch-flow rows that have no thread).
+    # Chat-thread scoping (migration 011). Nullable so legacy rows
+    # without a thread stay valid.
     thread_id: Optional[uuid.UUID] = Field(
         default=None,
         sa_column=Column(
@@ -262,7 +261,7 @@ class AgentChart(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# agent_citation (V2 surface; created in V1 for forward-compat)
+# agent_citation
 # ---------------------------------------------------------------------------
 
 
@@ -335,7 +334,7 @@ class SkillInvocation(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# insight_thread (V2)
+# insight_thread
 # ---------------------------------------------------------------------------
 
 
@@ -361,7 +360,7 @@ class InsightThread(SQLModel, table=True):
 
 
 # ---------------------------------------------------------------------------
-# insight_subscription (V2 button writes here; V3 cron consumes)
+# insight_subscription (subscribe button writes here; cron consumes)
 # ---------------------------------------------------------------------------
 
 

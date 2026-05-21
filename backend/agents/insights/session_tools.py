@@ -16,8 +16,6 @@ Why a separate module from `mcp_server.py`?
   * MCP tool handlers must stay thin (per Phase 1 architecture); the
     real work lives here so it can be unit-tested without spinning up
     the FastMCP transport.
-  * The orchestrator's reused helpers (`_persist_insight` shape) live
-    in `agents.insights`, so the imports stay local to that package.
 """
 from __future__ import annotations
 
@@ -51,67 +49,8 @@ class ToolValidationError(Exception):
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Brief-meta registry
 # ---------------------------------------------------------------------------
-
-
-def _filter_row_ids(
-    supporting_row_ids: list[str], fact_pack: Any | None
-) -> list[str]:
-    """Drop row_ids that are not present in the session's FactPack.
-
-    Mirrors the filtering branch inside the legacy
-    ``hypothesizer._coerce_insights`` so the MCP write-tool keeps the
-    same evidence-grounding contract once Phase 5 deletes the legacy
-    helper.
-
-    Args:
-      supporting_row_ids: agent-supplied list (1..N).
-      fact_pack: a ``FactPack`` Pydantic model, or None when no
-        FactPack is associated with the session (e.g. tests that drive
-        persist_insight with a None fact_pack — we accept all ids in
-        that case, on the principle that the orchestrator owns
-        FactPack scoping).
-
-    Returns:
-      Filtered list, preserving input order.
-    """
-    if not supporting_row_ids:
-        return []
-    if fact_pack is None:
-        return list(supporting_row_ids)
-    valid: set[str] = set()
-    try:
-        for section in getattr(fact_pack, "sections", []) or []:
-            for row in getattr(section, "rows", []) or []:
-                rid = getattr(row, "row_id", None)
-                if rid:
-                    valid.add(str(rid))
-    except Exception:  # noqa: BLE001 — defensive for non-pydantic fact_packs
-        return list(supporting_row_ids)
-    return [rid for rid in supporting_row_ids if rid in valid]
-
-
-# Process-local registry of session-scoped FactPacks. Populated by
-# ``run_agentic_synthesis`` before each session and read by
-# ``persist_insight`` to filter supporting_row_ids. In-memory only —
-# we never share across processes, and an MCP request that arrives
-# without a registered FactPack falls back to accept-all (above).
-_SESSION_FACT_PACKS: dict[str, Any] = {}
-
-
-def register_session_fact_pack(session_id: uuid.UUID, fact_pack: Any) -> None:
-    """Associate a FactPack with a session for downstream row-id filtering."""
-    _SESSION_FACT_PACKS[str(session_id)] = fact_pack
-
-
-def clear_session_fact_pack(session_id: uuid.UUID) -> None:
-    """Drop a session's FactPack reference; safe to call repeatedly."""
-    _SESSION_FACT_PACKS.pop(str(session_id), None)
-
-
-def _get_fact_pack(session_id: uuid.UUID) -> Any | None:
-    return _SESSION_FACT_PACKS.get(str(session_id))
 
 
 # Process-local registry of session-scoped brief metadata. Populated by
@@ -167,14 +106,14 @@ async def _persist_insight_handler(
     session_uuid: uuid.UUID,
     args: dict[str, Any],
 ) -> dict[str, Any]:
-    """Persist one v2 insight under an existing ai_session.
+    """Persist one insight under an existing ai_session.
 
-    Thin wrapper around `tools.persist_insight.persist_insight` (v2 path).
-    Returns ``{insight_id, chart_id, citation_count, version}``.
+    Thin wrapper around `tools.persist_insight.persist_insight`.
+    Returns ``{insight_id, chart_id, citation_count}``.
     """
-    from .tools.persist_insight import persist_insight as _v2_persist
+    from .tools.persist_insight import persist_insight as _persist
 
-    return await _v2_persist(
+    return await _persist(
         headline=args.get("headline", ""),
         body=args.get("body"),
         confidence=args.get("confidence", "medium"),
@@ -497,93 +436,6 @@ async def _persist_brief_handler(
 
 
 # ---------------------------------------------------------------------------
-# Auto-emit helpers — invoked from _persist_insight_handler so charts +
-# citations attach without requiring the agent to call emit_chart /
-# web_search explicitly. Mirrors the V1 orchestrator behaviour.
-# ---------------------------------------------------------------------------
-
-
-async def _auto_emit_chart(
-    db: AsyncSession,
-    *,
-    session_uuid: uuid.UUID,
-    insight_id: uuid.UUID,
-    headline: str,
-    chart_type_hint: Any,
-    y_label_hint: Any,
-    supporting_row_ids: list[str],
-) -> None:
-    """Build + persist a chart from cited FactPack rows. Best-effort."""
-    fact_pack = _get_fact_pack(session_uuid)
-    if fact_pack is None or not supporting_row_ids:
-        return
-    try:
-        from .orchestrator import _chart_from_supporting_rows
-        from .db.models import AgentChart
-
-        rows = fact_pack.lookup(supporting_row_ids)
-        chart = _chart_from_supporting_rows(
-            rows,
-            headline,
-            chart_type_hint=str(chart_type_hint) if chart_type_hint else None,
-            y_label_hint=str(y_label_hint) if y_label_hint else None,
-        )
-        if chart is None:
-            return
-        db.add(
-            AgentChart(
-                id=chart.chart_id,
-                session_id=session_uuid,
-                insight_id=insight_id,
-                spec=chart.model_dump(mode="json"),
-                data_source=chart.data_source.model_dump(mode="json"),
-                row_hash=chart.data_source.row_hash,
-            )
-        )
-        await db.flush()
-    except Exception as exc:  # noqa: BLE001 — never fail persist on chart
-        logger.warning(
-            "mcp.persist_insight.chart_failed",
-            extra={"err": str(exc), "insight_id": str(insight_id)},
-        )
-
-
-async def _auto_prefetch_citations(
-    db: AsyncSession,
-    *,
-    insight_id: uuid.UUID,
-    headline: str,
-) -> None:
-    """Run web_search on the headline and persist top hits as citations."""
-    try:
-        from .tools.web_search import web_search
-        from .db.models import AgentCitation
-        from datetime import datetime as _dt
-
-        result = await web_search(query=headline[:200], n=3, ctx=None)
-        if not result.get("ok"):
-            return
-        for r in result.get("results") or []:
-            db.add(
-                AgentCitation(
-                    insight_id=insight_id,
-                    url=r.get("url", ""),
-                    title=r.get("title"),
-                    snippet=r.get("snippet"),
-                    search_query=r.get("search_query"),
-                    retrieved_at=_dt.utcnow(),
-                    provider=r.get("provider", "brave"),
-                )
-            )
-        await db.flush()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "mcp.persist_insight.citation_prefetch_failed",
-            extra={"err": str(exc), "insight_id": str(insight_id)},
-        )
-
-
-# ---------------------------------------------------------------------------
 # Handler registry
 # ---------------------------------------------------------------------------
 
@@ -602,9 +454,6 @@ HANDLERS: dict[str, HANDlerSig] = {
 __all__ = [
     "ToolValidationError",
     "HANDLERS",
-    "register_session_fact_pack",
-    "clear_session_fact_pack",
     "register_session_brief_meta",
     "clear_session_brief_meta",
-    "_filter_row_ids",
 ]

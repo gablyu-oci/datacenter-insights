@@ -66,7 +66,7 @@ async def emit_chart(
         if isinstance(recorded, set):
             expected_hashes = recorded
     if expected_hashes and recomputed not in expected_hashes:
-        # Soft-warn rather than hard reject in V1; the strict check is the
+        # Soft-warn rather than hard reject; the strict check is the
         # spec.row_hash recomputation above. Logged for audit.
         logger.warning(
             "ai_insights.emit_chart.unrecognised_row_hash",

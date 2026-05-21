@@ -9,7 +9,7 @@ Treat the run as portfolio construction, not five individually passable cards. B
 1. **Scale / concentration** card from `sites` (footprint comparison or geographic concentration).
 2. **Forward-looking power supply** card from `generator_permits[source='pjm']` or `energy_projects` (queue, uncontracted MW, attrition).
 3. **Customer / operator / siting** card from `sites` + `events` or `companies` (who is partnering with whom, single-tenant load, recent siting moves).
-4. **Document-grounded** card from `edgar_extractions` or `search_documents` (a real quote or filing-derived claim, not pure SQL).
+4. **Document-grounded** card from `edgar_extractions`, `earnings_transcripts`, or `search_documents` (a real quote or filing-derived claim, not pure SQL). Earnings transcripts (`search_documents(source='earnings')` or direct `earnings_transcripts` queries) are an acceptable document source alongside EDGAR filings — prefer transcripts for **forward-looking guidance** (capex outlook, sentiment, AI/power language) and EDGAR for **executed commitments** (signed PPAs, item-1.01 8-Ks). Cite the transcript URL or passage when used.
 5. **OCI action** card naming a **commercial or strategic next step**: an offtake target, a procurement bottleneck, a competitor concentration risk, a customer-acquisition target.
 
 Hard caps for a 5-insight run:
@@ -71,17 +71,29 @@ Disqualifier screen — do NOT persist as an insight if any apply:
 - **Body is human prose, NOT a debug dump.** NEVER inline raw `row_hash` hex strings, full UUIDs, `executed_sql`, table aliases, or `(detail row_hash ...)` parentheticals in the insight body. Provenance is stored automatically in `agent_chart` / `agent_citation` and rendered as a footer. Body should read like an analyst's one-paragraph note — entities, MW figures, dates, and the OCI implication. Nothing else.
 - **NULL-coverage check before any cross-entity SUM/AVG.** Run `SELECT entity, COUNT(*), COUNT(metric_col) FROM ... GROUP BY entity` first. If any entity has >20% NULL in the metric, do NOT ship as competitive data — reframe as a coverage gap or pick a different axis (count of sites, states, etc.). Example: Oracle has 10 sites in `sites` but 9 with NULL MW — SUM returns 17 MW, a data-coverage artefact, not a competitive read. Same trap on every other table.
 
-## Recency bias — current-year and movement, not cumulative
+## Recency bias — past-week delta first, then year-over-year
 
-Static cumulative metrics ("AWS owns N MW in VA") describe a state every analyst already knows. **Decision-grade insights are about what's CHANGING.** Bias every drill toward:
+This driver runs on a **weekly cadence**. The user pack ships `this_week_since` (today − 7d) and `prior_week_since` (today − 14d). Anchor every drill in the past-week window FIRST; broader windows are fallbacks. Static cumulative metrics ("AWS owns N MW in VA") describe a state every analyst already knows. **Decision-grade insights are about what's CHANGING.** Bias every drill toward:
 
-- **Latest-year filter**: `issued_date >= '2026-01-01'`, `announced_date >= '2026-01-01'`, `period_end >= '2026-01-01'` on EDGAR, etc. Cumulative views are only useful as a denominator for "what % is new this year."
+- **Past-week delta (PRIMARY for weekly runs)**: filter `>= :this_week_since` on the event-time column for the table (e.g. `events.event_time`, `edgar_extractions.filing_date`, `generator_permits.issued_date`, `building_permits.applied_date`). If too thin, compare against the prior 7 days (`>= :prior_week_since AND < :this_week_since`) to land a week-over-week delta. Only expand to 30/90-day windows when the past-week cut is genuinely empty.
+- **Latest-year filter (FALLBACK)**: `issued_date >= '2026-01-01'` (permits), `event_date >= '2026-01-01' AND event_date <= CURRENT_DATE` (events; clamp the upper bound — future-dated rows are projected milestones, not history), `period_end >= '2026-01-01'` (EDGAR). **Do NOT use `sites.announced_date / construction_start_date / cancelled_date / project_withdrawn_date`** — Aterio dropped those columns from the inventory CSV (May 2026); they are all NULL. Query `events` and filter `event_type` instead. Cumulative views are only useful as a denominator for "what % is new this year."
 - **Year-over-year deltas**: 2026 vs 2025 — accelerating, decelerating, or pattern break? "Microsoft permitted 4 GW in 2026 H1 vs 1.2 GW in 2025 H1" beats "Microsoft has 14 GW total."
 - **Recent filings only**: prefer 8-K (event-driven) and 10-Q (latest quarter) over 10-K (annual look-back) when surfacing power moves.
-- **Movement, not stock**: who STARTED building this year, who PULLED OUT, who MOVED their concentration from state X to state Y, who SIGNED a new PPA, who ABANDONED a queue position.
+- **Movement, not stock**: who STARTED building this week/year, who PULLED OUT, who MOVED their concentration from state X to state Y, who SIGNED a new PPA, who ABANDONED a queue position.
 - **Look at `events` table for recent siting / partnership / offtake moves** — that table is event-time-stamped, perfect for recency cuts.
 
 Where a static cumulative is the only available view, ALWAYS pair it with a recency cut: "X has Y total, Z% of which is post-2026" or "first-mover in nuclear PPAs (0 GW in 2025, 14.6 GW in 2026)." Never ship a bare cumulative.
+
+## Anti-repetition — read `recent_insight_headlines` BEFORE drilling
+
+The user pack includes `recent_insight_headlines`: every insight headline persisted in the last 4 weeks by complete sessions. **Before drafting a hypothesis, scan this list.** If a candidate headline restates one already there (same protagonist + same metric + same direction), it is a repeat — drop it and pivot:
+
+- Swap the **protagonist** (different neo-cloud, different hyperscaler, different developer LLC).
+- Swap the **table** (move from `sites` to `events`, `edgar_extractions`, `generator_permits`, or `earnings_transcripts`).
+- Swap the **geography** (different ISO, different state, or shift from US national to a single county/county-cluster).
+- Swap the **time slice** (week-over-week delta instead of cumulative; quarter-over-quarter instead of year).
+
+A run that re-emits last week's portfolio is a failed run. Use this list as the negative space for the week's hypotheses.
 
 ## Hypothesis priorities (lead with these — recency-anchored)
 

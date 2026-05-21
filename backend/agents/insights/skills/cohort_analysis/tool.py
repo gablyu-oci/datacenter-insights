@@ -1,4 +1,4 @@
-"""cohort_analysis (V2) -- cohort x time retention matrix.
+"""cohort_analysis -- cohort x time retention matrix.
 
 Re-implementation of the algorithm originally housed in
 ``cohort_builder.py`` + ``retention_matrix.py`` (the Claude-Code skill's

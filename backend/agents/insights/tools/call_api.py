@@ -4,7 +4,7 @@ Per ARCH A6.2 the agent is restricted to read-only paths under `/api/`.
 We use httpx.AsyncClient with httpx.ASGITransport to talk to the FastAPI
 app without going through a real HTTP socket.
 
-V1 allow-list:
+Allow-list:
     - any GET on /api/...
     - no POST/PUT/DELETE
     - explicit deny on `/api/agent` POSTs (write surface)
@@ -63,10 +63,10 @@ async def call_api(
 
     method_upper = method.upper()
     if method_upper != "GET":
-        # V1 deny-by-default for writes.
+        # Deny-by-default for writes.
         return {
             "status": 405,
-            "body": {"error": "write_methods_disabled_in_v1", "method": method_upper},
+            "body": {"error": "write_methods_disabled", "method": method_upper},
             "endpoint": endpoint,
         }
 

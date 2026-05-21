@@ -1,11 +1,15 @@
-import { useState } from "react";
+import type { ReactNode, CSSProperties } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useApi } from "../../hooks/useApi";
-import { Building2, ChevronDown, ChevronUp, X, MapPin, FileText, ExternalLink, Zap } from "lucide-react";
+import { Building2, ChevronDown, ChevronUp, X, MapPin, FileText, ExternalLink, Zap, Mic, Filter } from "lucide-react";
+import { paginationWindow } from "./companies/paginationWindow";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
 import ErrorPanel from "../shared/ErrorPanel";
 import CitationFooter from "../shared/CitationFooter";
 import SiteDetail from "../SiteDetail";
 import RoleDistribution from "./companies/RoleDistribution";
+import SentimentBadge from "../earnings/SentimentBadge";
+import EarningsDetailModal from "../earnings/EarningsDetailModal";
 
 const CARD_STYLE = {
   background: "#1e293b",
@@ -97,6 +101,44 @@ interface FilingsResponse {
   total: number;
 }
 
+// Earnings calls — list endpoint /api/companies/{id}/earnings.
+// Shape mirrors backend/routers/earnings.py:_serialize_transcript_summary.
+interface CompanyEarningsItem {
+  id: number;
+  ticker: string | null;
+  quarter: string | null;
+  call_date: string | null;
+  sentiment: {
+    ai_demand: string | null;
+    power_constraints: string | null;
+    datacenter_capex: string | null;
+    overall: string | null;
+  };
+  has_guidance: boolean;
+  capex_mention_count: number;
+  ai_power_mention_count: number;
+  transcript_url: string | null;
+  guidance_quote?: string | null;
+}
+
+interface CompanyEarningsPayload {
+  company_id: number;
+  canonical_name: string;
+  ticker: string | null;
+  cik: string | null;
+  items: CompanyEarningsItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+function formatQuarterShort(q: string | null): string {
+  if (!q) return "";
+  const m = q.match(/^(\d{4})Q(\d)$/);
+  if (m) return `Q${m[2]} FY${m[1].slice(2)}`;
+  return q;
+}
+
 function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: number; onClose: () => void; onOpenSite: (uid: string) => void }) {
   const { data: detail, loading: detLoading, error: detError } = useApi<CompanyDetail>(`/api/companies/${companyId}`);
   const { data: roleData, loading: roleLoading } = useApi<RoleSummary>(`/api/companies/${companyId}/role-summary`);
@@ -104,6 +146,10 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
   // sites-by-state and total-MW.
   const { data: sitesData, loading: sitesLoading } = useApi<CompanySitesResponse>(`/api/companies/${companyId}/sites?page_size=1000`);
   const { data: filingsData, loading: filingsLoading } = useApi<FilingsResponse>(`/api/companies/${companyId}/filings?limit=20`);
+  // Earnings calls timeline (most recent 8). Empty list is a valid state.
+  const { data: earningsData, loading: earningsLoading, error: earningsError } =
+    useApi<CompanyEarningsPayload>(`/api/companies/${companyId}/earnings?limit=8`);
+  const [selectedEarningsId, setSelectedEarningsId] = useState<number | null>(null);
 
   const loading = detLoading || roleLoading || sitesLoading;
   const ROLE_COLOR_PALETTE = ["#3b82f6", "#22c55e", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899", "#f97316", "#10b981", "#a855f7", "#14b8a6"];
@@ -133,6 +179,13 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
   })();
 
   return (
+    <>
+    {selectedEarningsId != null && (
+      <EarningsDetailModal
+        transcriptId={selectedEarningsId}
+        onClose={() => setSelectedEarningsId(null)}
+      />
+    )}
     <div
       onClick={onClose}
       style={{
@@ -346,6 +399,99 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
                 )}
               </div>
 
+              {/* Earnings calls timeline */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ color: "#94a3b8", fontSize: "11px", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Mic size={11} /> Earnings Calls ({earningsData?.total ?? 0})
+                </div>
+                {earningsLoading ? (
+                  <div style={{ color: "#3b82f6", textAlign: "center", padding: "20px 0", fontSize: 12 }}>Loading earnings calls...</div>
+                ) : earningsError ? (
+                  <ErrorPanel
+                    title="Could not load earnings"
+                    message="The earnings transcripts endpoint returned an error. Try again in a moment."
+                    variant="inline"
+                  />
+                ) : (earningsData?.items ?? []).length === 0 ? (
+                  <div style={{ color: "#64748b", fontSize: 12, padding: "12px 14px", background: "#1e293b", border: "1px solid #334155", borderRadius: 8 }}>
+                    No earnings transcripts ingested for this company yet. The Alpha Vantage adapter refreshes daily off the earnings calendar.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {(earningsData?.items ?? []).map((e) => {
+                      const headline = e.guidance_quote
+                        ?? (e.has_guidance ? "Guidance disclosed" : null)
+                        ?? (e.ai_power_mention_count + e.capex_mention_count > 0
+                              ? `${e.capex_mention_count} capex \u00b7 ${e.ai_power_mention_count} AI/power mentions`
+                              : "(no extracted highlights yet)");
+                      return (
+                        <button
+                          key={e.id}
+                          type="button"
+                          onClick={() => setSelectedEarningsId(e.id)}
+                          aria-haspopup="dialog"
+                          style={{
+                            background: "#1e293b",
+                            border: "1px solid #334155",
+                            borderRadius: 8,
+                            padding: "10px 14px",
+                            color: "inherit",
+                            textAlign: "left",
+                            display: "flex",
+                            gap: 12,
+                            alignItems: "center",
+                            cursor: "pointer",
+                          }}
+                          onMouseOver={ev => (ev.currentTarget.style.background = "#22304a")}
+                          onMouseOut={ev => (ev.currentTarget.style.background = "#1e293b")}
+                        >
+                          <div style={{ flexShrink: 0, minWidth: 84 }}>
+                            <div style={{ color: "#cbd5e1", fontWeight: 600, fontSize: 11 }}>
+                              {e.call_date ?? "?"}
+                            </div>
+                            <div style={{ color: "#64748b", fontSize: 10, marginTop: 1 }}>
+                              Earnings call
+                            </div>
+                          </div>
+                          <span style={{
+                            padding: "1px 7px",
+                            borderRadius: 4,
+                            fontSize: "10px",
+                            fontWeight: 600,
+                            background: "#0f172a",
+                            border: "1px solid #334155",
+                            color: "#94a3b8",
+                            flexShrink: 0,
+                          }}>
+                            {formatQuarterShort(e.quarter)}
+                          </span>
+                          <div style={{ flexShrink: 0 }}>
+                            <SentimentBadge axis="overall" value={e.sentiment.overall} size="sm" />
+                          </div>
+                          <div style={{
+                            flex: 1,
+                            minWidth: 0,
+                            color: "#94a3b8",
+                            fontSize: 11,
+                            lineHeight: 1.4,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}>
+                            {headline}
+                          </div>
+                        </button>
+                      );
+                    })}
+                    {(earningsData?.total ?? 0) > 8 && (
+                      <div style={{ color: "#64748b", fontSize: 11, textAlign: "center", padding: "8px 0" }}>
+                        Showing 8 of {earningsData?.total} calls
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
               {/* Sites by state */}
               {sitesByState.length > 0 && (
                 <div style={{ marginBottom: 20 }}>
@@ -441,6 +587,7 @@ function CompanyDetailPanel({ companyId, onClose, onOpenSite }: { companyId: num
         </div>
       </div>
     </div>
+    </>
   );
 }
 
@@ -453,8 +600,49 @@ interface CompaniesAggregate {
   stages_included: string[];
 }
 
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+const PAGE_SIZE = 50;
+
+type SortField = "canonical_name" | "ticker" | "site_count" | "mw_total";
+type SortDir = "asc" | "desc";
+type PopoverKey = "canonical_name" | "ticker" | "public_private" | "role";
+
+interface ColumnFiltersState {
+  names: string[];
+  tickers: string[];
+  publicPrivates: string[];
+  roles: string[];
+}
+
+const EMPTY_FILTERS: ColumnFiltersState = { names: [], tickers: [], publicPrivates: [], roles: [] };
+
+// Initial direction for each column when it is clicked for the first time.
+// Text columns sort A->Z (asc); numeric columns sort largest-first (desc).
+function defaultDirFor(field: SortField): SortDir {
+  return field === "canonical_name" || field === "ticker" ? "asc" : "desc";
+}
+
+function buildDirectoryUrl(params: {
+  columnFilters: ColumnFiltersState;
+  sortField: SortField;
+  sortDir: SortDir;
+  page: number;
+  pageSize: number;
+}): string {
+  const sp = new URLSearchParams();
+  sp.set("order_by", params.sortField);
+  sp.set("direction", params.sortDir);
+  sp.set("page", String(params.page));
+  sp.set("page_size", String(params.pageSize));
+  const f = params.columnFilters;
+  if (f.names.length) sp.set("names", f.names.join(","));
+  if (f.tickers.length) sp.set("tickers", f.tickers.join(","));
+  if (f.publicPrivates.length) sp.set("public_privates", f.publicPrivates.join(","));
+  if (f.roles.length) sp.set("roles_in", f.roles.join(","));
+  return `/api/companies/?${sp.toString()}`;
+}
+
 export default function CompaniesTab() {
-  const { data, loading, error, errorInfo, retry, lastFetchedAt, lineage } = useApi<CompaniesListResponse>("/api/companies/?order_by=site_count&page_size=50");
   // KPI row queries operational and under-construction separately so each
   // headline number is unambiguous about what stage it covers.
   const { data: activeAgg } = useApi<CompaniesAggregate>(
@@ -463,48 +651,132 @@ export default function CompaniesTab() {
   const { data: constructionAgg } = useApi<CompaniesAggregate>(
     `/api/companies/aggregate?stages=Construction`,
   );
-  const [sortField, setSortField] = useState<"site_count" | "mw_total" | "canonical_name">("site_count");
-  const [sortAsc, setSortAsc] = useState(false);
+
+  // Column-header filter / sort / pagination state.
+  const [columnFilters, setColumnFilters] = useState<ColumnFiltersState>(EMPTY_FILTERS);
+  const [openPopover, setOpenPopover] = useState<PopoverKey | null>(null);
+  const [sortField, setSortField] = useState<SortField>("site_count");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+  const [page, setPage] = useState(1);
+
+  // One-shot fetch of all companies (up to 500) to populate the column-filter
+  // popover option lists with the full universe of names / tickers / roles —
+  // not just the current visible page.
+  const [allOptions, setAllOptions] = useState<{
+    names: string[];
+    tickers: string[];
+    roles: string[];
+  }>({ names: [], tickers: [], roles: [] });
+  useEffect(() => {
+    fetch(`${API_BASE}/api/companies/?page_size=500&order_by=canonical_name&direction=asc`)
+      .then((r) => r.json())
+      .then((d) => {
+        const payload: CompanyRow[] =
+          (d?.data?.data as CompanyRow[]) ?? (d?.data as CompanyRow[]) ?? [];
+        const names = new Set<string>();
+        const tickers = new Set<string>();
+        const roles = new Set<string>();
+        for (const c of payload) {
+          if (c.canonical_name) names.add(c.canonical_name);
+          if (c.ticker) tickers.add(c.ticker);
+          for (const r of c.roles ?? []) if (r.role) roles.add(r.role);
+        }
+        setAllOptions({
+          names: [...names].sort((a, b) => a.localeCompare(b)),
+          tickers: [...tickers].sort((a, b) => a.localeCompare(b)),
+          roles: [...roles].sort((a, b) => a.localeCompare(b)),
+        });
+      })
+      .catch(() => {/* silent — popovers will just show empty option lists */});
+  }, []);
+
+  // Server-data state — kept as "last good" so the table doesn't blank
+  // during refetches. `fetching` drives the dim overlay.
+  const [data, setData] = useState<CompaniesListResponse | null>(null);
+  const [lineage, setLineage] = useState<{ source_url?: string; retrieved_at?: string; confidence?: number } | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [fetching, setFetching] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [errorInfo, setErrorInfo] = useState<{ title: string; message: string } | null>(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
+  const reqIdRef = useRef(0);
+  const [retryNonce, setRetryNonce] = useState(0);
+
   const [selectedCompanyId, setSelectedCompanyId] = useState<number | null>(null);
   const [selectedSiteUid, setSelectedSiteUid] = useState<string | null>(null);
 
-  if (loading) return <Loader />;
+  // Reset page when any non-page filter changes.
+  useEffect(() => {
+    setPage(1);
+  }, [columnFilters, sortField, sortDir]);
 
-  if (error) {
-    return (
-      <div style={{ padding: "24px" }}>
-        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
-      </div>
-    );
-  }
+  // Directory fetch. Uses a request-id ref so stale responses (e.g. from
+  // rapid filter toggles) are dropped instead of clobbering newer data.
+  useEffect(() => {
+    const url = buildDirectoryUrl({
+      columnFilters,
+      sortField,
+      sortDir,
+      page,
+      pageSize: PAGE_SIZE,
+    });
+    const myReq = ++reqIdRef.current;
+    setFetching(true);
+    setError(null);
+    setErrorInfo(null);
+    fetch(`${API_BASE}${url}`)
+      .then(async (r) => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
+      .then((d) => {
+        if (myReq !== reqIdRef.current) return; // stale, drop
+        let payload: CompaniesListResponse;
+        if (d && typeof d === "object" && "data" in d && "lineage" in d) {
+          setLineage(d.lineage ?? null);
+          payload = d.data as CompaniesListResponse;
+        } else {
+          setLineage(null);
+          payload = d as CompaniesListResponse;
+        }
+        setData(payload);
+        setLastFetchedAt(new Date());
+      })
+      .catch((e) => {
+        if (myReq !== reqIdRef.current) return;
+        const msg = (e && (e.message || String(e))) || "Request failed";
+        setError(msg);
+        const isNetwork = /Failed to fetch|NetworkError/i.test(msg);
+        setErrorInfo({
+          title: isNetwork ? "Network error" : "Something went wrong",
+          message: isNetwork
+            ? "Could not reach the server. Check your connection."
+            : msg,
+        });
+      })
+      .finally(() => {
+        if (myReq !== reqIdRef.current) return;
+        setLoading(false);
+        setFetching(false);
+      });
+  }, [columnFilters, sortField, sortDir, page, retryNonce]);
+
+  const retry = () => setRetryNonce((n) => n + 1);
 
   const companies = data?.data ?? [];
-  const total = data?.total ?? companies.length;
+  const total = data?.total ?? 0;
 
-  if (companies.length === 0) {
-    return (
-      <div style={{ padding: "24px" }}>
-        <div style={{ ...CARD_STYLE, textAlign: "center", padding: "60px 20px" }}>
-          <div style={{ color: "#94a3b8", fontSize: "14px" }}>No company data available yet.</div>
-        </div>
-      </div>
-    );
-  }
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const from = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const to = Math.min(page * PAGE_SIZE, total);
 
-  const sorted = [...companies].sort((a, b) => {
-    if (sortField === "canonical_name") {
-      return sortAsc
-        ? a.canonical_name.localeCompare(b.canonical_name)
-        : b.canonical_name.localeCompare(a.canonical_name);
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortField(field);
+      setSortDir(defaultDirFor(field));
     }
-    const av = a[sortField] ?? 0;
-    const bv = b[sortField] ?? 0;
-    return sortAsc ? av - bv : bv - av;
-  });
-
-  const toggleSort = (field: typeof sortField) => {
-    if (sortField === field) setSortAsc(v => !v);
-    else { setSortField(field); setSortAsc(false); }
   };
 
   // Aggregates by stage. Both come from the dedicated endpoint that does
@@ -517,6 +789,80 @@ export default function CompaniesTab() {
   const fmtPower = (mw: number) =>
     mw >= 1000 ? `${(mw / 1000).toFixed(1)}` : `${Math.round(mw).toLocaleString()}`;
   const fmtUnit = (mw: number) => (mw >= 1000 ? "GW" : "MW");
+
+  if (loading && !data) return <Loader />;
+
+  if (error && !data) {
+    return (
+      <div style={{ padding: "24px" }}>
+        <ErrorPanel title={errorInfo?.title} message={errorInfo?.message} onRetry={retry} lastAttempt={lastFetchedAt} />
+      </div>
+    );
+  }
+
+  // Column definition: each header is either a popover trigger (filter +
+  // optionally sort) or a sort-only header (Sites / Total MW). The popover's
+  // option list is sourced from `allOptions` (one-shot fetch on mount).
+  interface ColumnDef {
+    label: string;
+    popover: PopoverKey | null;       // null = no popover; click toggles sort
+    sortField: SortField | null;      // server-side sort key for this column
+    filterValues: string[];           // current selection (for the dot indicator)
+    options: string[];                // option list shown inside the popover
+    onFilterChange: (next: string[]) => void;
+  }
+  const COLS: ColumnDef[] = [
+    {
+      label: "Company",
+      popover: "canonical_name",
+      sortField: "canonical_name",
+      filterValues: columnFilters.names,
+      options: allOptions.names,
+      onFilterChange: (next) => setColumnFilters((f) => ({ ...f, names: next })),
+    },
+    {
+      label: "Ticker",
+      popover: "ticker",
+      sortField: "ticker",
+      filterValues: columnFilters.tickers,
+      options: allOptions.tickers,
+      onFilterChange: (next) => setColumnFilters((f) => ({ ...f, tickers: next })),
+    },
+    {
+      label: "Type",
+      popover: "public_private",
+      sortField: null,
+      filterValues: columnFilters.publicPrivates,
+      options: ["public", "private", "null"],
+      onFilterChange: (next) => setColumnFilters((f) => ({ ...f, publicPrivates: next })),
+    },
+    {
+      label: "Roles",
+      popover: "role",
+      sortField: null,
+      filterValues: columnFilters.roles,
+      options: allOptions.roles,
+      onFilterChange: (next) => setColumnFilters((f) => ({ ...f, roles: next })),
+    },
+    {
+      label: "Sites",
+      popover: null,
+      sortField: "site_count",
+      filterValues: [],
+      options: [],
+      onFilterChange: () => {},
+    },
+    {
+      label: "Total MW",
+      popover: null,
+      sortField: "mw_total",
+      filterValues: [],
+      options: [],
+      onFilterChange: () => {},
+    },
+  ];
+
+  const pageTokens = paginationWindow(page, totalPages, 7);
 
   return (
     <div style={{ padding: "24px", display: "flex", flexDirection: "column", gap: "20px" }}>
@@ -609,101 +955,248 @@ export default function CompaniesTab() {
         </div>
       )}
 
+
       {/* Companies table */}
       <div style={CARD_STYLE}>
         <h3 style={{ color: "white", fontWeight: 600, fontSize: 15, margin: "0 0 16px" }}>
           Company Directory -- Click row to view details
         </h3>
-        <div style={{ overflowX: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-            <thead>
-              <tr style={{ borderBottom: "1px solid #334155" }}>
-                {[
-                  { label: "Company", field: "canonical_name" as const },
-                  { label: "Ticker", field: null },
-                  { label: "Type", field: null },
-                  { label: "Roles", field: null },
-                  { label: "Sites", field: "site_count" as const },
-                  { label: "Total MW", field: "mw_total" as const },
-                ].map(({ label, field }) => (
-                  <th
-                    key={label}
-                    onClick={field ? () => toggleSort(field) : undefined}
-                    style={{
-                      color: "#64748b", textAlign: "left", padding: "10px 14px",
-                      fontWeight: 500, whiteSpace: "nowrap",
-                      cursor: field ? "pointer" : "default",
-                      userSelect: "none",
-                    }}
+
+        {fetching && companies.length === 0 ? (
+          <Loader />
+        ) : total === 0 ? (
+          <div style={{ padding: "48px 20px", textAlign: "center" }}>
+            <div style={{ color: "#94a3b8", fontSize: 13 }}>No companies match these filters.</div>
+            <div style={{ color: "#64748b", fontSize: 11, marginTop: 6 }}>
+              Open a column header to clear or adjust its filter.
+            </div>
+          </div>
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <div
+              style={{
+                opacity: fetching ? 0.6 : 1,
+                pointerEvents: fetching ? "none" : "auto",
+                transition: "opacity 0.2s linear",
+              }}
+              aria-busy={fetching}
+            >
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid #334155" }}>
+                    {COLS.map((col) => {
+                      const isActiveSort =
+                        col.sortField !== null && sortField === col.sortField;
+                      const ariaSort: "ascending" | "descending" | "none" =
+                        isActiveSort
+                          ? sortDir === "asc"
+                            ? "ascending"
+                            : "descending"
+                          : "none";
+                      const hasFilter = col.filterValues.length > 0;
+                      const isPopoverOpen =
+                        col.popover !== null && openPopover === col.popover;
+
+                      const handleClick = () => {
+                        if (col.popover) {
+                          setOpenPopover((cur) =>
+                            cur === col.popover ? null : col.popover,
+                          );
+                        } else if (col.sortField) {
+                          toggleSort(col.sortField);
+                        }
+                      };
+
+                      return (
+                        <th
+                          key={col.label}
+                          onClick={handleClick}
+                          aria-sort={col.sortField ? ariaSort : undefined}
+                          aria-haspopup={col.popover ? "listbox" : undefined}
+                          aria-expanded={col.popover ? isPopoverOpen : undefined}
+                          style={{
+                            color: hasFilter || isActiveSort ? "#60a5fa" : "#64748b",
+                            textAlign: "left",
+                            padding: "10px 14px",
+                            fontWeight: 500,
+                            whiteSpace: "nowrap",
+                            cursor: col.popover || col.sortField ? "pointer" : "default",
+                            userSelect: "none",
+                            position: "relative",
+                          }}
+                        >
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            {col.label}
+                            {col.popover && (
+                              <Filter
+                                size={10}
+                                style={{
+                                  opacity: hasFilter ? 1 : 0.5,
+                                  color: hasFilter ? "#3b82f6" : undefined,
+                                }}
+                              />
+                            )}
+                            {isActiveSort && (
+                              sortDir === "asc"
+                                ? <ChevronUp size={10} />
+                                : <ChevronDown size={10} />
+                            )}
+                          </span>
+                          {col.popover && isPopoverOpen && (
+                            <ColumnFilterPopover
+                              options={col.options}
+                              selected={col.filterValues}
+                              onChange={col.onFilterChange}
+                              onClose={() => setOpenPopover(null)}
+                              showSort={col.sortField !== null}
+                              sortField={sortField}
+                              sortDir={sortDir}
+                              colSortField={col.sortField}
+                              onSort={(dir) => {
+                                if (!col.sortField) return;
+                                setSortField(col.sortField);
+                                setSortDir(dir);
+                              }}
+                            />
+                          )}
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {companies.map(c => (
+                    <tr
+                      key={c.id}
+                      onClick={() => setSelectedCompanyId(c.id)}
+                      style={{
+                        borderBottom: "1px solid #1e293b",
+                        cursor: "pointer",
+                        transition: "background 0.1s",
+                      }}
+                      onMouseOver={e => (e.currentTarget.style.background = "#162032")}
+                      onMouseOut={e => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <td style={{ padding: "10px 14px", color: "#e2e8f0", fontWeight: 500 }}>{c.canonical_name}</td>
+                      <td style={{ padding: "10px 14px", color: "#64748b" }}>{c.ticker ?? "--"}</td>
+                      <td style={{ padding: "10px 14px" }}>
+                        {c.public_private ? (
+                          <span style={{
+                            padding: "1px 7px", borderRadius: 4, fontSize: "10px", fontWeight: 600,
+                            background: c.public_private === "public" ? "#052e16" : "#1c1917",
+                            border: `1px solid ${c.public_private === "public" ? "#16a34a" : "#44403c"}`,
+                            color: c.public_private === "public" ? "#4ade80" : "#a8a29e",
+                          }}>
+                            {c.public_private.toUpperCase()}
+                          </span>
+                        ) : <span style={{ color: "#475569" }}>--</span>}
+                      </td>
+                      <td style={{ padding: "10px 14px" }}>
+                        <div style={{ display: "flex", gap: 3, flexWrap: "wrap", maxWidth: 220 }}>
+                          {(c.roles ?? []).slice(0, 4).map(r => (
+                            <span key={r.role} style={{
+                              padding: "1px 6px",
+                              borderRadius: 4,
+                              fontSize: "9px",
+                              fontWeight: 600,
+                              letterSpacing: "0.03em",
+                              background: "#0f172a",
+                              border: "1px solid #334155",
+                              color: "#94a3b8",
+                              whiteSpace: "nowrap",
+                            }} title={`${r.site_count} sites`}>
+                              {r.role.replace(/_/g, " ")}
+                            </span>
+                          ))}
+                          {(c.roles?.length ?? 0) > 4 && (
+                            <span style={{ color: "#475569", fontSize: 9 }}>
+                              +{(c.roles?.length ?? 0) - 4}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{c.site_count}</td>
+                      <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{(c.mw_total ?? 0).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+
+        {/* Pagination bar */}
+        {total > 0 && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              gap: 12,
+              flexWrap: "wrap",
+              rowGap: 8,
+              marginTop: 16,
+              borderTop: "1px solid #1e293b",
+              paddingTop: 12,
+            }}
+          >
+            <div aria-live="polite" style={{ color: "#94a3b8", fontSize: 12 }}>
+              Showing {from.toLocaleString()}–{to.toLocaleString()} of {total.toLocaleString()}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <PageTile
+                disabled={page === 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                ariaLabel="Previous page"
+              >
+                ‹
+              </PageTile>
+              {pageTokens.map((token, idx) => {
+                if (token === "ellipsis") {
+                  return (
+                    <span
+                      key={`ell-${idx}`}
+                      aria-hidden="true"
+                      tabIndex={-1}
+                      style={{
+                        width: 28,
+                        height: 28,
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#94a3b8",
+                        fontSize: 12,
+                        cursor: "default",
+                      }}
+                    >
+                      …
+                    </span>
+                  );
+                }
+                const isActive = token === page;
+                return (
+                  <PageTile
+                    key={token}
+                    active={isActive}
+                    ariaLabel={`Go to page ${token}`}
+                    ariaCurrent={isActive ? "page" : undefined}
+                    onClick={() => setPage(token)}
                   >
-                    {label}
-                    {field && sortField === field && (
-                      sortAsc
-                        ? <ChevronUp size={10} style={{ display: "inline", marginLeft: 3 }} />
-                        : <ChevronDown size={10} style={{ display: "inline", marginLeft: 3 }} />
-                    )}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {sorted.map(c => (
-                <tr
-                  key={c.id}
-                  onClick={() => setSelectedCompanyId(c.id)}
-                  style={{
-                    borderBottom: "1px solid #1e293b",
-                    cursor: "pointer",
-                    transition: "background 0.1s",
-                  }}
-                  onMouseOver={e => (e.currentTarget.style.background = "#162032")}
-                  onMouseOut={e => (e.currentTarget.style.background = "transparent")}
-                >
-                  <td style={{ padding: "10px 14px", color: "#e2e8f0", fontWeight: 500 }}>{c.canonical_name}</td>
-                  <td style={{ padding: "10px 14px", color: "#64748b" }}>{c.ticker ?? "--"}</td>
-                  <td style={{ padding: "10px 14px" }}>
-                    {c.public_private ? (
-                      <span style={{
-                        padding: "1px 7px", borderRadius: 4, fontSize: "10px", fontWeight: 600,
-                        background: c.public_private === "public" ? "#052e16" : "#1c1917",
-                        border: `1px solid ${c.public_private === "public" ? "#16a34a" : "#44403c"}`,
-                        color: c.public_private === "public" ? "#4ade80" : "#a8a29e",
-                      }}>
-                        {c.public_private.toUpperCase()}
-                      </span>
-                    ) : <span style={{ color: "#475569" }}>--</span>}
-                  </td>
-                  <td style={{ padding: "10px 14px" }}>
-                    <div style={{ display: "flex", gap: 3, flexWrap: "wrap", maxWidth: 220 }}>
-                      {(c.roles ?? []).slice(0, 4).map(r => (
-                        <span key={r.role} style={{
-                          padding: "1px 6px",
-                          borderRadius: 4,
-                          fontSize: "9px",
-                          fontWeight: 600,
-                          letterSpacing: "0.03em",
-                          background: "#0f172a",
-                          border: "1px solid #334155",
-                          color: "#94a3b8",
-                          whiteSpace: "nowrap",
-                        }} title={`${r.site_count} sites`}>
-                          {r.role.replace(/_/g, " ")}
-                        </span>
-                      ))}
-                      {(c.roles?.length ?? 0) > 4 && (
-                        <span style={{ color: "#475569", fontSize: 9 }}>
-                          +{(c.roles?.length ?? 0) - 4}
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{c.site_count}</td>
-                  <td style={{ padding: "10px 14px", color: "white", fontWeight: 700 }}>{(c.mw_total ?? 0).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    {token}
+                  </PageTile>
+                );
+              })}
+              <PageTile
+                disabled={page >= totalPages}
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                ariaLabel="Next page"
+              >
+                ›
+              </PageTile>
+            </div>
+          </div>
+        )}
+
         <CitationFooter
           sources={["Aterio Database"]}
           retrievedAt={lineage?.retrieved_at}
@@ -715,6 +1208,260 @@ export default function CompaniesTab() {
   );
 }
 
+function PageTile({
+  children,
+  onClick,
+  active = false,
+  disabled = false,
+  ariaLabel,
+  ariaCurrent,
+}: {
+  children: ReactNode;
+  onClick?: () => void;
+  active?: boolean;
+  disabled?: boolean;
+  ariaLabel?: string;
+  ariaCurrent?: "page";
+}) {
+  return (
+    <button
+      type="button"
+      onClick={disabled ? undefined : onClick}
+      disabled={disabled}
+      aria-label={ariaLabel}
+      aria-current={ariaCurrent}
+      style={{
+        width: 28,
+        height: 28,
+        borderRadius: 6,
+        fontSize: 12,
+        fontWeight: 600,
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        border: `1px solid ${active ? "#3b82f6" : "#334155"}`,
+        background: active ? "#3b82f6" : "#1e293b",
+        color: active ? "#ffffff" : "#94a3b8",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.4 : 1,
+        padding: 0,
+      }}
+      onMouseOver={(e) => {
+        if (!active && !disabled) e.currentTarget.style.background = "#22304a";
+      }}
+      onMouseOut={(e) => {
+        if (!active && !disabled) e.currentTarget.style.background = "#1e293b";
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function Loader() {
   return <div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "400px", color: "#3b82f6" }}>Loading companies...</div>;
+}
+
+// Inline popover anchored to its parent `<th>` (which is position: relative).
+// Renders sort buttons (when the column is sortable), a search input that
+// client-side filters the option list, and a multi-select checkbox list.
+// Each tick fires onChange synchronously so the parent re-issues the fetch.
+function ColumnFilterPopover({
+  options,
+  selected,
+  onChange,
+  onClose,
+  showSort,
+  sortField,
+  sortDir,
+  colSortField,
+  onSort,
+}: {
+  options: string[];
+  selected: string[];
+  onChange: (next: string[]) => void;
+  onClose: () => void;
+  showSort: boolean;
+  sortField: SortField;
+  sortDir: SortDir;
+  colSortField: SortField | null;
+  onSort: (dir: SortDir) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const q = search.trim().toLowerCase();
+  const filtered = q === ""
+    ? options
+    : options.filter((o) => o.toLowerCase().includes(q));
+  const isOn = (v: string) => selected.includes(v);
+  const toggle = (v: string) => {
+    onChange(isOn(v) ? selected.filter((x) => x !== v) : [...selected, v]);
+  };
+
+  return (
+    <div
+      ref={ref}
+      role="dialog"
+      onClick={(e) => e.stopPropagation()}
+      style={{
+        position: "absolute",
+        top: "calc(100% + 4px)",
+        left: 0,
+        minWidth: 240,
+        maxWidth: 300,
+        background: "#0f172a",
+        border: "1px solid #334155",
+        borderRadius: 8,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
+        zIndex: 50,
+        padding: 8,
+        color: "#e2e8f0",
+        fontWeight: 400,
+      }}
+    >
+      {showSort && colSortField && (
+        <div
+          style={{
+            display: "flex",
+            gap: 4,
+            marginBottom: 6,
+            paddingBottom: 6,
+            borderBottom: "1px solid #1e293b",
+          }}
+        >
+          <button
+            type="button"
+            onClick={() => onSort("asc")}
+            style={sortBtnStyle(sortField === colSortField && sortDir === "asc")}
+          >
+            <ChevronUp size={10} style={{ marginRight: 2 }} /> A→Z
+          </button>
+          <button
+            type="button"
+            onClick={() => onSort("desc")}
+            style={sortBtnStyle(sortField === colSortField && sortDir === "desc")}
+          >
+            <ChevronDown size={10} style={{ marginRight: 2 }} /> Z→A
+          </button>
+        </div>
+      )}
+      <input
+        type="text"
+        autoFocus
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="Search…"
+        aria-label="Search options"
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          height: 28,
+          padding: "0 8px",
+          background: "#1e293b",
+          border: "1px solid #334155",
+          borderRadius: 6,
+          color: "#e2e8f0",
+          fontSize: 12,
+          marginBottom: 6,
+        }}
+      />
+      {selected.length > 0 && (
+        <button
+          type="button"
+          onClick={() => onChange([])}
+          style={{
+            background: "transparent",
+            border: "none",
+            color: "#60a5fa",
+            fontSize: 10,
+            padding: "2px 4px",
+            cursor: "pointer",
+            marginBottom: 4,
+          }}
+        >
+          Clear ({selected.length})
+        </button>
+      )}
+      <div style={{ maxHeight: 240, overflowY: "auto" }}>
+        {filtered.length === 0 ? (
+          <div
+            style={{
+              padding: "12px 8px",
+              color: "#64748b",
+              fontSize: 11,
+              textAlign: "center",
+            }}
+          >
+            No matches
+          </div>
+        ) : (
+          filtered.map((opt) => (
+            <label
+              key={opt}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                padding: "4px 6px",
+                borderRadius: 4,
+                cursor: "pointer",
+                fontSize: 12,
+                color: "#e2e8f0",
+              }}
+              onMouseOver={(e) => (e.currentTarget.style.background = "#1e293b")}
+              onMouseOut={(e) => (e.currentTarget.style.background = "transparent")}
+            >
+              <input
+                type="checkbox"
+                checked={isOn(opt)}
+                onChange={() => toggle(opt)}
+                style={{ cursor: "pointer" }}
+              />
+              <span
+                style={{
+                  flex: 1,
+                  whiteSpace: "nowrap",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                {opt === "null" ? "(no type)" : opt}
+              </span>
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function sortBtnStyle(active: boolean): CSSProperties {
+  return {
+    display: "inline-flex",
+    alignItems: "center",
+    padding: "4px 8px",
+    border: `1px solid ${active ? "#3b82f6" : "#334155"}`,
+    background: active ? "#3b82f6" : "transparent",
+    color: active ? "#fff" : "#94a3b8",
+    borderRadius: 4,
+    fontSize: 10,
+    cursor: "pointer",
+    fontWeight: 600,
+  };
 }

@@ -84,12 +84,36 @@ async def companies_aggregate(
 async def list_companies(
     role: Optional[str] = Query(None, description="Filter to companies that have this role in site_company_associations"),
     top: Optional[int] = Query(None, ge=1, le=100, description="Return top N companies"),
-    order_by: Optional[str] = Query("site_count", regex="^(site_count|mw_total)$"),
+    order_by: Optional[str] = Query(
+        "site_count", regex="^(site_count|mw_total|canonical_name|ticker)$"
+    ),
+    direction: str = Query("desc", regex="^(asc|desc)$"),
+    q: Optional[str] = Query(
+        None,
+        description="Substring match on canonical_name or ticker (case-insensitive)",
+    ),
+    public_private: Optional[str] = Query(None, regex="^(public|private)$"),
+    names: Optional[str] = Query(
+        None,
+        description="Comma-separated canonical_names (case-insensitive exact match, OR'd). Multi-select from the Company column header.",
+    ),
+    tickers: Optional[str] = Query(
+        None,
+        description="Comma-separated tickers (case-insensitive exact match, OR'd). Multi-select from the Ticker column header.",
+    ),
+    public_privates: Optional[str] = Query(
+        None,
+        description="Comma-separated subset of {public, private, null}. 'null' literal matches rows where public_private IS NULL.",
+    ),
+    roles_in: Optional[str] = Query(
+        None,
+        description="Comma-separated role names (OR'd). Returns companies that have ANY of these roles in site_company_associations.",
+    ),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
 ):
-    """Paginated company directory with optional role, top-N, and ordering filters."""
+    """Paginated company directory with optional role, top-N, search, and ordering filters."""
 
     if role or top or order_by:
         # Build an aggregated query joining companies to site_company_associations + sites
@@ -111,13 +135,83 @@ async def list_companies(
             base = base.where(SiteCompanyAssociation.role == role)
             count_base = count_base.where(SiteCompanyAssociation.role == role)
 
+        # Case-insensitive substring search across canonical_name + ticker.
+        if q:
+            search_clause = sql_or(
+                Company.canonical_name.ilike(f"%{q}%"),
+                Company.ticker.ilike(f"%{q}%"),
+            )
+            base = base.where(search_clause)
+            count_base = count_base.where(search_clause)
+
+        # Optional public/private filter.
+        if public_private:
+            base = base.where(Company.public_private == public_private)
+            count_base = count_base.where(Company.public_private == public_private)
+
+        # Plural multi-select filters from the column-header popovers. Empty
+        # token entries are stripped so trailing commas don't widen the match.
+        def _split(csv: str) -> list[str]:
+            return [v.strip() for v in csv.split(",") if v.strip()]
+
+        if names:
+            name_list = _split(names)
+            if name_list:
+                clause = sql_or(
+                    *[Company.canonical_name.ilike(n) for n in name_list]
+                )
+                base = base.where(clause)
+                count_base = count_base.where(clause)
+
+        if tickers:
+            ticker_list = _split(tickers)
+            if ticker_list:
+                clause = sql_or(
+                    *[Company.ticker.ilike(t) for t in ticker_list]
+                )
+                base = base.where(clause)
+                count_base = count_base.where(clause)
+
+        if public_privates:
+            pp_list = _split(public_privates)
+            if pp_list:
+                clauses = []
+                for v in pp_list:
+                    if v.lower() == "null":
+                        clauses.append(Company.public_private.is_(None))
+                    elif v in ("public", "private"):
+                        clauses.append(Company.public_private == v)
+                if clauses:
+                    pp_clause = sql_or(*clauses)
+                    base = base.where(pp_clause)
+                    count_base = count_base.where(pp_clause)
+
+        if roles_in:
+            role_list = _split(roles_in)
+            if role_list:
+                base = base.where(SiteCompanyAssociation.role.in_(role_list))
+                count_base = count_base.where(SiteCompanyAssociation.role.in_(role_list))
+
         base = base.group_by(Company.id)
 
-        # Ordering
+        # Ordering — honour `direction` for every sortable column. Company.id
+        # is appended as a deterministic tiebreaker so pagination is stable.
+        is_asc = direction == "asc"
         if order_by == "mw_total":
-            base = base.order_by(literal_column("mw_total").desc(), Company.id)
-        else:
-            base = base.order_by(literal_column("site_count").desc(), Company.id)
+            mw_col = literal_column("mw_total")
+            base = base.order_by(mw_col.asc() if is_asc else mw_col.desc(), Company.id)
+        elif order_by == "canonical_name":
+            name_col = Company.canonical_name
+            base = base.order_by(name_col.asc() if is_asc else name_col.desc(), Company.id)
+        elif order_by == "ticker":
+            ticker_col = Company.ticker
+            base = base.order_by(
+                ticker_col.asc().nulls_last() if is_asc else ticker_col.desc().nulls_last(),
+                Company.id,
+            )
+        else:  # site_count (default)
+            sc_col = literal_column("site_count")
+            base = base.order_by(sc_col.asc() if is_asc else sc_col.desc(), Company.id)
 
         total = (await db.execute(count_base)).scalar() or 0
 
@@ -164,7 +258,11 @@ async def list_companies(
             lineage=_LINEAGE,
         )
 
-    # Simple paginated list without aggregation
+    # Simple paginated list without aggregation.
+    # NOTE: This branch is currently unreachable because `order_by` has a
+    # default value ("site_count") and the `if role or top or order_by`
+    # guard above is therefore always truthy. Kept intentionally as a
+    # fallback in case the default is ever removed; do not delete.
     count_query = select(func.count(Company.id))
     total = (await db.execute(count_query)).scalar() or 0
 

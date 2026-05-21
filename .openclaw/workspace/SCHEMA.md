@@ -15,7 +15,7 @@ This Postgres database (`strategic_insights`, owner `sit_app`) is the warehouse 
 | Table | Grain | Approx rows |
 |---|---|---|
 | `sites` | one row per data-center building (Aterio's 73-col CSV) | 6,973 |
-| `events` | one row per (site, event) — announcement/start/activation/expansion | 13,304 |
+| `events` | one row per (site, milestone) — announcement / construction_start / construction_progress / construction_finished / activation / withdrawn / cancellation / delayed / land_bank_purchase | 16,293 |
 | `site_company_associations` | one row per (site, company, role, source) | 15,153 |
 | `generator_permits` | one row per (source registry, source_permit_id) | 4,150 |
 | `building_permits` | one row per (county source, source_permit_id) | 347 |
@@ -72,13 +72,15 @@ The following tables exist but have ~0 rows or no recent inserts. Querying them 
 
 1. **`generator_permits.parent_company` is NOT a real column** — `backend/agents/insights/prompts/qa_global_rules.md:121` documents it as a "virtual column", but `SELECT parent_company FROM generator_permits` errors. Roll up parents via `JOIN companies c ON c.id = generator_permits.resolved_company_id` and group by `c.canonical_name`.
 2. **`events.event_date` has bizarre future values** — max date is `2048-06-30`; the column accepts whatever the source CSV said. When filtering "recent events", clamp upper bound to today (`event_date <= CURRENT_DATE`).
-3. **`sites` date columns are stored as `varchar`, not `date`** — `announced_date`, `construction_start_date`, `construction_finished_date`, `activation_date`, `cancelled_date`, `project_withdrawn_date`, `latest_satellite_picture_date`, `estimated_active_date_by`. Some are partial ("2024", "Q3 2025"). Cast with `to_date` at your peril; prefer `record_updated_at`/`updated_at_source` for true timestamps.
+3. **`sites` milestone-date columns are DEPRECATED (all NULL in DB).** Aterio dropped `DATA_CENTER_ANNOUNCED_DATE`, `DATA_CENTER_CONSTRUCTION_START_DATE`, `DATA_CENTER_CANCELLED_DATE`, `DATA_CENTER_PROJECT_WITHDRAWN_DATE` from the inventory CSV (May 2026). The columns still exist on `sites` for back-compat but are populated NULL — they will not return data. **All milestone dates now live in the `events` table** (one row per site × milestone). Join on `events.aterio_dc_uid = sites.aterio_dc_uid` and filter `event_type`. The `activation_date` column on `sites` is the lone survivor but the same date is also in `events.event_type = 'activation'`. The `/api/sites/` endpoint enriches each row with min(event_date) per type using that join, but raw `query_database` SQL must do the join itself. Other `varchar` date columns (`latest_satellite_picture_date`, `estimated_active_date_by`, `construction_finished_date`) remain populated but partial; prefer `record_updated_at` / `updated_at_source` for true timestamps.
 4. **`sites.power_capacity_mw` is the canonical MW column** — there are also `prov_pub_tot_power_capacity_mw` (operator-published), `aterio_est_mw` (Aterio's estimate), and `aterio_est_mw_lower`/`aterio_est_mw_upper`. Use `power_capacity_mw` unless the question is specifically about operator disclosure vs estimate.
 5. **`sites.end_user_companies` is a comma-separated string, not an array** — to count tenants use `array_length(string_to_array(end_user_companies, ','), 1)`. Special sentinel values: `NULL`, empty string, `'null'`, `'[]'`. The hypothesizer treats all four as "no end user".
 6. **`sites.provider_name` includes `'Company Not Disclosed'` (1,355 rows)** — exclude this when ranking operators by MW.
 7. **`edgar_extractions` no longer has `UNIQUE(accession_number)`** — multi-deal filings (Constellation Q3 10-Q with 3 power items) produce N rows sharing one accession, disambiguated by `deal_index`. Use `UNIQUE(accession_number, deal_index)` if dedup needed.
 8. **`companies` has 1,254 rows but most are unresolved permittee LLCs.** When the user asks "which big-tech …", filter by `ticker IN ('AMZN','MSFT','GOOGL','META','ORCL','AAPL','NVDA')` or by canonical_name in a hard-coded set; do NOT trust `parent_company_id` (sparse).
 9. **Brief-runs / ai_session timestamp drift** — `ai_session.started_at` is `TIMESTAMPTZ`, `brief_runs.generated_at` is `TIMESTAMP` (no tz). When joining or comparing, normalize to UTC.
+10. **`events.event_date > CURRENT_DATE` means PROJECTED, not history.** Aterio's events stream emits forward-looking milestones (e.g. `event_type = 'activation', event_date = 2029-03-31` for a site still under construction) using the same schema as historical ones. Without disambiguation, "median time to activation" is polluted. Default rule: clamp `event_date <= CURRENT_DATE` for any historical metric. Surface projected events explicitly when forecasting (e.g. "1.4 GW of capacity is currently scheduled to activate by end-2026").
+11. **`construction_start` ≠ groundbreak; `pct_construction` ≠ fit-out progress.** Aterio's `construction_start` is the date they first observed construction via satellite imagery — for **retrofit** sites the building shell already existed, so this date can be late (or non-existent), and `pct_construction` jumps to 30–60% within days of `construction_start` (e.g. xAI Macroharder: 0% → 60% in 12 days). This is not a data bug; it's because % measures total-imagery-detected progress on a building that started pre-built. **Aterio does NOT label retrofit vs greenfield** — no column carries it, the data dictionary doesn't either. Slicing by build type is currently impossible from structured data; the `notes` text column has ~71 explicit retrofit mentions out of 5,815 non-empty rows. Any "time-to-build" analysis should caveat that retrofits compress the distribution.
 
 ---
 
@@ -168,7 +170,7 @@ The following tables exist but have ~0 rows or no recent inserts. Querying them 
 | column | type | meaning |
 |---|---|---|
 | `stage` | varchar(50) | `Announcement`, `Construction`, `Activated`, `Cancelled`, `Withdrawn` (note: real values include things like "Active under construction" — match with `ILIKE '%active%'`) |
-| `pct_construction` | float | percent complete 0–100 |
+| `pct_construction` | float | construction progress, **0–1.0 fraction** (e.g. 0.95 = 95%). DB max across all rows is exactly 1.0. Derived from Aterio satellite imagery, not operator-declared. Multiply by 100 for display. |
 | `project_execution_likelihood` | varchar(50) | `High` / `Medium` / `Low` |
 | `is_ai_facility` | boolean | flagged AI-purpose facility |
 | `flg_btm_onsite_power_generation` | boolean | behind-the-meter onsite generation flag |
@@ -211,9 +213,9 @@ The following tables exist but have ~0 rows or no recent inserts. Querying them 
 | `yearly_pue` | float | Power Usage Effectiveness (target ≤1.5; <1.3 is excellent) |
 | `tot_num_generators` | int | backup generator count |
 
-**Key columns — timeline (stored as `varchar`!):**
+**Key columns — timeline (mostly DEPRECATED — query `events` instead):**
 
-`announced_date`, `construction_start_date`, `construction_finished_date`, `activation_date`, `estimated_active_date_by`, `cancelled_date`, `project_withdrawn_date`, `latest_satellite_picture_date`. Free-text — may be partial ("Q3 2025"). Use `record_updated_at` / `updated_at_source` for real timestamp logic.
+`announced_date`, `construction_start_date`, `cancelled_date`, `project_withdrawn_date` — **all NULL in DB** after Aterio dropped them from the inventory CSV (May 2026). Use the `events` table for these. `construction_finished_date`, `activation_date`, `estimated_active_date_by`, `latest_satellite_picture_date` — still populated as `varchar`, may be partial ("Q3 2025"). Prefer `record_updated_at` / `updated_at_source` for real timestamp logic.
 
 **Key columns — utility / grid:**
 
@@ -242,22 +244,39 @@ The following tables exist but have ~0 rows or no recent inserts. Querying them 
 
 ### `events`
 
-**What it represents:** lifecycle events at a site (announcement, permit_filed, construction_start, activation, expansion, cancellation).
-**Grain:** one row per (`aterio_dc_uid`, event).
+**What it represents:** lifecycle events at a site. Sourced from Aterio's marketplace `data_center_events_*.csv` (one row per site × milestone); ingested by `_ingest_events_csv` and tagged `payload->>'source' = 'aterio_events_csv'`. **This is the SoT for milestone dates** — the corresponding columns on `sites` are deprecated/NULL.
+**Grain:** one row per (`aterio_dc_uid`, milestone). A single site has multiple `construction_progress` rows (one per imagery-detected percentage milestone).
 **Primary key:** `id`.
+
+**Canonical `event_type` vocabulary** (with current row counts):
+
+| event_type | n | meaning |
+|---|---:|---|
+| `activation` | 6,923 | site went live (or projected, if `event_date > today`) |
+| `announcement` | 4,983 | project publicly announced |
+| `construction_start` | 1,709 | Aterio first observed construction (NOT necessarily groundbreak — see gotcha #11) |
+| `construction_progress` | 1,668 | imagery-detected % milestone; **percentage in `payload->>'pct_complete'` (0–100 int) + `event_description` like "Construction 40% complete"** |
+| `withdrawn` | 486 | project not approved / withdrawn |
+| `construction_finished` | 437 | shell complete (precedes activation) |
+| `land_bank_purchase` | 42 | land secured for future build |
+| `cancellation` | 28 | project cancelled |
+| `delayed` | 17 | project delayed |
+
+**Do NOT use** `permit_filed` (never existed) or `expansion` (never existed) — old docs mention these; they're not in the data.
+
 **Key columns:**
 
 | column | type | meaning |
 |---|---|---|
 | `aterio_dc_uid` | varchar(255) | indexed; FK-style join to `sites.aterio_dc_uid` |
-| `event_type` | varchar(50) | `announcement` (4,638), `activation` (6,960), `construction_start` (1,678), `expansion`, `cancellation` (28). NOTE: **`permit_filed` is documented but unused in current data.** |
-| `event_date` | date | indexed; **CAUTION: contains future dates up to 2048-06-30** — clamp to `<= CURRENT_DATE` for "recent events" queries |
-| `event_description` | text | free-text |
-| `source_url` | varchar | citation URL |
-| `payload` | jsonb | extras |
+| `event_type` | varchar(50) | see vocabulary above |
+| `event_date` | date | indexed; **future dates indicate PROJECTED milestones, not history.** Clamp `event_date <= CURRENT_DATE` for any historical analysis ("median time to activation", "completion this year"). The `/api/events/` response exposes a derived `is_projected` flag the agent should mirror in prose. |
+| `event_description` | text | human-readable detail; for `construction_progress` reads like "Construction 40% complete" |
+| `source_url` | varchar | citation URL; usually NULL on `aterio_events_csv` rows |
+| `payload` | jsonb | `{source: 'aterio_events_csv', vendor_event_type: <original Aterio string>, pct_complete: <int, only on construction_progress>, provider_name: <denormalized for query speed>}` |
 
 **Indexes:** `aterio_dc_uid`, `event_date`.
-**Notes:** Useful for "recent activations" / "construction-start trend by quarter". Always join through `sites.aterio_dc_uid` to attach operator + state + MW.
+**Notes:** Always join through `sites.aterio_dc_uid` to attach operator + state + MW. For "X% complete sites by operator" use `event_type = 'construction_progress'` with `payload->>'pct_complete'` cast to int. Legacy synthesized rows tagged `payload->>'source' = 'aterio_csv_synthesized'` have been deleted (May 2026) — all events are now `aterio_events_csv`-sourced.
 
 ### `site_aliases`
 
@@ -434,6 +453,89 @@ Human-in-the-loop queue for parent-resolution adjudication. 88 rows, mostly inac
 **Grain:** one row per legacy_id.
 **Key columns:** `legacy_id` (UNIQUE), `buyer`, `seller`, `deal_type`, `energy_source`, `capacity_mw` (int!), `location`, `state`, `lat`, `lon`, `announced_date` (varchar, partial), `status`, `duration_years`, `headline`, `excerpt`, `source_type`, `source_url`, `edgar_url`, `confidence`, `data_source`, `energy_contract_mwh_million` (annual TWh-equivalent), `note`.
 **Notes:** Stale. Don't rely on it for current intel. Capacity is **integer MW**, not float.
+
+---
+
+## Domain: Earnings call transcripts
+
+Quarterly earnings-call transcripts pulled from Alpha Vantage for US-public TRACKED_FILERS. Forward-looking source — captures management capex guidance, AI/power language, competitive callouts, and MW capacity discussion before they show up in filings. Mirrors the `edgar_extractions` → `edgar_passages` parent/passage shape one-for-one.
+
+### `earnings_transcripts`
+
+**What it represents:** one quarterly earnings call per row, with LLM-extracted structured highlights and a 4-axis sentiment tag.
+**Grain:** UNIQUE on `(cik, quarter)`. Re-ingest is idempotent.
+**Key columns:**
+
+| column | type | meaning |
+|---|---|---|
+| `cik` | varchar(20) | indexed; joins to `companies.cik` and to `edgar_extractions.cik` |
+| `ticker` | varchar(16) | indexed; US-exchange ticker (AV lookup key) |
+| `company_name` | varchar(255) | as reported by Alpha Vantage |
+| `quarter` | varchar(8) | Alpha Vantage format e.g. `2026Q1` |
+| `fiscal_year`, `fiscal_quarter` | int | derived from `quarter` |
+| `call_date` | date | indexed (DESC); when the call happened |
+| `transcript_url` | varchar(1024) | source URL for citation footer |
+| `raw_text` | text | full transcript; **never returned by API endpoints** (too large); chunked into `earnings_passages` for BM25 search |
+| `speaker_count`, `word_count` | int | derived sanity stats |
+| `guidance` | jsonb | `{revenue_growth, capex_outlook, raw_quote}` — verbatim guidance quote |
+| `capex_mentions` | jsonb | list of `{quote, dollar_amount, context}` |
+| `ai_power_mentions` | jsonb | list of `{quote, theme: 'AI'|'datacenter'|'power'|'grid', context}` |
+| `competitive_mentions` | jsonb | list of `{quote, mentioned_company, sentiment}` |
+| `mw_capacity_mentions` | jsonb | list of `{quote, mw_value, location}` |
+| `sentiment_ai_demand` | varchar(16) | `bullish` \| `cautious` \| `bearish` \| `not_mentioned` |
+| `sentiment_power_constraints` | varchar(16) | same enum |
+| `sentiment_datacenter_capex` | varchar(16) | same enum |
+| `sentiment_overall` | varchar(16) | same enum |
+| `extracted_at`, `extractor_version` | timestamp / varchar | when the LLM extractor ran; NULL until extraction completes |
+| `retrieved_at`, `created_at` | timestamp | UTC |
+
+**Indexes:** `cik`, `ticker`, `call_date` (DESC), UNIQUE `(cik, quarter)`.
+**Notes:** Every `quote` field is **validated as a verbatim substring of `raw_text`** by `earnings_extractor.py` — same defense as `validate_buyer` in `edgar_extractor`. Hallucinated quotes are dropped before persistence, so any `quote` you see in JSONB is genuinely from the call.
+
+### `earnings_passages`
+
+**What it represents:** speaker-aware BM25 chunks of transcript text. Mirrors `edgar_passages` exactly.
+**Grain:** UNIQUE `(document_id, ord)`. One row per ~500-token chunk (hard cap 800).
+**Key columns:**
+
+| column | type | meaning |
+|---|---|---|
+| `passage_id` | uuid | PK; server default `gen_random_uuid()` |
+| `document_id` | bigint | FK → `earnings_transcripts.id` ON DELETE CASCADE |
+| `ord` | int | monotonic chunk order, starts at 0 |
+| `text` | text | the chunk |
+| `char_start`, `char_end` | int | character offsets back into `raw_text` |
+| `token_count` | int | cl100k_base tokens |
+| `tokenizer` | varchar(64) | `cl100k_base` |
+| `speaker` | varchar(255) | chunk-level attribution (CEO / CFO / "Analyst – Goldman Sachs") |
+| `section` | varchar(32) | `prepared_remarks` or `q_and_a` (CHECK-constrained) |
+| `tsv` | tsvector | populated by `earnings_passages_tsv_trg` trigger from `text` |
+
+**Indexes:** `document_id`, GIN on `tsv` (`gin_earnings_passages_tsv`).
+**Notes:** Reachable via `search_documents(source='earnings', q=...)`. Re-chunking deletes existing rows for the parent first to keep `(document_id, ord)` unique.
+
+### Example query patterns
+
+```sql
+-- Bullish AI-demand calls in 2026 with capex mentions
+SELECT ticker, quarter, call_date, jsonb_array_length(capex_mentions) AS n_capex
+FROM earnings_transcripts
+WHERE sentiment_ai_demand = 'bullish'
+  AND call_date >= '2026-01-01'
+ORDER BY call_date DESC;
+
+-- All MW-capacity quotes from hyperscalers, latest quarter
+SELECT et.ticker, mw->>'mw_value' AS mw, mw->>'location' AS loc, mw->>'quote' AS quote
+FROM earnings_transcripts et, jsonb_array_elements(et.mw_capacity_mentions) mw
+WHERE et.ticker IN ('AMZN','MSFT','GOOGL','META','ORCL')
+  AND et.call_date >= '2026-01-01';
+
+-- Competitive callouts naming a specific peer
+SELECT et.ticker, cm->>'mentioned_company' AS peer, cm->>'sentiment' AS tone, cm->>'quote'
+FROM earnings_transcripts et, jsonb_array_elements(et.competitive_mentions) cm
+WHERE cm->>'mentioned_company' IS NOT NULL
+ORDER BY et.call_date DESC LIMIT 50;
+```
 
 ---
 

@@ -1,8 +1,8 @@
-"""peer_review_template (V2) -- defensive self-review.
+"""peer_review_template -- defensive self-review.
 
-Costs an extra `gpt-5.4-mini` call per insight (PRD §6.3 -- accepted at V2).
-Returns a strictly typed pydantic verdict; on transport / parse failures,
-falls back to a deterministic "revise" with conservative checklist.
+Costs an extra `gpt-5.4-mini` call per insight (PRD §6.3). Returns a
+strictly typed pydantic verdict; on transport / parse failures, falls
+back to a deterministic "revise" with conservative checklist.
 """
 from __future__ import annotations
 

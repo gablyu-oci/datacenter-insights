@@ -125,8 +125,12 @@ describe("AIInsightsTab — default-load Phase 4 behavior", () => {
 
     render(<AIInsightsTab />);
 
-    expect(await screen.findByText("Headline 1")).toBeInTheDocument();
-    expect(screen.getByText("Headline 2")).toBeInTheDocument();
+    // In the mail-app layout the headline can appear in BOTH the sidebar
+    // row and the detail pane (when selected). Use getAllByText and assert
+    // at least one match.
+    await screen.findAllByText("Headline 1");
+    expect(screen.getAllByText("Headline 1").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Headline 2").length).toBeGreaterThanOrEqual(1);
     // FailedLatestBanner is NOT rendered.
     expect(
       screen.queryByText(/Today's auto-run failed at/),
@@ -151,8 +155,9 @@ describe("AIInsightsTab — default-load Phase 4 behavior", () => {
 
     render(<AIInsightsTab />);
 
-    // Initial snapshot is on screen.
-    expect(await screen.findByText("Headline 1")).toBeInTheDocument();
+    // Initial snapshot is on screen — mail-app layout may render the
+    // headline in both the sidebar and the detail pane.
+    await screen.findAllByText("Headline 1");
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Run again" }));
@@ -162,9 +167,9 @@ describe("AIInsightsTab — default-load Phase 4 behavior", () => {
     // setupTests.ts — so the parent tab is in the post-click /
     // pre-first-insight state.
     await waitFor(() => {
-      expect(screen.getByText("Headline 1")).toBeInTheDocument();
+      expect(screen.getAllByText("Headline 1").length).toBeGreaterThanOrEqual(1);
     });
-    expect(screen.getByText("Headline 2")).toBeInTheDocument();
+    expect(screen.getAllByText("Headline 2").length).toBeGreaterThanOrEqual(1);
   });
 
   // (c) Failed-latest with last_successful fallback
@@ -217,8 +222,11 @@ describe("AIInsightsTab — default-load Phase 4 behavior", () => {
     expect(
       await screen.findByText(/Today's auto-run failed at/),
     ).toBeInTheDocument();
-    // last_successful snapshot is rendered below the banner.
-    expect(screen.getByText("Previous Headline")).toBeInTheDocument();
+    // last_successful snapshot is rendered below the banner — the headline
+    // may appear in both the sidebar and detail pane in the new layout.
+    expect(
+      screen.getAllByText("Previous Headline").length,
+    ).toBeGreaterThanOrEqual(1);
     // Run-again button is still present.
     expect(
       screen.getByRole("button", { name: "Run again" }),

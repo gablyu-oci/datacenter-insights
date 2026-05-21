@@ -1,18 +1,21 @@
-"""Phase 3: scheduler-driven daily AI Insights cron tests.
+"""Scheduler-driven daily AI Insights cron tests.
 
-`pipeline.runner._invoke_insights_daily` is the headless entry point that
-APScheduler fires once per UTC day. Phase 3 retargeted it from
-``InsightOrchestrator`` onto ``run_agentic_synthesis`` (OpenClaw gateway).
+`pipeline.runner._invoke_insights_daily` is the headless entry point
+that APScheduler fires once per UTC day. The v2 synthesis driver
+grounds its own claims via the OpenClaw MCP tools, so this runner just
+pre-creates the AISession row and drives `run_agentic_synthesis` — no
+server-side FactPack.
 
 Contract under test:
 
   1. Idempotency guard: if a `created_by='scheduler'` AISession already
      exists today with status in (running, complete), no-op and return
      `{"skipped": 1, "reason": "idempotency_guard"}`.
-  2. Otherwise build the FactPack server-side, pre-create an AISession
-     row, and drive `run_agentic_synthesis` under a 600s wait_for. The
-     `insights_count` from `SynthesisResult` is surfaced as `stored` and
-     `fact_pack.total_rows()` as `fetched`.
+  2. Otherwise pre-create an AISession row and drive
+     `run_agentic_synthesis` under a 600s wait_for. The `insights_count`
+     from `SynthesisResult` is surfaced as `stored`; `fetched` is 0.
+     `run_agentic_synthesis` must NOT be called with a `fact_pack`
+     kwarg — the v2 signature has no such parameter.
   3. Up to 2 retries (3 attempts total) on exception, with a sleep
      between attempts. After the 3rd failure: re-raise so the
      APScheduler EVENT_JOB_ERROR listener fires.
@@ -36,17 +39,6 @@ import pipeline.runner as runner_mod
 # ---------------------------------------------------------------------------
 # Shared stubs
 # ---------------------------------------------------------------------------
-
-
-class _FactPackStub:
-    """Minimal FactPack stand-in. Only `total_rows` and `sections` are touched."""
-
-    def __init__(self, total: int) -> None:
-        self._total = total
-        self.sections: list = []  # for the fallback len(...) path
-
-    def total_rows(self) -> int:
-        return self._total
 
 
 class _SynthesisResultStub:
@@ -91,26 +83,6 @@ class _SynthesisDriverFactory:
             if isinstance(outcome, type) and issubclass(outcome, BaseException):
                 raise outcome("stub failure")
             return outcome
-
-        return _stub
-
-
-class _FactpackBuilderFactory:
-    """Stub for `build_factpack` returning a `_FactPackStub` per call."""
-
-    def __init__(self, *, total: int = 42, raise_on_first: bool = False) -> None:
-        self.total = total
-        self.raise_on_first = raise_on_first
-        self.calls = 0
-
-    def make(self):
-        outer = self
-
-        async def _stub(db):
-            outer.calls += 1
-            if outer.raise_on_first and outer.calls == 1:
-                raise RuntimeError("factpack build blip")
-            return _FactPackStub(outer.total)
 
         return _stub
 
@@ -177,25 +149,17 @@ def _patch_runner(
     monkeypatch: pytest.MonkeyPatch,
     *,
     synth_factory: _SynthesisDriverFactory,
-    fp_factory: _FactpackBuilderFactory | None = None,
-) -> _FactpackBuilderFactory:
-    """Wire the synthesis + factpack stubs into the runner namespace.
+) -> None:
+    """Wire the synthesis stub into the runner namespace.
 
-    The runner imports `run_agentic_synthesis` and `build_factpack`
-    inside the function body, so we patch the source modules.
+    The runner imports `run_agentic_synthesis` inside the function body,
+    so we patch the source module.
     """
-    if fp_factory is None:
-        fp_factory = _FactpackBuilderFactory(total=42)
     monkeypatch.setattr(
         "agents.insights.agentic_synthesis.run_agentic_synthesis",
         synth_factory.make(),
     )
-    monkeypatch.setattr(
-        "agents.insights.hypothesizer.build_factpack",
-        fp_factory.make(),
-    )
     monkeypatch.setattr(_asyncio, "sleep", _noop_sleep)
-    return fp_factory
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +171,7 @@ def _patch_runner(
 async def test_invoke_insights_daily_skips_when_idempotency_row_exists(monkeypatch):
     """If a scheduler-originated row already exists for today, no-op."""
     synth = _SynthesisDriverFactory(outcomes=[])
-    fp = _patch_runner(monkeypatch, synth_factory=synth)
+    _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=("some-uuid",))
 
@@ -219,40 +183,36 @@ async def test_invoke_insights_daily_skips_when_idempotency_row_exists(monkeypat
         "skipped": 1,
         "reason": "idempotency_guard",
     }
-    # Critically: no FactPack build, no synthesis run.
-    assert fp.calls == 0
+    # Critically: no synthesis run.
     assert synth.calls == []
 
 
 @pytest.mark.asyncio
 async def test_invoke_insights_daily_drives_agentic_synthesis_on_happy_path(monkeypatch):
-    """`stored` mirrors `SynthesisResult.insights_count`; `fetched` is FactPack rows."""
+    """`stored` mirrors `SynthesisResult.insights_count`; `fetched` is 0 (v2 has no server-built FactPack)."""
     synth = _SynthesisDriverFactory(
         outcomes=[_SynthesisResultStub(insights_count=7, degraded=False)],
     )
-    fp = _patch_runner(
-        monkeypatch,
-        synth_factory=synth,
-        fp_factory=_FactpackBuilderFactory(total=123),
-    )
+    _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=None)
 
     result = await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
 
     assert result["stored"] == 7
-    assert result["fetched"] == 123
+    assert result["fetched"] == 0
     assert result["skipped"] == 0
     assert result["degraded"] is False
-    assert fp.calls == 1
     assert len(synth.calls) == 1
 
     call = synth.calls[0]
-    # Phase 3 contract: scheduler-mode keyed by today's date.
+    # Scheduler contract: scheduler-mode keyed by today's date.
     assert call["mode"] == "scheduled"
     assert call["max_insights"] == 5
     assert call["cron_run_date"] is not None
     assert isinstance(call["session_id"], uuid.UUID)
+    # Regression guard: v2 signature has no fact_pack kwarg.
+    assert "fact_pack" not in call
     # The pre-created AISession row must have been added with the
     # scheduler tag so the idempotency guard catches a same-day retry.
     assert any(
@@ -269,21 +229,15 @@ async def test_invoke_insights_daily_retries_then_succeeds(monkeypatch):
             _SynthesisResultStub(insights_count=5, degraded=False),
         ],
     )
-    fp = _patch_runner(
-        monkeypatch,
-        synth_factory=synth,
-        fp_factory=_FactpackBuilderFactory(total=99),
-    )
+    _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=None)
 
     result = await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
 
     assert result["stored"] == 5
-    assert result["fetched"] == 99
+    assert result["fetched"] == 0
     assert len(synth.calls) == 2, "synthesis driver should be re-invoked on retry"
-    # FactPack rebuilt per attempt.
-    assert fp.calls == 2
 
 
 @pytest.mark.asyncio
@@ -296,7 +250,7 @@ async def test_invoke_insights_daily_three_failures_exhausts_retries(monkeypatch
             RuntimeError("boom-3"),
         ],
     )
-    fp = _patch_runner(monkeypatch, synth_factory=synth)
+    _patch_runner(monkeypatch, synth_factory=synth)
 
     session = FakeSession(idempotency_row=None)
 
@@ -304,7 +258,6 @@ async def test_invoke_insights_daily_three_failures_exhausts_retries(monkeypatch
         await runner_mod._invoke_insights_daily(session)  # type: ignore[arg-type]
 
     assert len(synth.calls) == 3, "expected 3 attempts (1 + 2 retries) before re-raise"
-    assert fp.calls == 3
 
 
 @pytest.mark.asyncio

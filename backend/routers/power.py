@@ -152,13 +152,27 @@ async def power_timeseries(db: AsyncSession = Depends(get_db)):
 # we collapse to the parent brand for the dashboard tile.
 _BUYER_CANONICALS = ("Microsoft", "Amazon", "Google", "Meta", "Oracle")
 
+# Substring → canonical rollup. Aterio still uses the legacy "Facebook"
+# string for Meta-owned campuses; some EDGAR filings reference "Alphabet"
+# rather than Google; AWS is the Amazon subsidiary that signs PPAs.
+# Frontend `canon()` in PowerTab.tsx mirrors this map — keep them in sync.
+_BUYER_ALIASES: dict[str, str] = {
+    "facebook": "Meta",
+    "alphabet": "Google",
+    "aws": "Amazon",
+}
+
 
 def _canonicalize_buyer(buyer: str | None) -> str:
     if not buyer:
         return "Unknown"
     head = buyer.split(" / ")[0].split("/")[0].strip()
+    head_lower = head.lower()
+    for alias, canon in _BUYER_ALIASES.items():
+        if alias in head_lower:
+            return canon
     for canon in _BUYER_CANONICALS:
-        if canon.lower() in head.lower():
+        if canon.lower() in head_lower:
             return canon
     return head
 
@@ -565,7 +579,7 @@ async def power_announcements(
             )
         ee_stmt = ee_stmt.order_by(
             EdgarExtraction.filing_date.desc().nullslast()
-        ).limit(100)
+        ).limit(500)
         edgar_rows = (await db.execute(ee_stmt)).scalars().all()
 
         for e in edgar_rows:
@@ -622,19 +636,25 @@ async def power_announcements(
 
 
 async def _gw_summary_from_db(db: AsyncSession) -> dict:
-    """Aggregate contracted GW per canonical buyer from edgar_extractions.
+    """Aggregate contracted GW per canonical hyperscaler/AI buyer.
 
-    Dedup strategy:
-      * SELECT DISTINCT ON (canonical_deal_id) latest filing_date — so a
-        deal that appears in 8-K, 10-Q, and 10-K reports once-and-only-once.
-      * Rows with NULL canonical_deal_id are NOT deduped (they're individual
-        ungrouped observations).
-      * GROUP BY COALESCE(buyer_canonical, buyer_raw) — replaces the old
-        Python _canonicalize_buyer pass.
+    Unions two sources, with Python-side canonicalization so aliases fold
+    correctly:
+      * `edgar_extractions` (LLM-extracted SEC filings) — DISTINCT ON
+        (canonical_deal_id) latest filing_date so a deal seen in 8-K + 10-Q
+        + 10-K counts once. Rows with NULL canonical_deal_id are individual
+        ungrouped observations.
+      * `power_projects` (Aterio inventory) — rows whose
+        `customer_companies` matches a recognized hyperscaler/AI buyer.
+        Aterio still uses "Facebook" for Meta campuses; the alias map in
+        `_canonicalize_buyer` rolls those into "Meta".
 
-    NULL capacity_mw rows are filtered out (no contribution to GW total).
+    Both sources are filtered to recognized buyers (`_HYPERSCALER_REGEX`)
+    to drop utility/IPP filer noise — e.g. an LLM that extracted
+    "Constellation Energy" as buyer from a Calpine acquisition filing.
+    Capacity-NULL rows contribute zero to the GW total.
     """
-    sql = text(
+    edgar_sql = text(
         """
         WITH latest AS (
             SELECT DISTINCT ON (canonical_deal_id)
@@ -646,11 +666,10 @@ async def _gw_summary_from_db(db: AsyncSession) -> dict:
             FROM edgar_extractions
             WHERE canonical_deal_id IS NOT NULL
               AND capacity_mw IS NOT NULL
+              AND COALESCE(buyer_canonical, buyer_raw) ~* :hyper_re
             ORDER BY canonical_deal_id, filing_date DESC NULLS LAST
         ),
         ungrouped AS (
-            -- Rows without canonical_deal_id (older / pre-pipeline rows).
-            -- They're treated as individual observations.
             SELECT NULL::text AS canonical_deal_id,
                    COALESCE(buyer_canonical, buyer_raw) AS buyer,
                    energy_source,
@@ -659,20 +678,38 @@ async def _gw_summary_from_db(db: AsyncSession) -> dict:
             FROM edgar_extractions
             WHERE canonical_deal_id IS NULL
               AND capacity_mw IS NOT NULL
+              AND COALESCE(buyer_canonical, buyer_raw) ~* :hyper_re
         )
         SELECT buyer, energy_source, capacity_mw FROM latest
         UNION ALL
         SELECT buyer, energy_source, capacity_mw FROM ungrouped
         """
     )
+    aterio_sql = text(
+        """
+        SELECT
+            customer_companies AS buyer,
+            aterio_plant_energy_source AS energy_source,
+            COALESCE(tot_phase_nameplate_power_mw,
+                     tot_contracted_power_capacity_mw) AS capacity_mw
+        FROM power_projects
+        WHERE customer_companies ~* :hyper_re
+          AND COALESCE(tot_phase_nameplate_power_mw,
+                       tot_contracted_power_capacity_mw) IS NOT NULL
+        """
+    )
     try:
-        rows = (await db.execute(sql)).all()
+        edgar_rows = (
+            await db.execute(edgar_sql, {"hyper_re": _HYPERSCALER_REGEX})
+        ).all()
+        aterio_rows = (
+            await db.execute(aterio_sql, {"hyper_re": _HYPERSCALER_REGEX})
+        ).all()
     except Exception:
         # Fallback path — schema may not yet have buyer_canonical /
         # canonical_deal_id (pre-migration environment). Use a simpler
         # raw-buyer aggregate so /api/power/gw-summary keeps responding
-        # rather than 500-ing. (curated_deals was retired in migration
-        # 016_drop_curated_deals so we can no longer fall back to it.)
+        # rather than 500-ing.
         legacy = (
             await db.execute(
                 select(
@@ -682,15 +719,30 @@ async def _gw_summary_from_db(db: AsyncSession) -> dict:
                 ).where(EdgarExtraction.capacity_mw.isnot(None))
             )
         ).all()
-        rows = [(_canonicalize_buyer(b), es, mw) for (b, es, mw) in legacy]
+        edgar_rows = legacy
+        aterio_rows = []
 
     totals: dict[str, dict] = {}
-    for buyer, energy_source, mw in rows:
-        # Group by COALESCE(buyer_canonical, buyer_raw); skip empties.
-        if not buyer:
+    # Aterio's customer_companies can be comma-separated ("Facebook, Foo").
+    # Take the first listed customer — matches `_fetch_aterio_curated`.
+    for buyer, energy_source, mw in list(edgar_rows) + [
+        ((b or "").split(",")[0].strip() if b else b, es, mw)
+        for (b, es, mw) in aterio_rows
+    ]:
+        canon = _canonicalize_buyer(buyer)
+        if canon in ("Unknown", ""):
             continue
         bucket = totals.setdefault(
-            buyer, {"gw_total": 0.0, "deals": 0, "nuclear_gw": 0.0, "renewable_gw": 0.0}
+            canon,
+            {
+                "gw_total": 0.0,
+                "deals": 0,
+                "nuclear_gw": 0.0,
+                "renewable_gw": 0.0,
+                "gas_gw": 0.0,
+                "storage_gw": 0.0,
+                "other_gw": 0.0,
+            },
         )
         gw = float(mw or 0) / 1000.0
         bucket["gw_total"] += gw
@@ -698,10 +750,16 @@ async def _gw_summary_from_db(db: AsyncSession) -> dict:
         src = (energy_source or "").lower()
         if "nuclear" in src:
             bucket["nuclear_gw"] += gw
-        elif any(r in src for r in ("solar", "wind", "renewable")):
+        elif any(r in src for r in ("solar", "wind", "hydro", "geothermal", "renewable")):
             bucket["renewable_gw"] += gw
+        elif any(r in src for r in ("natural gas", "natural_gas", "gas")):
+            bucket["gas_gw"] += gw
+        elif any(r in src for r in ("storage", "battery")):
+            bucket["storage_gw"] += gw
+        else:
+            bucket["other_gw"] += gw
     for k in totals:
-        for f in ("gw_total", "nuclear_gw", "renewable_gw"):
+        for f in ("gw_total", "nuclear_gw", "renewable_gw", "gas_gw", "storage_gw", "other_gw"):
             totals[k][f] = round(totals[k][f], 2)
     return totals
 

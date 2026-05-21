@@ -37,7 +37,13 @@ def test_tool_defs_contains_read_workspace_with_correct_enum():
     assert params["required"] == ["file"]
     file_param = params["properties"]["file"]
     assert file_param["type"] == "string"
-    assert sorted(file_param["enum"]) == ["FRESHNESS.md", "SCHEMA.md"]
+    assert sorted(file_param["enum"]) == [
+        "AI_INSIGHTS_PLAYBOOK.md",
+        "AI_INSIGHTS_PREFLIGHT_CHECKLIST.md",
+        "AI_INSIGHTS_SQL_SCHEMA_DISCIPLINE.md",
+        "FRESHNESS.md",
+        "SCHEMA.md",
+    ]
     # additionalProperties must be False so the model can't slip extras through.
     assert params["additionalProperties"] is False
 

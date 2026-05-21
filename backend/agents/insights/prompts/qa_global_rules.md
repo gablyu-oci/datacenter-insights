@@ -112,7 +112,7 @@ Workflow (the analyst loop):
 - building_name (str) — Building name within a campus.
 - campus_name (str) — Campus / cluster name (groups buildings).
 - stage (str) — Lifecycle stage: Announcement, Construction, Activated, Cancelled, Withdrawn.
-- pct_construction (float) — Percent complete (0-100).
+- pct_construction (float) — Construction progress as a **0–1.0 fraction** (e.g. 0.95 = 95%). Multiply by 100 for display. DB max across all rows is 1.0; never compare against >1. Derived from Aterio satellite imagery — not officially-declared by the operator.
 - provider_name (str) — Datacenter operator (Microsoft, Amazon AWS, Google, Facebook, Oracle, ...).
 - provider_ticker (str) — Operator stock ticker.
 - provider_public_private (str) — Public / Private classification of operator.
@@ -133,10 +133,7 @@ Workflow (the analyst loop):
 - tot_project_cost (float) — Total project cost (USD).
 - yearly_pue (float) — Reported yearly Power Usage Effectiveness.
 - tot_num_generators (int) — Total backup generators on site.
-- announced_date (str) — Announcement date (text, may be partial).
-- construction_start_date (str) — Construction start date (text).
-- construction_finished_date (str) — Construction finish date (text).
-- activation_date (str) — Site activation date (text).
+- announced_date / construction_start_date / construction_finished_date / activation_date / cancelled_date / project_withdrawn_date — **DEPRECATED columns on `sites`; do not query.** Aterio dropped these from the inventory CSV (May 2026). All five are now NULL in the DB. Milestone dates live in the `events` table — join `events e ON e.aterio_dc_uid = sites.aterio_dc_uid` and filter `event_type` (see `events` section below). For per-site dates, the `/api/sites/` endpoint enriches each row with min(event_date) per type back into these same field names, but in raw SQL the columns are empty.
 - utility_name (str) — Serving electric utility.
 - bal_auth_abbr (str) — Balancing authority abbreviation (PJM, ERCOT, ...).
 - datasheet_url (str) — Aterio datasheet URL (citation source).
@@ -209,10 +206,19 @@ Workflow (the analyst loop):
 ### events
 - id (int) — Primary key.
 - aterio_dc_uid (str) — Aterio site UID this event refers to.
-- event_type (str) — announcement / permit_filed / construction_start / activation / expansion / cancellation.
-- event_date (date) — Event date.
-- event_description (str) — Free-text description.
-- source_url (str) — Source URL (citation).
+- event_type (str) — Canonical lifecycle vocabulary, sourced from Aterio's marketplace events CSV. Real values + approx counts (2026-05-14):
+  - `activation` (6,923) — site activated (or projected activation if `event_date > CURRENT_DATE`)
+  - `announcement` (4,983) — project announced
+  - `construction_start` (1,709) — construction began
+  - `construction_progress` (1,668) — milestone reached; **% is in `payload.pct_complete` (0–100 integer) and in `event_description` like "Construction 40% complete"**
+  - `withdrawn` (486) — Not Approved / Withdrawn
+  - `construction_finished` (437) — shell complete (precedes activation)
+  - `land_bank_purchase` (42), `cancellation` (28), `delayed` (17)
+  - **Do NOT use `permit_filed` or `expansion`** — those types do not exist in current data.
+- event_date (date) — Event date. **Future dates indicate projected/planned milestones, not history.** Clamp `event_date <= CURRENT_DATE` for historical analyses (e.g. "median time to activation"). The `/api/events/` response also exposes a derived `is_projected` flag.
+- event_description (str) — Human-readable detail; for `construction_progress` rows reads like "Construction 40% complete".
+- source_url (str) — Source URL (citation) — usually NULL on `aterio_events_csv`-sourced rows.
+- payload (jsonb) — Source tag + extras. All marketplace rows carry `payload->>'source' = 'aterio_events_csv'`. `construction_progress` rows also carry `payload->>'pct_complete'` as the integer percentage. `payload->>'vendor_event_type'` preserves Aterio's original string (e.g. `"Under Construction (40% Complete)"`) before normalization.
 
 ═══ WORKED EXAMPLES ═══
 

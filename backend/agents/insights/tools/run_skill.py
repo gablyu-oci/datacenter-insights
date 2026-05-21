@@ -1,4 +1,4 @@
-"""run_skill — dispatcher for the 12 V1 converted skills.
+"""run_skill — dispatcher for the converted analytical skills.
 
 Each skill module lives at `backend.agents.insights.skills.<name>` and
 exports an `async def run(inputs, ctx) -> outputs` entrypoint.
@@ -21,10 +21,9 @@ from ..specs.skill_context import SkillContext
 logger = logging.getLogger(__name__)
 
 
-# Closed set of V1 skills — must match SKILL_CONVERSION.md S4.2 / W4.
-# `V1_SKILLS` retained for backward compatibility with V1 imports; the
-# authoritative dispatch list is now `ALL_SKILLS` (V1 + V2).
-V1_SKILLS = (
+# Authoritative dispatch list. Must match SKILL_CONVERSION.md S4.2 / W4
+# plus the PRD §6.3 additions.
+ALL_SKILLS = (
     "programmatic_eda",
     "data_quality_audit",
     "root_cause_investigation",
@@ -37,17 +36,10 @@ V1_SKILLS = (
     "data_narrative_builder",
     "impact_quantification",
     "technical_to_business_translator",
-)
-
-# V2 additions per PRD §6.3.
-V2_SKILLS = (
     "cohort_analysis",
     "methodology_explainer",
     "peer_review_template",
 )
-
-# Authoritative full dispatch list (15 names).
-ALL_SKILLS = V1_SKILLS + V2_SKILLS
 
 
 class _CallStack:

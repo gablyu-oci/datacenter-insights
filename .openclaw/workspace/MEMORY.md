@@ -43,6 +43,16 @@ anticipate the next one._
 - Do not make warehouse/data-quality caveats the core insight when the task is datacenter/power analysis; keep caveats in notes unless the user explicitly asks about data quality.  _<2026-05-08>_
 - Answer executive-style: lead with the conclusion, then 2-3 supporting facts, then OCI implication; keep caveats subordinate unless they change the read.  _<2026-05-09>_
 - When a tool/path/schema rejects an assumption, stop and verify the contract before retrying; do not improvise around the error.  _<2026-05-11>_
+- When end-user identity is undisclosed, keep named-customer hypotheses explicitly provisional; do not upgrade pattern-matching into attribution.  _<2026-05-12>_
+- Before first SQL on an unfamiliar table, read SCHEMA.md and run a preflight evidence/column check; do not wait for the first query error to verify assumptions.  _<2026-05-13>_
+- Before first SQL on an unfamiliar table, read SCHEMA.md and verify exact columns/date types; never infer SQL identifiers from memory.  _<2026-05-14>_
+- When tool behavior or schema details matter to the answer, verify local docs first; do not rely on remembered capability descriptions.  _<2026-05-15>_
+- Before unfamiliar analysis, run a short preflight: verify table grain, canonical metric column, date semantics, sentinel/null handling, and tool contract from docs.  _<2026-05-16>_
+- When exploring docs or workspace context, verify whether a path is a file or directory before using read; use file discovery first to avoid avoidable tool errors and lost turns.  _<2026-05-17>_
+- When surveying docs or workspace context, discover files first; never treat a directory as readable file input.  _<2026-05-18>_
+- Start unfamiliar analysis with a 60-second preflight: discover surface shape first, then verify schema/docs before reading or querying.  _<2026-05-19>_
+- When surveying docs or workspace context, discover files first; never treat a directory as a readable file input.  _<2026-05-20>_
+- Separate every material claim into tool-backed fact, source/doc-backed fact, or clearly labeled inference; cut anything that fits none of the three.  _<2026-05-21>_
 
 
 ## Platform quirks worth knowing

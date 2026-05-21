@@ -1,4 +1,4 @@
-"""Token-aware document chunking for AI Insights v2 Phase B.1.
+"""Token-aware document chunking for AI Insights.
 
 Per the research memo §3 (``docs/ai_insights_v2_phases_bcd_research.md``):
 

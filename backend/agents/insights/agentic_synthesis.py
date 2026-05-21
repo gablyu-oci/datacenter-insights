@@ -1,23 +1,24 @@
-"""Agentic synthesis driver (Phase 2 / PRD/ARCH 14 §4).
+"""Agentic synthesis driver.
 
-Public entry point: ``run_agentic_synthesis``. The orchestrator calls
-this in place of ``_phase_hypothesize_iter`` +
-``_phase_verify_and_synthesize_iter`` when ``settings.synthesis_mode ==
-"agentic"`` (default after Phase 2 is GA). The legacy phases stay in
-the orchestrator until Phase 5 deletes them.
+Public entry point: ``run_agentic_synthesis``. The agent grounds its
+own claims via the OpenClaw MCP tools (`search_documents`,
+`query_database`, `read_workspace`) and persists insights through
+`persist_insight`; the driver only orchestrates the stream and writes
+a terminal `ai_session.status` based on what landed in the database.
 
 Wire-flow:
-  1. Load the per-mode rules from `prompts/synthesis_rules.md`.
+  1. Load `prompts/synthesis_rules.md`.
   2. Compose ``messages = [system, user]`` where ``user`` is a small
-     JSON pack with the FactPack digest + max_insights + session_id.
-  3. Open a `_drive_openclaw_stream` against
+     JSON pack with workspace pointers + max_insights + session_id +
+     run instructions.
+  3. Open `_drive_openclaw_stream` against
      `{settings.openclaw_gateway_url}/v1/chat/completions` with
      `x-openclaw-session-key=<derived from mode>`.
-  4. Drain the SSE through `translate_synthesis_chunk` and let each
-     event flow through the caller-supplied `sse_emit`.
-  5. On caps / wall-clock / degraded close, mark the ai_session row
-     `degraded` (or leave it `running` for the orchestrator to finish
-     finalizing) and return a `SynthesisResult`.
+  4. Drain the SSE through `translate_synthesis_chunk`.
+  5. After the stream ends, re-read the `ai_insight` rows for this
+     session and finalize the `ai_session` row:
+       - >=1 insight persisted -> ``status='complete'``
+       - 0 insights persisted  -> ``status='failed'``
 
 The driver NEVER calls ``task.cancel()``; the only way out is the
 cooperative break inside `_drive_openclaw_stream` (httpx issues #1461,
@@ -31,11 +32,11 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Awaitable, Callable, Literal, Optional
 
 from pydantic import BaseModel
-from sqlalchemy import update
+from sqlalchemy import text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -66,7 +67,19 @@ class SynthesisRunError(RuntimeError):
 
 @dataclass
 class SynthesisResult:
-    """Outcome of one ``run_agentic_synthesis`` invocation."""
+    """Outcome of one ``run_agentic_synthesis`` invocation.
+
+    Fields:
+      insights_count: actual ai_insight rows persisted for this session,
+        read back from the DB after the stream ends. Authoritative.
+      degraded: True iff zero insights were persisted. The terminal
+        ``ai_session.status`` is ``failed`` in that case; the field is
+        kept for back-compat with the runner's audit log.
+      reason: short slug for why the stream ended early when it did
+        (cap_trip / wall_clock / http_error / ...). None on clean ends.
+      total_chunks / total_tool_calls: stream-side counters; useful
+        for ops telemetry but not load-bearing for status decisions.
+    """
 
     insights_count: int
     degraded: bool
@@ -82,6 +95,49 @@ class SynthesisResult:
 
 _SYNTHESIS_WALL_TIMEOUT_S = 620.0
 
+# Weekly cron: prime the agent with the last 4 runs' worth of headlines so
+# it can pivot away from semantically-equivalent hypotheses instead of
+# re-emitting last week's insights.
+_RECENT_HEADLINE_LOOKBACK_DAYS = 28
+_RECENT_HEADLINE_LIMIT = 40
+
+
+async def _fetch_recent_insight_headlines(
+    db: AsyncSession,
+    *,
+    days: int = _RECENT_HEADLINE_LOOKBACK_DAYS,
+    limit: int = _RECENT_HEADLINE_LIMIT,
+) -> list[str]:
+    """Return headlines from complete sessions in the last `days`, newest first.
+
+    Best-effort: on any DB error returns []. The caller passes the list
+    into the user pack so the agent can avoid restating last week's
+    insights. Headlines from running/failed sessions are excluded.
+    """
+    if db is None or days <= 0:
+        return []
+    cutoff = datetime.utcnow() - timedelta(days=days)
+    sql = text(
+        """
+        SELECT i.headline
+          FROM ai_insight i
+          JOIN ai_session s ON s.id = i.session_id
+         WHERE i.created_at >= :cutoff
+           AND s.status = 'complete'
+         ORDER BY i.created_at DESC
+         LIMIT :lim
+        """
+    )
+    try:
+        result = await db.execute(sql, {"cutoff": cutoff, "lim": limit})
+        return [row[0] for row in result.all() if row[0]]
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "agentic_synthesis.recent_headlines_failed",
+            extra={"error": str(exc), "days": days},
+        )
+        return []
+
 
 async def run_agentic_synthesis(
     *,
@@ -92,7 +148,7 @@ async def run_agentic_synthesis(
     cron_run_date: Optional[date] = None,
     mode: Literal["manual", "scheduled"] = "manual",
 ) -> SynthesisResult:
-    """Drive one agentic synthesis turn end-to-end (v2).
+    """Drive one agentic synthesis turn end-to-end.
 
     Args:
       session_id: UUID of the parent ``ai_session`` row, already
@@ -135,13 +191,25 @@ async def run_agentic_synthesis(
         logger.warning("agentic_synthesis.synthesis_rules_missing")
         synthesis_rules = ""
 
+    today_d = datetime.utcnow().date()
+    this_week_since = (today_d - timedelta(days=7)).isoformat()
+    prior_week_since = (today_d - timedelta(days=14)).isoformat()
+    recent_headlines = await _fetch_recent_insight_headlines(db)
     user_pack = {
-        "today": datetime.utcnow().date().isoformat(),
+        "today": today_d.isoformat(),
+        # Weekly cron anchors: the agent should bias drills to "what
+        # changed in the past 7 days" (since `this_week_since`) and
+        # compare to the prior week (since `prior_week_since`).
+        "this_week_since": this_week_since,
+        "prior_week_since": prior_week_since,
         "session_id": str(session_id),
         "max_insights": int(max_insights),
-        # v2: agent orients by reading workspace artefacts and grounds
-        # claims via search_documents + query_database. No server-built
-        # FactPack is shipped in the prompt — see synthesis_rules.md.
+        # Last 4 weeks of complete-session headlines — the agent reads
+        # these to avoid restating semantically-equivalent insights.
+        "recent_insight_headlines": recent_headlines,
+        # Agent orients by reading workspace artefacts and grounds
+        # claims via search_documents + query_database — see
+        # synthesis_rules.md.
         "workspace_pointers": [
             ".openclaw/workspace/SCHEMA.md",
             ".openclaw/workspace/FRESHNESS.md",
@@ -151,6 +219,8 @@ async def run_agentic_synthesis(
         ],
         "instructions": (
             "QUALITY BAR for this run:\n"
+            f"  - WEEKLY DELTA: this cron is weekly. Anchor every drill to what CHANGED in the past 7 days (filings/permits/transcripts dated `>= '{this_week_since}'`) and compare against the prior 7 days (`>= '{prior_week_since}' AND < '{this_week_since}'`). Fall back to 30/90-day windows ONLY if the 7-day window is too thin to support an insight.\n"
+            f"  - AVOID REPETITION: `recent_insight_headlines` lists insights persisted in the last 4 weeks. Do NOT re-emit a hypothesis whose headline is semantically equivalent. Pivot the protagonist (different neo-cloud / hyperscaler), the table (events vs sites vs edgar_extractions), or the geography (different ISO / state). If you find yourself drafting last week's claim, drop it and drill a fresh angle.\n"
             "  - RECENCY: bias every drill to 2026 / latest year. Filter dates `>= '2026-01-01'` or use `events` for last-90-days. Static cumulative metrics (e.g. 'AWS has 40% of VA MW') are common knowledge — DROP THEM.\n"
             "  - OPPORTUNITY OR THREAT: every insight body MUST close with an explicit 'OCI opportunity:' or 'OCI threat:' sentence naming (a) an entity, (b) a window, (c) a number/named action. 'OCI should monitor' / 'OCI should treat as strategic' / 'competitive read' = AUTO-FAIL.\n"
             "  - PORTFOLIO: ≥3 distinct source tables across the run, ≤2 cards per protagonist, ≥1 forward-looking (permits/projects/filings), ≥1 document-grounded (search_documents/edgar_extractions).\n"
@@ -176,9 +246,9 @@ async def run_agentic_synthesis(
         },
     ]
 
-    # 3. Build the synthesis accumulator. v2 has no server-side FactPack
-    #    registry — row-id grounding is replaced by chart-level provenance
-    #    (executed_sql + row_hash) inside build_chart + persist_insight.
+    # 3. Build the synthesis accumulator. Row-id grounding is handled
+    #    by chart-level provenance (executed_sql + row_hash) inside
+    #    build_chart + persist_insight.
     acc = SynthesisChunkAccumulator(
         session_id=str(session_id),
         thread_id=str(session_id),
@@ -217,20 +287,21 @@ async def run_agentic_synthesis(
             degraded=True, reason="wall_clock", total_chunks=0
         )
 
-    # 5. Degraded -> set ai_session.status='degraded' as a server-side
-    #    safety net (the agent should have called finalize_session, but
-    #    if it didn't we don't want the session row stuck in 'running').
-    if stream_result.degraded or not acc.finalize_seen:
-        await _force_finalize_degraded(
-            db,
-            session_id=session_id,
-            reason=stream_result.reason or "no_finalize_seen",
-            insights_count=acc.total_insights_persisted,
-        )
+    # 5. Finalize from DB truth. The streaming accumulator can't see
+    #    tool-call results — OpenClaw runs the agent loop internally
+    #    and only echoes assistant content back to us — so the stream
+    #    counters undercount what actually landed. Read the DB instead.
+    actual_count = await _count_session_insights(db, session_id)
+    await _finalize_from_db(
+        db,
+        session_id=session_id,
+        actual_count=actual_count,
+        stream_reason=stream_result.reason,
+    )
 
     return SynthesisResult(
-        insights_count=acc.total_insights_persisted,
-        degraded=bool(stream_result.degraded or not acc.finalize_seen),
+        insights_count=actual_count,
+        degraded=(actual_count == 0),
         reason=stream_result.reason if stream_result.degraded else None,
         total_chunks=stream_result.total_chunks,
         total_tool_calls=int(acc.cap_counters.get("tool_calls", 0)),
@@ -261,52 +332,97 @@ def _build_session_key(
     return f"manual-{session_id}"
 
 
-async def _force_finalize_degraded(
+async def _count_session_insights(
+    db: AsyncSession, session_id: uuid.UUID
+) -> int:
+    """Count ai_insight rows persisted for this session.
+
+    Authoritative source of truth for SynthesisResult.insights_count
+    and the session's terminal status, since OpenClaw runs the tool
+    loop internally and the streaming accumulator can't see it.
+    """
+    from sqlalchemy import func, select
+
+    from .db.models import AIInsight
+
+    try:
+        row = (
+            await db.execute(
+                select(func.count())
+                .select_from(AIInsight)
+                .where(AIInsight.session_id == session_id)
+            )
+        ).scalar_one()
+        return int(row or 0)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "agentic_synthesis.count_insights_failed",
+            extra={"err": str(exc), "session_id": str(session_id)},
+        )
+        return 0
+
+
+async def _finalize_from_db(
     db: AsyncSession,
     *,
     session_id: uuid.UUID,
-    reason: str,
-    insights_count: int,
+    actual_count: int,
+    stream_reason: Optional[str],
 ) -> None:
-    """Direct DB update when the agentic loop ends without finalize.
+    """Write the terminal ai_session.status based on DB row count.
 
-    Avoids round-tripping the MCP tool here because the loop has
-    already returned and the agent is no longer present to retry. Best-
-    effort: any failure is logged and swallowed so callers always get a
-    SynthesisResult.
+    No-ops when the agent already called ``finalize_session`` (row
+    status is terminal). Otherwise:
+      - actual_count > 0 -> ``status='complete'`` (with budget_status
+        ``'clipped'`` if the stream tripped a cap, else ``'ok'``).
+      - actual_count == 0 -> ``status='failed'``.
+
+    Best-effort: any failure is logged and swallowed so callers always
+    get a SynthesisResult.
     """
     try:
-        from .db.models import AISession
-
-        # Don't clobber a row another path already finalized.
         from sqlalchemy import select
+
+        from .db.models import AISession
 
         existing = (
             await db.execute(select(AISession).where(AISession.id == session_id))
         ).scalar_one_or_none()
         if existing is None:
             return
-        if existing.status in ("complete", "degraded", "failed", "cancelled"):
+        if existing.status in ("complete", "failed", "cancelled", "degraded"):
             return
+
+        if actual_count > 0:
+            terminal_status = "complete"
+            budget = "clipped" if stream_reason else "ok"
+        else:
+            terminal_status = "failed"
+            budget = "clipped" if stream_reason else "ok"
 
         await db.execute(
             update(AISession)
             .where(AISession.id == session_id)
             .values(
-                status="degraded",
+                status=terminal_status,
                 finished_at=datetime.utcnow(),
-                insights_emitted=int(insights_count or 0),
-                budget_status="clipped",
+                insights_emitted=actual_count,
+                budget_status=budget,
             )
         )
         await db.commit()
-        logger.warning(
-            "agentic_synthesis.force_finalize_degraded",
-            extra={"session_id": str(session_id), "reason": reason},
+        logger.info(
+            "agentic_synthesis.finalize_from_db",
+            extra={
+                "session_id": str(session_id),
+                "status": terminal_status,
+                "insights_emitted": actual_count,
+                "stream_reason": stream_reason,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "agentic_synthesis.force_finalize_failed",
+            "agentic_synthesis.finalize_from_db_failed",
             extra={"err": str(exc), "session_id": str(session_id)},
         )
         try:
