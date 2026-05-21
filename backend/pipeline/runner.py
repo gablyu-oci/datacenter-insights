@@ -838,6 +838,18 @@ def _download_aterio_object(obj: dict, subdir: str) -> pathlib.Path:
 
     if not dest.exists():
         s3.download_file(_ATERIO_S3_ACCESS_POINT, key, str(dest))
+
+    # Mirror to OCI Object Storage (best-effort; never blocks the pipeline).
+    # Runs on every invocation -- including idempotent re-runs where the
+    # local file already existed -- so the first run after enabling the
+    # feature still backfills today's bytes. See
+    # docs/architecture/aterio_oci_mirror.md ADR-1/ADR-4.
+    try:
+        from pipeline.aterio_oci_mirror import mirror_to_oci
+        object_name = f"{today}/{subdir}/{basename}"
+        mirror_to_oci(dest, object_name)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("aterio_daily.oci_mirror_outer_failure %s", exc)
     return dest
 
 

@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     # App
     app_version: str = "0.1.0"
     log_level: str = "INFO"
+    # Deployment environment marker. Read from the ENVIRONMENT env var
+    # (set on production hosts). The `current_user_email` dependency in
+    # routers/insights.py uses this to gate the dev-only "dev@local"
+    # fallback when oauth2-proxy's X-Forwarded-Email header is absent —
+    # so production deploys 401 instead of silently authenticating as a
+    # synthetic identity. See docs/planning/save-and-history-per-user/.
+    environment: str = "development"
 
     # ------------------------------------------------------------------
     # OpenClaw gateway settings (PRD 11a, ARCH 11b, ADDENDUM 11c, ARCH 15).

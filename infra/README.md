@@ -42,6 +42,8 @@ Every authenticated request hitting `:8002` (FastAPI) or `:5174` (Vite) carries:
 
 Use these in the backend when you need to attribute actions to a user.
 
+**Required on this host:** `backend/.env` MUST contain `ENVIRONMENT=production`. The `current_user_email` dependency only permits the `dev@local` fallback when `ENVIRONMENT != "production"`, so this gates against any request that bypasses oauth2-proxy and arrives without `X-Forwarded-Email`.
+
 ## Sign-out behavior
 
 The "Sign out" button in `frontend/src/components/layout/UserMenu.tsx` clears the local oauth2-proxy cookie and lands the user on `/signin`. The user stays there until they explicitly click "Sign in with Oracle SSO". Oracle's OIDC `userlogout` endpoint requires `id_token_hint` (which we don't expose to the browser), so we can't kill the upstream OCI SSO session — that's standard SSO behavior across most enterprise apps.

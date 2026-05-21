@@ -2,6 +2,7 @@ import { tokens } from "../../../styles/insightTokens";
 import Collapsible from "./Collapsible";
 import InsightCard from "./InsightCard";
 import { useSavedInsights } from "../../../hooks/useSavedInsights";
+import { useInsightCounts } from "../../../hooks/useInsightCounts";
 import type { ChartSpec } from "../../../types/chartSpec";
 import type {
   Confidence,
@@ -50,12 +51,13 @@ function unwrapChart(raw: Record<string, unknown> | null | undefined): ChartSpec
 
 export default function SavedInsightsSection() {
   const saved = useSavedInsights();
+  const counts = useInsightCounts();
 
   return (
     <Collapsible
       title="Saved insights"
-      count={saved.total || saved.items.length}
-      countPending={saved.loading && saved.items.length === 0}
+      count={counts.saved}
+      countPending={counts.loading && counts.saved === null}
       defaultOpen={false}
       onFirstExpand={() => saved.refetch()}
     >
@@ -94,6 +96,7 @@ export default function SavedInsightsSection() {
               onSaveToggle={(next) => {
                 if (!next) {
                   saved.refetch();
+                  counts.refetch();
                 }
               }}
             />

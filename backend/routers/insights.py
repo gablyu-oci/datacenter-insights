@@ -56,6 +56,31 @@ router = APIRouter(prefix="/api/insights", tags=["insights"])
 
 
 # ---------------------------------------------------------------------------
+# Identity dependency — resolves the calling user's email from the
+# oauth2-proxy `X-Forwarded-Email` header (ADR-1).
+# ---------------------------------------------------------------------------
+
+
+async def current_user_email(
+    x_forwarded_email: Optional[str] = Header(default=None, alias="X-Forwarded-Email"),
+) -> str:
+    """Resolve the calling user's email from the oauth2-proxy header.
+
+    - Production: header required. Missing -> 401 missing_x_forwarded_email.
+    - Non-production (settings.environment != "production"): falls back to
+      "dev@local" when the header is absent. Never reachable in prod.
+    - Always normalized to .strip().lower().
+    """
+    if x_forwarded_email:
+        return x_forwarded_email.strip().lower()
+    if settings.environment != "production":
+        return "dev@local"
+    raise HTTPException(
+        status_code=401, detail="missing_x_forwarded_email"
+    )
+
+
+# ---------------------------------------------------------------------------
 # In-process session registry (single-worker dev/dogfood, per ARCH A5.1)
 # ---------------------------------------------------------------------------
 
@@ -226,18 +251,23 @@ class SessionsPage(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def _build_is_saved_column():
+def _build_is_saved_column(user_email: str):
     """Correlated EXISTS subquery used as a labeled column on AIInsight selects.
 
     Returns a SQL expression that evaluates to True when there is at least
     one `insight_subscription` row for the current `ai_insight.id` with
-    `enabled=true`. Robust against duplicate subscription rows because EXISTS
-    short-circuits on the first match.
+    `enabled=true` AND `user_email=<caller>`. Robust against duplicate
+    subscription rows because EXISTS short-circuits on the first match.
+
+    The `user_email` filter (added in migration 021) scopes saves to the
+    calling user; without it, every Oracle SSO user would see every other
+    user's saved insights.
     """
     return (
         select(1)
         .where(InsightSubscription.insight_id == AIInsight.id)
         .where(InsightSubscription.enabled.is_(True))
+        .where(InsightSubscription.user_email == user_email)
         .exists()
         .label("is_saved")
     )
@@ -248,8 +278,9 @@ async def _set_subscription_enabled(
     *,
     insight_id: uuid.UUID,
     enabled: bool,
+    user_email: str,
 ) -> Optional[uuid.UUID]:
-    """Soft-upsert the insight_subscription row for `insight_id`.
+    """Soft-upsert the insight_subscription row for `(user_email, insight_id)`.
 
     Returns the subscription row id when one exists after the call, else None
     (i.e. when caller asked to disable a never-saved insight).
@@ -257,7 +288,11 @@ async def _set_subscription_enabled(
     Idempotency: repeat calls with the same `enabled` value perform no write
     on the second+ invocation. The SELECT uses ORDER BY created_at DESC LIMIT 1
     so it is defensive against duplicate rows (the table lacks a UNIQUE
-    constraint on insight_id; see 03-architecture.md §8 / ADR-2).
+    constraint on insight_id; see 03-architecture.md ADR-4).
+
+    Per-user scoping: the SELECT filters by `user_email` so a DELETE from
+    user A targeting a row owned by user B is a natural no-op — the SELECT
+    finds nothing, and we don't write.
 
     Caller is responsible for committing the transaction.
     """
@@ -265,6 +300,7 @@ async def _set_subscription_enabled(
         await db.execute(
             select(InsightSubscription)
             .where(InsightSubscription.insight_id == insight_id)
+            .where(InsightSubscription.user_email == user_email)
             .order_by(InsightSubscription.created_at.desc())
             .limit(1)
         )
@@ -273,22 +309,59 @@ async def _set_subscription_enabled(
     if existing is None:
         if not enabled:
             # User un-saves an insight that was never saved — no-op.
+            logger.info(
+                "insight_subscription_write",
+                extra={
+                    "action": "unsubscribe",
+                    "user_email": user_email,
+                    "insight_id": str(insight_id),
+                    "subscription_id": None,
+                },
+            )
             return None
         new_row = InsightSubscription(
             id=uuid.uuid4(),
             insight_id=insight_id,
             enabled=True,
+            user_email=user_email,
         )
         db.add(new_row)
         await db.flush()
+        logger.info(
+            "insight_subscription_write",
+            extra={
+                "action": "subscribe",
+                "user_email": user_email,
+                "insight_id": str(insight_id),
+                "subscription_id": str(new_row.id),
+            },
+        )
         return new_row.id
 
     if existing.enabled == enabled:
         # Already in the desired state — no write needed.
+        logger.info(
+            "insight_subscription_write",
+            extra={
+                "action": "subscribe" if enabled else "unsubscribe",
+                "user_email": user_email,
+                "insight_id": str(insight_id),
+                "subscription_id": str(existing.id),
+            },
+        )
         return existing.id
 
     existing.enabled = enabled
     await db.flush()
+    logger.info(
+        "insight_subscription_write",
+        extra={
+            "action": "subscribe" if enabled else "unsubscribe",
+            "user_email": user_email,
+            "insight_id": str(insight_id),
+            "subscription_id": str(existing.id),
+        },
+    )
     return existing.id
 
 
@@ -541,6 +614,7 @@ async def get_session(
 async def list_session_insights(
     session_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> InsightListResponse:
     sess = (
         await db.execute(select(AISession).where(AISession.id == session_id))
@@ -548,7 +622,7 @@ async def list_session_insights(
     if sess is None:
         raise HTTPException(status_code=404, detail="session not found")
 
-    saved_expr = _build_is_saved_column()
+    saved_expr = _build_is_saved_column(user_email)
     rows = (
         await db.execute(
             select(AIInsight, saved_expr)
@@ -579,6 +653,7 @@ async def list_session_insights(
 async def get_insight(
     insight_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> InsightDetail:
     row = (
         await db.execute(select(AIInsight).where(AIInsight.id == insight_id))
@@ -602,13 +677,16 @@ async def get_insight(
             "created_at": chart_row.created_at,
         }
 
-    # Save & History (Phase A): does an enabled subscription exist?
+    # Save & History (Phase A + B): does an enabled subscription exist for
+    # the calling user? The user_email predicate (migration 021) is what
+    # makes the response per-user.
     is_saved_val = (
         await db.execute(
             select(
                 select(1)
                 .where(InsightSubscription.insight_id == insight_id)
                 .where(InsightSubscription.enabled.is_(True))
+                .where(InsightSubscription.user_email == user_email)
                 .exists()
             )
         )
@@ -655,8 +733,9 @@ async def cancel_session(session_id: uuid.UUID) -> CancelResponse:
 async def subscribe_insight(
     insight_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> SubscribeResponse:
-    """Mark an insight as saved (idempotent soft-upsert)."""
+    """Mark an insight as saved for the calling user (idempotent soft-upsert)."""
     insight = (
         await db.execute(select(AIInsight.id).where(AIInsight.id == insight_id))
     ).scalar_one_or_none()
@@ -664,7 +743,7 @@ async def subscribe_insight(
         raise HTTPException(status_code=404, detail="insight not found")
 
     row_id = await _set_subscription_enabled(
-        db, insight_id=insight_id, enabled=True
+        db, insight_id=insight_id, enabled=True, user_email=user_email
     )
     await db.commit()
     return SubscribeResponse(saved=True, id=row_id)
@@ -677,15 +756,23 @@ async def subscribe_insight(
 async def unsubscribe_insight(
     insight_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> SubscribeResponse:
-    """Soft-delete the saved state (flip enabled=false; idempotent)."""
+    """Soft-delete the saved state (flip enabled=false; idempotent).
+
+    A DELETE from user A targeting a row owned by user B is a no-op:
+    the SELECT inside `_set_subscription_enabled` filters by user_email,
+    finds nothing, and falls through to the "never saved" branch.
+    """
     insight = (
         await db.execute(select(AIInsight.id).where(AIInsight.id == insight_id))
     ).scalar_one_or_none()
     if insight is None:
         raise HTTPException(status_code=404, detail="insight not found")
 
-    await _set_subscription_enabled(db, insight_id=insight_id, enabled=False)
+    await _set_subscription_enabled(
+        db, insight_id=insight_id, enabled=False, user_email=user_email
+    )
     await db.commit()
     return SubscribeResponse(saved=False, id=None)
 
@@ -697,14 +784,17 @@ async def unsubscribe_insight(
 async def list_saved_insights(
     limit: int = Query(default=100, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> SavedInsightsResponse:
-    """List currently-saved insights, newest-saved first (hard cap 100)."""
-    # Single JOIN query: subscription → insight, only enabled rows.
+    """List the calling user's currently-saved insights, newest-saved first."""
+    # Single JOIN query: subscription → insight, only enabled rows owned
+    # by the caller (per-user scoping added in migration 021).
     sub_rows = (
         await db.execute(
             select(InsightSubscription, AIInsight)
             .join(AIInsight, AIInsight.id == InsightSubscription.insight_id)
             .where(InsightSubscription.enabled.is_(True))
+            .where(InsightSubscription.user_email == user_email)
             .order_by(InsightSubscription.created_at.desc())
             .limit(limit)
         )
@@ -859,6 +949,47 @@ async def list_sessions_history(
 
 
 # ---------------------------------------------------------------------------
+# Eager counts endpoint (ADR-5). Drives the collapsed-section badges so they
+# don't render a misleading `(0)` before the lazy lists have been fetched.
+# ---------------------------------------------------------------------------
+
+
+class InsightCountsResponse(BaseModel):
+    saved: int
+    sessions: int
+
+
+@router.get("/counts", response_model=InsightCountsResponse)
+async def get_insight_counts(
+    user_email: str = Depends(current_user_email),
+    db: AsyncSession = Depends(get_db),
+) -> InsightCountsResponse:
+    """Return per-user saved count + global completed-session count.
+
+    `saved` is scoped to the caller's user_email (matches /saved).
+    `sessions` is global (ai_session stays shared per ADR-6).
+    """
+    saved_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(InsightSubscription)
+            .where(InsightSubscription.enabled.is_(True))
+            .where(InsightSubscription.user_email == user_email)
+        )
+    ).scalar_one() or 0
+    sessions_count = (
+        await db.execute(
+            select(func.count())
+            .select_from(AISession)
+            .where(AISession.status == "complete")
+        )
+    ).scalar_one() or 0
+    return InsightCountsResponse(
+        saved=int(saved_count), sessions=int(sessions_count)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Latest completed session (architecture §6 — /api/insights/latest contract)
 # ---------------------------------------------------------------------------
 
@@ -873,6 +1004,7 @@ async def list_sessions_history(
 async def get_latest_insights(
     include_failed: bool = False,
     db: AsyncSession = Depends(get_db),
+    user_email: str = Depends(current_user_email),
 ) -> dict[str, Any]:
     """Return the most recent AI Insights session and its insights.
 
@@ -894,7 +1026,7 @@ async def get_latest_insights(
     """
 
     async def _build_session_payload(
-        db: AsyncSession, ai_session_row: AISession
+        db: AsyncSession, ai_session_row: AISession, user_email: str
     ) -> dict[str, Any]:
         """Build the `{session, insights}` payload for a given AISession row.
 
@@ -902,8 +1034,12 @@ async def get_latest_insights(
         and any matching `agent_chart` rows are LEFT-JOINed onto each insight.
         Returns an empty `insights` list if the session has no rows (which is
         expected for `running` / `failed` / `cancelled` sessions).
+
+        The `is_saved` flag on each insight is per-user (scoped via
+        `_build_is_saved_column(user_email)`); the rest of the payload is
+        global (ai_session/ai_insight are shared per ADR-6).
         """
-        saved_expr = _build_is_saved_column()
+        saved_expr = _build_is_saved_column(user_email)
         insight_pairs = (
             await db.execute(
                 select(AIInsight, saved_expr)
@@ -1034,7 +1170,7 @@ async def get_latest_insights(
         # Wording preserved for back-compat regardless of include_failed.
         raise HTTPException(status_code=404, detail="no completed session yet")
 
-    primary = await _build_session_payload(db, chosen)
+    primary = await _build_session_payload(db, chosen, user_email)
 
     # Default branch: byte-identical legacy response shape (no last_successful key).
     if not include_failed:
@@ -1062,7 +1198,9 @@ async def get_latest_insights(
             .first()
         )
         if prior_complete is not None:
-            last_successful = await _build_session_payload(db, prior_complete)
+            last_successful = await _build_session_payload(
+                db, prior_complete, user_email
+            )
 
     return {
         "session": primary["session"],

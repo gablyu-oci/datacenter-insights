@@ -7,6 +7,7 @@ import {
   useSessionHistory,
   type SessionHistoryRow,
 } from "../../../hooks/useSessionHistory";
+import { useInsightCounts } from "../../../hooks/useInsightCounts";
 import type { Confidence, Materiality } from "../../../types/sseEvents";
 
 /**
@@ -65,6 +66,7 @@ export default function PastRunsSection({
   currentSessionId = null,
 }: PastRunsSectionProps) {
   const sessions = useSessionHistory({ limit: 20, status: "completed" });
+  const counts = useInsightCounts();
   const [expandedRows, setExpandedRows] = useState<Record<string, boolean>>({});
   const [cache, setCache] = useState<Record<string, SessionCacheEntry>>({});
   // Per-row override map for save-button optimistic flips, scoped to the
@@ -143,10 +145,13 @@ export default function PastRunsSection({
   return (
     <Collapsible
       title="Past runs"
-      count={sessions.total || visibleItems.length}
-      countPending={sessions.loading && sessions.items.length === 0}
+      count={counts.sessions}
+      countPending={counts.loading && counts.sessions === null}
       defaultOpen={false}
-      onFirstExpand={() => sessions.refetch()}
+      onFirstExpand={() => {
+        sessions.refetch();
+        counts.refetch();
+      }}
     >
       {sessions.loading && sessions.items.length === 0 ? (
         <SkeletonRows count={3} />

@@ -7,6 +7,7 @@ import {
   useSavedInsights,
   type SavedInsightRow,
 } from "../../../hooks/useSavedInsights";
+import { useInsightCounts } from "../../../hooks/useInsightCounts";
 import {
   useSessionHistory,
   type SessionHistoryRow,
@@ -102,6 +103,7 @@ export default function InsightSidebar({
   initialSavedOpen = false,
 }: InsightSidebarProps) {
   const saved = useSavedInsights();
+  const counts = useInsightCounts();
   const sessions = useSessionHistory({ limit: 20, status: "completed" });
 
   const [expandedSessions, setExpandedSessions] = useState<
@@ -223,10 +225,10 @@ export default function InsightSidebar({
       {/* Saved ----------------------------------------------------------- */}
       <Collapsible
         title="Saved"
-        count={saved.total || saved.items.length}
-        countPending={saved.loading && saved.items.length === 0}
+        count={counts.saved}
+        countPending={counts.loading && counts.saved === null}
         defaultOpen={initialSavedOpen}
-        onFirstExpand={() => saved.refetch()}
+        onFirstExpand={() => { saved.refetch(); counts.refetch(); }}
       >
         {saved.loading && saved.items.length === 0 ? (
           <div
@@ -278,10 +280,10 @@ export default function InsightSidebar({
       {/* Past runs ------------------------------------------------------- */}
       <Collapsible
         title="Past runs"
-        count={sessions.total || sessions.items.length}
-        countPending={sessions.loading && sessions.items.length === 0}
+        count={counts.sessions}
+        countPending={counts.loading && counts.sessions === null}
         defaultOpen={false}
-        onFirstExpand={() => sessions.refetch()}
+        onFirstExpand={() => { sessions.refetch(); counts.refetch(); }}
       >
         {sessions.loading && sessions.items.length === 0 ? (
           <div
